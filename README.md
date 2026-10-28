@@ -11,6 +11,9 @@ Reviewer at mock exam para sa Philippine Civil Service Exam (Career Service Exam
 
 > Hindi inilalabas ng CSC ang eksaktong bilang ng tanong kada subject, kaya tantiya ang hati. Hindi ito opisyal na produkto ng Civil Service Commission.
 
+## Offline test version (walang install)
+Ang `dist/cse-reviewer-offline.html` ay isang file na bubuksan lang sa browser (computer o phone), walang internet o server na kailangan. Kumpleto ang functions (login, admin, mock exam, practice, resulta); naka-save ang data sa browser na iyon lamang. Pang-test ito, hindi pang-share sa ibang users. Para i-update pagkatapos baguhin ang code: `npm run build:offline`.
+
 ## Patakbuhin sa sariling computer
 Kailangan: Node.js 20 o mas bago.
 ```bash
