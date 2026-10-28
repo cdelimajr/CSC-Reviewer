@@ -7,6 +7,7 @@ process.env.DB_PATH = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'cse-')), 
 const app = require('../src/server');
 
 (async () => {
+  await app.ready;
   const srv = app.listen(0);
   const base = `http://127.0.0.1:${srv.address().port}`;
   const client = () => {

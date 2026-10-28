@@ -2,17 +2,16 @@ services:
   - type: web
     name: cse-reviewer
     runtime: node
-    plan: starter
+    plan: free
     buildCommand: npm install
     startCommand: npm start
+    healthCheckPath: /api/meta
     envVars:
       - key: NODE_VERSION
         value: 22.22.0
-      - key: DB_PATH
-        value: /var/data/cse-reviewer.db
+      - key: TURSO_DATABASE_URL
+        sync: false
+      - key: TURSO_AUTH_TOKEN
+        sync: false
       - key: ADMIN_EMAIL
         sync: false
-    disk:
-      name: data
-      mountPath: /var/data
-      sizeGB: 1

@@ -12,24 +12,27 @@ Reviewer at mock exam para sa Philippine Civil Service Exam (Career Service Exam
 > Hindi inilalabas ng CSC ang eksaktong bilang ng tanong kada subject, kaya tantiya ang hati. Hindi ito opisyal na produkto ng Civil Service Commission.
 
 ## Patakbuhin sa sariling computer
-Kailangan: Node.js 22.13 o mas bago.
+Kailangan: Node.js 20 o mas bago.
 ```bash
 npm install
 npm start          # http://localhost:3000
 npm test           # automated smoke test
 ```
-Ang unang account na gagawin ay magiging **admin** (o itakda ang `ADMIN_EMAIL`).
+Kapag walang `TURSO_DATABASE_URL`, gumagamit ito ng lokal na SQLite file sa `data/`. Ang unang account na gagawin ay magiging **admin** (o itakda ang `ADMIN_EMAIL`).
 
 ## Settings (environment variables)
 | Variable | Gamit |
 |---|---|
-| `PORT` | Port ng server (default 3000) |
-| `DB_PATH` | Lokasyon ng SQLite database (default `data/cse-reviewer.db`) |
+| `TURSO_DATABASE_URL` | URL ng Turso database (hal. `libsql://cse-reviewer-ikaw.turso.io`) |
+| `TURSO_AUTH_TOKEN` | Token ng Turso database |
 | `ADMIN_EMAIL` | Ang account na may ganitong email ay magiging admin |
 | `ADMIN_PASSWORD` | Kung kasama ng `ADMIN_EMAIL`, gagawa agad ng admin account sa unang takbo |
+| `PORT` | Port ng server (default 3000) |
+| `DB_PATH` | Lokal na database file kapag walang Turso (default `data/cse-reviewer.db`) |
 
-## I-deploy online
-- **Render:** i-connect ang repo, gamitin ang `render.yaml` (Blueprint). May 1 GB disk para sa database. Itakda ang `ADMIN_EMAIL`.
-- **Railway / Fly.io / VPS:** gamitin ang `Dockerfile`; mag-mount ng volume sa `/data` para hindi mabura ang database.
+## I-deploy nang libre (Render + Turso)
+1. **Turso (database):** mag-sign up sa turso.tech, gumawa ng database, at kunin ang Database URL at isang auth token.
+2. **Render (website):** New → Blueprint → piliin ang repo. Babasahin nito ang `render.yaml` (free plan). Ilagay ang `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN` at `ADMIN_EMAIL`.
+3. Buksan ang link na ibibigay ng Render at mag-register gamit ang `ADMIN_EMAIL`.
 
-Mahalaga: kailangan ng persistent disk/volume, kung hindi ay mabubura ang mga account kapag nag-restart ang server.
+Sa libreng Render plan, natutulog ang server kapag walang gumagamit ng 15 minuto, kaya mga isang minuto ang unang pag-load pagkatapos noon. Ligtas ang data dahil nasa Turso ito.

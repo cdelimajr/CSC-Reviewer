@@ -1,16 +1,19 @@
-// SQLite database (built into Node 22+, no native modules needed).
+// Database: libSQL (SQLite-compatible).
+// - Online: set TURSO_DATABASE_URL and TURSO_AUTH_TOKEN (free Turso database).
+// - Local: uses a SQLite file at DB_PATH (default data/cse-reviewer.db).
 const path = require('node:path');
 const fs = require('node:fs');
-const { DatabaseSync } = require('node:sqlite');
+const { createClient } = require('@libsql/client');
 
-const DB_PATH = process.env.DB_PATH || path.join(__dirname, '..', 'data', 'cse-reviewer.db');
-fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
+let url = process.env.TURSO_DATABASE_URL;
+if (!url) {
+  const file = process.env.DB_PATH || path.join(__dirname, '..', 'data', 'cse-reviewer.db');
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  url = 'file:' + file;
+}
+const client = createClient({ url, authToken: process.env.TURSO_AUTH_TOKEN });
 
-const db = new DatabaseSync(DB_PATH);
-db.exec(`
-PRAGMA journal_mode = WAL;
-PRAGMA foreign_keys = ON;
-
+const SCHEMA = `
 CREATE TABLE IF NOT EXISTS users (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL,
@@ -21,13 +24,12 @@ CREATE TABLE IF NOT EXISTS users (
   disabled INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
-
 CREATE TABLE IF NOT EXISTS sessions (
   token TEXT PRIMARY KEY,
-  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  user_id INTEGER NOT NULL,
   expires_at INTEGER NOT NULL
 );
-
+CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
 CREATE TABLE IF NOT EXISTS questions (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   subject TEXT NOT NULL,
@@ -43,10 +45,9 @@ CREATE TABLE IF NOT EXISTS questions (
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_questions_subject ON questions(subject, active);
-
 CREATE TABLE IF NOT EXISTS attempts (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  user_id INTEGER NOT NULL,
   mode TEXT NOT NULL,
   title TEXT NOT NULL,
   items TEXT NOT NULL,
@@ -59,11 +60,22 @@ CREATE TABLE IF NOT EXISTS attempts (
   breakdown TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_attempts_user ON attempts(user_id, started_at);
+CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
+`;
 
-CREATE TABLE IF NOT EXISTS meta (
-  key TEXT PRIMARY KEY,
-  value TEXT
-);
-`);
+// Convert libSQL rows into plain objects.
+const plain = (rs) => rs.rows.map((r) => Object.fromEntries(rs.columns.map((c, i) => [c, r[i]])));
+
+const db = {
+  init: () => client.executeMultiple(SCHEMA),
+  all: async (sql, ...args) => plain(await client.execute({ sql, args })),
+  get: async (sql, ...args) => plain(await client.execute({ sql, args }))[0],
+  run: async (sql, ...args) => {
+    const r = await client.execute({ sql, args });
+    return { lastInsertRowid: r.lastInsertRowid === undefined ? undefined : Number(r.lastInsertRowid), changes: r.rowsAffected };
+  },
+  // Run several statements in one transaction: [[sql, args], ...]
+  batch: (stmts) => client.batch(stmts.map(([sql, args = []]) => ({ sql, args })), 'write'),
+};
 
 module.exports = db;

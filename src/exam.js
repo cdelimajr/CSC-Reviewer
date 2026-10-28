@@ -13,9 +13,9 @@ function rowToItem(r) {
   };
 }
 
-function bankFor(subject, level) {
-  return db.prepare(`SELECT * FROM questions WHERE subject = ? AND active = 1 AND (level = 'both' OR level = ?)`)
-    .all(subject, level).map(rowToItem);
+async function bankFor(subject, level) {
+  const rows = await db.all(`SELECT * FROM questions WHERE subject = ? AND active = 1 AND (level = 'both' OR level = ?)`, subject, level);
+  return rows.map(rowToItem);
 }
 
 // Shuffle choices of a bank item so the correct letter is not always the same.
@@ -25,8 +25,8 @@ function reshuffle(item) {
   return { ...item, choices, answer: choices.indexOf(correct) };
 }
 
-function buildSection(subject, count, level, ratio = BANK_RATIO[subject] ?? 0.5) {
-  const bank = shuffle(bankFor(subject, level));
+async function buildSection(subject, count, level, ratio = BANK_RATIO[subject] ?? 0.5) {
+  const bank = shuffle(await bankFor(subject, level));
   // Keep reading passages together: pick passage groups as whole units.
   const picked = [];
   const used = new Set();
@@ -66,17 +66,17 @@ function buildSection(subject, count, level, ratio = BANK_RATIO[subject] ?? 0.5)
   return picked.slice(0, count).map((it) => reshuffle({ ...it, subject }));
 }
 
-function buildExam(mode, opts = {}) {
+async function buildExam(mode, opts = {}) {
   if (EXAMS[mode]) {
     const ex = EXAMS[mode];
-    const items = ex.sections.flatMap((s) => buildSection(s.subject, s.count, mode));
+    const items = (await Promise.all(ex.sections.map((s) => buildSection(s.subject, s.count, mode)))).flat();
     return { title: ex.title, items, timeLimitSec: ex.minutes * 60 };
   }
   // Practice by subject
   const subject = SUBJECTS[opts.subject] ? opts.subject : 'verbal';
   const count = Math.max(5, Math.min(100, Number(opts.count) || 20));
   const minutes = Number(opts.minutes) || 0;
-  const items = buildSection(subject, count, opts.level === 'subpro' ? 'subpro' : 'pro');
+  const items = await buildSection(subject, count, opts.level === 'subpro' ? 'subpro' : 'pro');
   return { title: `Practice: ${SUBJECTS[subject].name} (${items.length} items)`, items, timeLimitSec: minutes * 60 };
 }
 
