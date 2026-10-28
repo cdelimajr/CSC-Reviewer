@@ -10,6 +10,7 @@
   const { SUBJECTS, EXAMS } = __require('./blueprint');
   const { shuffle } = __require('./generators');
   const { buildExam, grade } = __require('./exam');
+  const realFetch = window.fetch ? window.fetch.bind(window) : null;
   const KEY = 'cse-offline-db-v1';
   const SKEY = 'cse-offline-session';
 
@@ -20,17 +21,57 @@
     try { mem = JSON.parse(localStorage.getItem(KEY) || 'null'); } catch { mem = null; }
     if (!mem) {
       mem = { seq: { users: 0, questions: 0, attempts: 0 }, users: [], questions: [], attempts: [] };
-      const add = (x, subject) => {
-        const choices = shuffle([x.a, ...x.d]);
-        mem.questions.push({ id: ++mem.seq.questions, subject: x.s || subject, topic: x.t || '', level: x.l || 'both', question: x.q,
-          choices: JSON.stringify(choices), answer: choices.indexOf(x.a), explanation: x.e || '', passage: x.p || '', source: 'seed', active: 1, created_at: now() });
-      };
-      __require('./bank-general').forEach((x) => add(x, 'general'));
-      __require('./bank-verbal').forEach((x) => add(x, 'verbal'));
-      save();
+      replaceBank(window.__CSE_BANK.questions, window.__CSE_BANK.version);
     }
     return mem;
   }
+  // Replace the built-in questions with a new list; questions added or edited by the admin are kept.
+  function replaceBank(list, version) {
+    mem.questions = mem.questions.filter((q) => q.source !== 'seed');
+    for (const x of list) {
+      const choices = shuffle([x.a, ...x.d]);
+      mem.questions.push({ id: ++mem.seq.questions, subject: x.s, topic: x.t || '', level: x.l || 'both', question: x.q,
+        choices: JSON.stringify(choices), answer: choices.indexOf(x.a), explanation: x.e || '', passage: x.p || '', source: 'seed', active: 1, created_at: now() });
+    }
+    mem.bank_version = version;
+    mem.bank_updated = Date.now();
+    save();
+  }
+  const validBankItem = (x) => x && SUBJECTS[x.s] && typeof x.q === 'string' && x.q && typeof x.a === 'string' && Array.isArray(x.d) && x.d.length === 3 && new Set([x.a, ...x.d]).size === 4;
+
+  // When online, download the latest questions (online app first, then GitHub). Offline: keep what we have.
+  let syncing = false;
+  async function syncQuestions() {
+    if (syncing || !navigator.onLine) return;
+    syncing = true;
+    try {
+      for (const url of window.__CSE_BANK.sources) {
+        try {
+          const ctrl = new AbortController();
+          const t = setTimeout(() => ctrl.abort(), 10000);
+          const res = await realFetch(url, { cache: 'no-store', signal: ctrl.signal });
+          clearTimeout(t);
+          if (!res.ok) continue;
+          const data = await res.json();
+          const list = Array.isArray(data.questions) ? data.questions.filter(validBankItem) : [];
+          if (list.length < 20 || !data.version) continue;
+          load();
+          if (data.version !== mem.bank_version) {
+            replaceBank(list, data.version);
+            notify(`Na-update ang mga tanong (${list.length} tanong).`);
+          }
+          return;
+        } catch { /* try the next source */ }
+      }
+    } finally { syncing = false; }
+  }
+  function notify(msg) {
+    const t = document.getElementById('toast');
+    if (!t) return;
+    t.textContent = msg; t.classList.add('show');
+    setTimeout(() => t.classList.remove('show'), 3500);
+  }
+
   function save() {
     try { localStorage.setItem(KEY, JSON.stringify(mem)); } catch (e) { console.warn('Hindi ma-save:', e); }
   }
@@ -256,7 +297,6 @@
   }
 
   // Route the app's fetch('/api/...') calls to the offline backend.
-  const realFetch = window.fetch ? window.fetch.bind(window) : null;
   window.fetch = async (url, opts = {}) => {
     const u = new URL(url, 'http://offline.local');
     if (!u.pathname.startsWith('/api/')) return realFetch(url, opts);
@@ -269,6 +309,10 @@
     }
     return new Response(JSON.stringify(data), { status, headers: { 'Content-Type': 'application/json' } });
   };
+
+  window.addEventListener('online', syncQuestions);
+  setTimeout(syncQuestions, 1500);
+  window.cseOfflineBankInfo = () => { load(); return { version: mem.bank_version, updated: mem.bank_updated, count: mem.questions.filter((q) => q.source === 'seed').length }; };
 
   window.cseOfflineReset = () => { localStorage.removeItem(KEY); localStorage.removeItem(SKEY); location.reload(); };
 })();

@@ -12,7 +12,11 @@ Reviewer at mock exam para sa Philippine Civil Service Exam (Career Service Exam
 > Hindi inilalabas ng CSC ang eksaktong bilang ng tanong kada subject, kaya tantiya ang hati. Hindi ito opisyal na produkto ng Civil Service Commission.
 
 ## Offline test version (walang install)
-Ang `dist/cse-reviewer-offline.html` ay isang file na bubuksan lang sa browser (computer o phone), walang internet o server na kailangan. Kumpleto ang functions (login, admin, mock exam, practice, resulta); naka-save ang data sa browser na iyon lamang. Pang-test ito, hindi pang-share sa ibang users. Para i-update pagkatapos baguhin ang code: `npm run build:offline`.
+Ang `dist/cse-reviewer-offline.html` ay isang file na bubuksan lang sa browser (computer o phone), walang internet o server na kailangan. Kumpleto ang functions (login, admin, mock exam, practice, resulta); naka-save ang data sa browser na iyon lamang. Pang-test ito, hindi pang-share sa ibang users.
+
+**Awtomatikong update ng tanong:** kapag may internet, kinukuha ng offline file ang pinakabagong tanong mula sa online app (kung naka-set ang `CSE_ONLINE_URL` noong i-build) o mula sa `questions/questions.json` sa GitHub. Kapag walang internet, ginagamit ang huling na-download. Hindi nagagalaw ang mga tanong na idinagdag mo sa offline admin.
+
+Pagkatapos baguhin ang mga tanong sa `src/bank-*.js`, patakbuhin ang `npm run build:offline` (ina-update nito ang `questions/questions.json` at ang offline file), tapos i-push. Para isama rin ang mga tanong na idinagdag sa online admin: `CSE_ONLINE_URL=https://iyong-app.onrender.com npm run build:offline`.
 
 ## Patakbuhin sa sariling computer
 Kailangan: Node.js 20 o mas bago.

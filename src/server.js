@@ -5,6 +5,7 @@ const db = require('./db');
 const { seed } = require('./seed');
 const { SUBJECTS, EXAMS } = require('./blueprint');
 const { buildExam, grade } = require('./exam');
+const { versionOf } = require('./bank');
 
 const PORT = Number(process.env.PORT) || 3000;
 const ADMIN_EMAIL = (process.env.ADMIN_EMAIL || '').trim().toLowerCase();
@@ -120,6 +121,17 @@ app.post('/api/me/password', auth, wrap(async (req, res) => {
 }));
 
 app.get('/api/meta', (req, res) => res.json({ subjects: SUBJECTS, exams: EXAMS }));
+
+// Public list of active questions, used by the offline version to update itself when online.
+app.get('/api/public/questions', wrap(async (req, res) => {
+  const rows = await db.all('SELECT * FROM questions WHERE active = 1 ORDER BY id');
+  const questions = rows.map((r) => {
+    const choices = JSON.parse(r.choices);
+    return { s: r.subject, t: r.topic, l: r.level, q: r.question, a: choices[r.answer], d: choices.filter((_, i) => i !== r.answer), e: r.explanation, p: r.passage };
+  });
+  res.set('Access-Control-Allow-Origin', '*').set('Cache-Control', 'no-store');
+  res.json({ version: versionOf(questions), count: questions.length, questions });
+}));
 
 /* ------------------------------ attempts ------------------------------ */
 // Items sent to the browser. Answers are hidden during a timed mock exam.

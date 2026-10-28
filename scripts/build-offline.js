@@ -5,7 +5,18 @@ const path = require('node:path');
 const root = path.join(__dirname, '..');
 const read = (p) => fs.readFileSync(path.join(root, p), 'utf8');
 
-const modules = { './blueprint': 'src/blueprint.js', './generators': 'src/generators.js', './bank-general': 'src/bank-general.js', './bank-verbal': 'src/bank-verbal.js', './exam': 'src/exam.js' };
+const modules = { './blueprint': 'src/blueprint.js', './generators': 'src/generators.js', './exam': 'src/exam.js' };
+const { QUESTIONS, VERSION } = require('../src/bank');
+
+// Where the offline file looks for newer questions when online (first one that works wins).
+// Set CSE_ONLINE_URL to the deployed app (e.g. https://cse-reviewer.onrender.com) when it is live.
+const sources = [];
+if (process.env.CSE_ONLINE_URL) sources.push(process.env.CSE_ONLINE_URL.replace(/\/$/, '') + '/api/public/questions');
+sources.push('https://raw.githubusercontent.com/cdelimajr/CSC-Reviewer/main/questions/questions.json');
+
+// Also publish the question list to questions/questions.json (what the offline file downloads from GitHub).
+fs.mkdirSync(path.join(root, 'questions'), { recursive: true });
+fs.writeFileSync(path.join(root, 'questions', 'questions.json'), JSON.stringify({ version: VERSION, count: QUESTIONS.length, questions: QUESTIONS }, null, 1));
 const iconUri = 'data:image/svg+xml;base64,' + Buffer.from(read('public/icons/icon.svg')).toString('base64');
 const safe = (js) => js.replace(/<\/script/gi, '<\\/script');
 
@@ -36,6 +47,7 @@ const html = `<!doctype html>
 <div class="offline-bar">Offline test version · naka-save ang data sa browser na ito lamang · <button onclick="if (confirm('Burahin ang lahat ng offline na data (accounts, resulta, tanong)?')) cseOfflineReset()">I-reset ang data</button></div>
 <div id="app"><div class="boot">Naglo-load…</div></div>
 <div id="toast" role="status" aria-live="polite"></div>
+<script>window.__CSE_BANK = ${safe(JSON.stringify({ version: VERSION, sources, questions: QUESTIONS }))};</script>
 <script>${safe(loader)}</script>
 <script>${safe(read('offline/local-api.js'))}</script>
 <script>${safe(read('public/app.js').split('/icons/icon.svg').join(iconUri).replace(/if \('serviceWorker' in navigator\)[^\n]*\n/, ''))}</script>
