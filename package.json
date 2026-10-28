@@ -1,0 +1,16 @@
+{
+  "name": "cse-reviewer",
+  "version": "1.0.0",
+  "description": "CSE Reviewer: libreng reviewer at mock exam para sa Philippine Civil Service Exam (Professional at Subprofessional).",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node --no-warnings src/server.js",
+    "dev": "node --no-warnings --watch src/server.js",
+    "test": "node --no-warnings test/smoke.js"
+  },
+  "engines": { "node": ">=22.13" },
+  "license": "MIT",
+  "dependencies": {
+    "express": "^4.21.2"
+  }
+}
