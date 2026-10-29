@@ -18,8 +18,8 @@
     "productName": "CSE Reviewer",
     "files": ["main.js", "offline.html", "app-config.json"],
     "directories": { "output": "dist", "buildResources": "build" },
-    "win": { "icon": "build/icon.png", "artifactName": "CSE-Reviewer-${version}-${arch}-${target}.${ext}" },
-    "nsis": { "oneClick": false, "allowToChangeInstallationDirectory": true, "shortcutName": "CSE Reviewer" },
+    "win": { "icon": "build/icon.png" },
+    "nsis": { "artifactName": "CSE-Reviewer-Setup-${version}.exe", "oneClick": false, "allowToChangeInstallationDirectory": true, "shortcutName": "CSE Reviewer" },
     "portable": { "artifactName": "CSE-Reviewer-${version}-portable.exe" }
   }
 }
