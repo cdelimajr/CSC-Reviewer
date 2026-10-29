@@ -1,5 +1,6 @@
 # Builds the Android APK, Windows EXE and an unsigned iPhone IPA.
-# All three open the online CSE Reviewer at APP_URL (set it under
+# The screens are built into each app, so they open without internet. They use the online
+# CSE Reviewer at APP_URL to log in, get new questions and save results (set it under
 # Settings → Secrets and variables → Actions → Variables → APP_URL).
 # Download the files from the run's "Artifacts", or from Releases when run manually.
 name: Build apps
@@ -8,15 +9,15 @@ on:
   workflow_dispatch:
   push:
     branches: [main]
-    paths: ['apps/**', 'public/icons/**', '.github/workflows/apps.yml']
+    paths: ['apps/**', 'public/**', '.github/workflows/apps.yml']
   pull_request:
-    paths: ['apps/**', '.github/workflows/apps.yml']
+    paths: ['apps/**', 'public/**', '.github/workflows/apps.yml']
 
 permissions:
   contents: write
 
 env:
-  APP_URL: ${{ vars.APP_URL || 'https://cse-reviewer.onrender.com' }}
+  APP_URL: ${{ vars.APP_URL || 'https://cse-reviewer-7lmg.onrender.com' }}
 
 jobs:
   android:
@@ -47,10 +48,6 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: 22, cache: npm, cache-dependency-path: apps/desktop/package-lock.json }
       - run: npm ci
-      - name: Point the app to APP_URL
-        shell: bash
-        run: |
-          echo "{ \"url\": \"$APP_URL\" }" > app-config.json
       - run: npm run dist:win
       - uses: actions/upload-artifact@v4
         with: { name: CSE-Reviewer-Windows, path: apps/desktop/dist/*.exe }
@@ -92,5 +89,5 @@ jobs:
           name: CSE Reviewer apps (build ${{ github.run_number }})
           body: |
             Android: CSE-Reviewer.apk · Windows: Setup at portable .exe · iPhone: unsigned .ipa (kailangang i-sign bago ma-install).
-            Ang mga app ay nagbubukas ng ${{ env.APP_URL }} at kailangan ng internet.
+            Gumagana ang mga app kahit offline. Kumokonekta sila sa ${{ env.APP_URL }} para mag-login, kumuha ng bagong tanong, at mag-save ng resulta.
           files: files/**/*

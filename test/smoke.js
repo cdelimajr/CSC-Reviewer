@@ -80,6 +80,33 @@ const lastCode = (to) => {
   r = await U('GET', '/api/premium'); assert.equal(r.data.active, true);
   assert.equal((await U('POST', '/api/attempts', { mode: 'subpro' })).status, 200, 'premium unlocks mocks');
 
+  // Offline: question pack, then sync results taken without internet (saved once only)
+  r = await U('GET', '/api/offline/pack');
+  assert.equal(r.data.sets.length, 6, 'premium user gets newest sets'); assert.ok(r.data.sets[0].items[0].answer !== undefined);
+  assert.ok(r.data.practice.verbal.length >= 100, 'practice pool');
+  const ps = r.data.practice.numerical.slice(0, 10);
+  const set = r.data.sets.find((x) => x.mode === 'pro');
+  const offline = [
+    { client_id: 'Ltest1', mode: 'practice', title: 'Practice: Numerical (10 items)', items: ps, answers: Object.fromEntries(ps.map((it, i) => [i, it.answer])), started_at: Date.now() - 6e5, finished_at: Date.now() },
+    { client_id: 'Ltest2', mode: 'pro', set_id: set.id, items: [], answers: { 0: set.items[0].answer }, started_at: Date.now() - 6e5, finished_at: Date.now() },
+  ];
+  r = await U('POST', '/api/offline/sync', { attempts: offline });
+  assert.ok(r.data.saved.Ltest1 && r.data.saved.Ltest2, 'offline results saved');
+  assert.equal((await U('GET', `/api/attempts/${r.data.saved.Ltest1}`)).data.score, 10);
+  assert.equal((await U('GET', `/api/attempts/${r.data.saved.Ltest2}`)).data.total, 170);
+  const count = (await U('GET', '/api/attempts')).data.length;
+  await U('POST', '/api/offline/sync', { attempts: offline });
+  assert.equal((await U('GET', '/api/attempts')).data.length, count, 'no duplicates');
+
+  // Apps: token login + CORS
+  const pre = await fetch(base + '/api/me', { method: 'OPTIONS', headers: { Origin: 'https://localhost' } });
+  assert.equal(pre.status, 204); assert.equal(pre.headers.get('access-control-allow-origin'), '*');
+  let ar = await fetch(base + '/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-App': '1' }, body: JSON.stringify({ email: 'juan@test.ph', password: 'newpass123' }) });
+  const tok = (await ar.json()).token; assert.ok(tok, 'app gets token');
+  ar = await fetch(base + '/api/me', { headers: { Authorization: 'Bearer ' + tok } });
+  assert.equal((await ar.json()).user.email, 'juan@test.ph', 'bearer token works');
+  assert.equal((await U('POST', '/api/auth/login', { email: 'juan@test.ph', password: 'newpass123' })).data.token, undefined, 'website gets no token');
+
   // Admin
   assert.equal((await U('GET', '/api/admin/users')).status, 403, 'user blocked from admin');
   r = await A('GET', '/api/admin/overview'); assert.equal(r.data.users, 2); assert.equal(r.data.premiumUsers, 1);

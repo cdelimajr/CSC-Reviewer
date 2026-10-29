@@ -2,11 +2,12 @@
   "name": "cse-reviewer-mobile",
   "version": "1.0.0",
   "private": true,
-  "description": "Android and iPhone app for CSE Reviewer. It opens the online CSE Reviewer (internet required).",
+  "description": "Android and iPhone app for CSE Reviewer. Works offline; syncs with the online CSE Reviewer.",
   "scripts": {
+    "web": "node ../copy-web.js www",
     "config": "node scripts/write-config.js",
-    "android": "npm run config && npx cap add android && npx cap sync android",
-    "ios": "npm run config && npx cap add ios && npx cap sync ios"
+    "android": "npm run web && npm run config && npx cap add android && npx cap sync android",
+    "ios": "npm run web && npm run config && npx cap add ios && npx cap sync ios"
   },
   "dependencies": {
     "@capacitor/android": "^7.0.0",

@@ -104,6 +104,7 @@ const db = {
       'ALTER TABLE users ADD COLUMN email_verified INTEGER NOT NULL DEFAULT 0',
       'ALTER TABLE users ADD COLUMN premium_until INTEGER NOT NULL DEFAULT 0',
       'ALTER TABLE attempts ADD COLUMN set_id INTEGER',
+      'ALTER TABLE attempts ADD COLUMN client_id TEXT',
     ]) {
       try { await client.execute(sql); } catch (e) { if (!/duplicate column/i.test(e.message)) throw e; }
     }
