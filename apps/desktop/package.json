@@ -1,0 +1,25 @@
+{
+  "name": "cse-reviewer-desktop",
+  "productName": "CSE Reviewer",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Windows app for CSE Reviewer. It opens the online CSE Reviewer (internet required).",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dist:win": "electron-builder --win nsis portable --publish never"
+  },
+  "devDependencies": {
+    "electron": "^45.0.0",
+    "electron-builder": "^26.0.0"
+  },
+  "build": {
+    "appId": "ph.csereviewer.desktop",
+    "productName": "CSE Reviewer",
+    "files": ["main.js", "offline.html", "app-config.json"],
+    "directories": { "output": "dist", "buildResources": "build" },
+    "win": { "icon": "build/icon.png" },
+    "nsis": { "artifactName": "CSE-Reviewer-Setup-${version}.exe", "oneClick": false, "allowToChangeInstallationDirectory": true, "shortcutName": "CSE Reviewer" },
+    "portable": { "artifactName": "CSE-Reviewer-${version}-portable.exe" }
+  }
+}

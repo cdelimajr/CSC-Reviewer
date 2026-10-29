@@ -10,12 +10,38 @@
   const $ = (sel, root = document) => root.querySelector(sel);
   const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
   async function api(method, url, body) {
-    const res = await fetch(url, { method, headers: body ? { 'Content-Type': 'application/json' } : {}, body: body ? JSON.stringify(body) : undefined, credentials: 'same-origin' });
+    let res;
+    try {
+      res = await fetch(url, { method, headers: body ? { 'Content-Type': 'application/json' } : {}, body: body ? JSON.stringify(body) : undefined, credentials: 'same-origin' });
+    } catch {
+      showOffline(true);
+      const e = new Error('Walang internet. Kailangan ng internet para magamit ang CSE Reviewer.'); e.offline = true; throw e;
+    }
     let data = null;
     try { data = await res.json(); } catch { /* empty */ }
-    if (!res.ok) { const e = new Error((data && data.error) || 'May problema sa koneksyon.'); e.status = res.status; throw e; }
+    if (!res.ok) { const e = new Error((data && data.error) || 'May problema sa koneksyon.'); e.status = res.status; e.code = data && data.code; throw e; }
     return data;
   }
+
+  /* The app only works online: cover the screen while there is no connection. */
+  function showOffline(on) {
+    let el = document.getElementById('offline');
+    if (!on) { if (el) { el.remove(); if (S.exam) saveAnswers(true); } return; }
+    if (el) return;
+    el = document.createElement('div');
+    el.id = 'offline';
+    el.className = 'offline-cover';
+    el.innerHTML = `<div class="card" style="max-width:380px;text-align:center">
+      <div style="font-size:44px">📡</div><h2 style="margin:6px 0">Walang internet</h2>
+      <p class="muted">Kailangan ng internet para magamit ang CSE Reviewer.${S.exam ? ' Naka-save sa device ang mga sagot mo at ise-save ito kapag bumalik ang internet.' : ''}</p>
+      <button class="btn block" id="retryNet">Subukan ulit</button></div>`;
+    document.body.appendChild(el);
+    $('#retryNet').onclick = async () => {
+      try { await fetch('/api/meta', { cache: 'no-store' }); showOffline(false); if (!S.meta) init(); } catch { toast('Wala pa ring internet.'); }
+    };
+  }
+  window.addEventListener('offline', () => showOffline(true));
+  window.addEventListener('online', () => { showOffline(false); if (!S.meta) init(); });
   function toast(msg) {
     const t = document.getElementById('toast');
     t.textContent = msg; t.classList.add('show');
@@ -93,11 +119,12 @@
             <div class="err" id="err"></div>
             <button class="btn block" type="submit" style="margin-top:8px">${reg ? 'Gumawa ng account' : 'Mag-login'}</button>
           </form>
+          ${reg ? '<p class="muted small" style="margin-bottom:0">Gumamit ng aktibong email. Padadalhan ka namin ng code para ma-verify ito, at doon din ipapadala ang mga resulta at resibo.</p>' : '<p style="text-align:center;margin:14px 0 0"><a href="#/forgot">Nakalimutan ang password?</a></p>'}
         </div>
         <div class="features auth" style="max-width:880px">
           <div class="feature"><b>Professional at Subprofessional</b>170 at 165 na tanong, may timer na 3h10m at 2h40m.</div>
           <div class="feature"><b>Practice kada subject</b>Verbal, Numerical, Analytical, Clerical at General Info, may paliwanag sa bawat sagot.</div>
-          <div class="feature"><b>Laging bagong tanong</b>Iba-iba ang mga tanong sa bawat mock exam.</div>
+          <div class="feature"><b>Mga exam set</b>Pumili mula sa pinakabago hanggang pinakalumang set, o bagong halo ng tanong.</div>
           <div class="feature"><b>Gamitin sa phone</b>I-install sa home screen para parang app.</div>
         </div>
       </main>`;
@@ -110,17 +137,116 @@
         const body = { email: $('#email').value, password: $('#pw').value };
         if (reg) body.name = $('#name').value;
         const r = await api('POST', reg ? '/api/auth/register' : '/api/auth/login', body);
-        S.user = r.user;
+        await refreshMe();
         toast(reg ? `Maligayang pagdating, ${r.user.name}!` : 'Naka-login ka na.');
         go('#/');
       } catch (err) { $('#err').textContent = err.message; btn.disabled = false; }
     };
   }
 
+  function viewVerify() {
+    $app.innerHTML = `<main class="wrap"><div class="hero"><img class="logo" src="/icons/icon.svg" alt=""><h1>I-verify ang iyong email</h1>
+      <p class="muted">Nagpadala kami ng 6-digit na code sa <b>${esc(S.user.email)}</b>. Tingnan din ang Spam o Promotions folder.</p></div>
+      <div class="card auth"><form id="vf"><label for="code">Code</label>
+        <input id="code" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="123456" style="font-size:24px;letter-spacing:6px;text-align:center">
+        <div class="err" id="err"></div><button class="btn block" type="submit">I-verify</button></form>
+        <div class="row between" style="margin-top:14px"><button class="btn ghost small" id="resend">Ipadala ulit ang code</button><button class="btn ghost small" id="out">Mag-logout</button></div>
+      </div></main>`;
+    $('#vf').onsubmit = async (e) => {
+      e.preventDefault();
+      try { await api('POST', '/api/auth/verify', { code: $('#code').value }); await refreshMe(); toast('Na-verify na ang email mo!'); go('#/'); } catch (err) { $('#err').textContent = err.message; }
+    };
+    $('#resend').onclick = async () => { try { await api('POST', '/api/auth/resend'); toast('Naipadala ang bagong code.'); } catch (err) { $('#err').textContent = err.message; } };
+    $('#out').onclick = async () => { await api('POST', '/api/auth/logout'); S.user = null; go('#/login'); };
+  }
+
+  function viewForgot() {
+    let email = '';
+    $app.innerHTML = `<main class="wrap"><div class="hero"><img class="logo" src="/icons/icon.svg" alt=""><h1>Nakalimutan ang password</h1>
+      <p class="muted">Magpapadala kami ng code sa email mo para makagawa ka ng bagong password.</p></div>
+      <div class="card auth" id="fbox"><form id="ff"><label for="email">Email</label><input id="email" type="email" autocomplete="email">
+        <div class="err" id="err"></div><button class="btn block" type="submit">Ipadala ang code</button></form>
+        <p style="text-align:center;margin:14px 0 0"><a href="#/login">Bumalik sa login</a></p></div></main>`;
+    $('#ff').onsubmit = async (e) => {
+      e.preventDefault();
+      email = $('#email').value.trim();
+      try {
+        await api('POST', '/api/auth/forgot', { email });
+        $('#fbox').innerHTML = `<p class="small">Kung may account ang <b>${esc(email)}</b>, may code nang dumating doon.</p>
+          <form id="rf"><label>Code</label><input id="code" type="text" inputmode="numeric" maxlength="6" autocomplete="one-time-code">
+          <label>Bagong password</label><input id="npw" type="password" autocomplete="new-password" placeholder="8 characters o higit pa">
+          <div class="err" id="err"></div><button class="btn block" type="submit">I-save ang bagong password</button></form>`;
+        $('#rf').onsubmit = async (ev) => {
+          ev.preventDefault();
+          try { await api('POST', '/api/auth/reset', { email, code: $('#code').value, password: $('#npw').value }); toast('Napalitan na ang password. Mag-login na.'); go('#/login'); } catch (err) { $('#err').textContent = err.message; }
+        };
+      } catch (err) { $('#err').textContent = err.message; }
+    };
+  }
+
+  async function viewSets(mode) {
+    const e = S.meta.exams[mode];
+    if (!e) return go('#/');
+    shell('home', '<div class="empty">Naglo-load…</div>');
+    const sets = await api('GET', '/api/sets?mode=' + mode);
+    const locked = S.config.premium_required && !S.premium;
+    shell('home', `
+      <p class="small" style="margin:0"><a href="#/">‹ Home</a></p>
+      <h1>${esc(e.title.replace(' Mock Exam', ''))}</h1>
+      <p class="muted" style="margin-top:0">${e.items} tanong · ${fmtDur(e.minutes)} · Passing ${e.passing}%. Pumili ng exam set, mula pinakabago hanggang pinakaluma.</p>
+      ${locked ? `<div class="notice" style="margin:12px 0">🔒 Kailangan ng <b>Premium</b> para sa mock exams. <a href="#/premium">Kumuha ng Premium →</a></div>` : ''}
+      <div class="card" style="margin-bottom:12px"><div class="row between"><div><h3>Bagong halo ng tanong</h3><p class="muted small" style="margin:0">Bagong random na ${e.items} tanong na hindi pa lumalabas sa mga set.</p></div>
+        <button class="btn secondary" data-random>Simulan</button></div></div>
+      <div class="list">${sets.map((x, i) => `
+        <div class="list-item">
+          <div class="grow"><div class="row" style="gap:6px"><b>Set ${x.number}</b>${i === 0 ? '<span class="pill ok">Pinakabago</span>' : ''}</div>
+          <div class="muted small">Inilabas ${new Date(x.created_at).toLocaleDateString('en-PH', { year: 'numeric', month: 'short', day: 'numeric' })}${x.taken ? ` · Nasubukan ${x.taken}x · Best ${x.best}%` : ''}</div></div>
+          <button class="btn small" data-set="${x.id}">${x.taken ? 'Ulitin' : 'Simulan'}</button>
+        </div>`).join('') || '<div class="card empty">Wala pang exam set.</div>'}</div>`);
+    $('[data-random]').onclick = () => startExam(mode);
+    $$('[data-set]').forEach((b) => (b.onclick = () => startExam(mode, { set_id: +b.dataset.set })));
+  }
+
+  async function viewPremium() {
+    shell('account', '<div class="empty">Naglo-load…</div>');
+    const p = await api('GET', '/api/premium');
+    const until = p.until > Date.now() ? new Date(p.until).toLocaleDateString('en-PH', { year: 'numeric', month: 'long', day: 'numeric' }) : '';
+    const pending = p.payments.find((x) => x.status === 'pending');
+    const statusPill = { pending: '<span class="pill warn">Hinihintay</span>', approved: '<span class="pill ok">Approved</span>', rejected: '<span class="pill bad">Hindi approved</span>' };
+    shell('account', `
+      <h1>Premium</h1>
+      <div class="card">
+        ${S.user.role === 'admin' ? '<p class="muted" style="margin:0">Admin ka, kaya bukas sa iyo ang lahat ng mock exam.</p>'
+          : p.active && until ? `<h3 style="color:var(--ok)">✅ Aktibo ang Premium mo</h3><p class="muted" style="margin:0">Hanggang <b>${esc(until)}</b>. Pwede mo itong i-extend anumang oras.</p>`
+          : !p.required ? '<p class="muted" style="margin:0">Libre pa ang lahat ng mock exam sa ngayon.</p>'
+          : '<h3>🔒 Wala ka pang Premium</h3><p class="muted" style="margin:0">Libre ang practice kada subject. Kailangan ng Premium para sa Professional at Subprofessional mock exams at mga exam set.</p>'}
+      </div>
+      ${S.user.role === 'admin' ? '' : `<div class="card" style="margin-top:12px">
+        <h3>Paano magbayad</h3>
+        <p style="margin:6px 0"><span class="pill warn" style="font-size:15px">₱${esc(p.price)} para sa ${p.plan_days} araw</span></p>
+        <ol class="small" style="padding-left:18px">
+          <li>Magpadala ng <b>₱${esc(p.price)}</b> sa ${esc(p.method)}${p.pay_number ? `: <b>${esc(p.pay_number)}</b>` : ''}${p.pay_name ? ` (${esc(p.pay_name)})` : ''}.</li>
+          <li>Kopyahin ang <b>reference number</b> mula sa resibo.</li>
+          <li>Ilagay ito sa ibaba. Makakatanggap ka ng email kapag na-approve na.</li>
+        </ol>
+        ${p.note ? `<p class="muted small">${esc(p.note)}</p>` : ''}
+        ${pending ? `<div class="notice">Hinihintay pang ma-check ang bayad mo (ref: <b>${esc(pending.reference)}</b>).</div>` : `
+        <form id="payf"><label>Reference number</label><input type="text" id="ref" placeholder="hal. 1012 345 678901" autocomplete="off">
+          <div class="err" id="err"></div><button class="btn block" type="submit">Ipadala</button></form>`}
+      </div>`}
+      ${p.payments.length ? `<h2>Mga bayad mo</h2><div class="list">${p.payments.map((x) => `<div class="list-item"><div class="grow"><b>₱${esc(x.amount)}</b> · ${esc(x.method)} · ref ${esc(x.reference)}
+        <div class="muted small">${fmtDate(x.created_at)}${x.note ? ' · ' + esc(x.note) : ''}</div></div>${statusPill[x.status] || ''}</div>`).join('')}</div>` : ''}`);
+    const f = $('#payf');
+    if (f) f.onsubmit = async (e) => {
+      e.preventDefault();
+      try { await api('POST', '/api/payments', { reference: $('#ref').value }); toast('Naipadala! Hintayin ang email ng confirmation.'); viewPremium(); } catch (err) { $('#err').textContent = err.message; }
+    };
+  }
+
   /* ---------------- home ---------------- */
   async function viewHome() {
     shell('home', '<div class="empty">Naglo-load…</div>');
-    const [list, stats] = await Promise.all([api('GET', '/api/attempts'), api('GET', '/api/stats')]);
+    const [list, stats] = await Promise.all([api('GET', '/api/attempts'), api('GET', '/api/stats'), refreshMe()]);
     const open = list.filter((a) => !a.finished_at);
     const done = list.filter((a) => a.finished_at);
     const mocks = stats.mocks;
@@ -132,10 +258,11 @@
         <div class="meta"><span class="pill warn">${e.items} items</span><span class="pill warn">${fmtDur(e.minutes)}</span><span class="pill warn">Passing ${e.passing}%</span></div>
         <p class="muted small" style="margin:4px 0 8px">${desc}</p>
         <p class="small" style="margin:0 0 10px">${e.sections.map((s) => `${esc(subjName(s.subject))} (${s.count})`).join(' · ')}</p>
-        <button class="btn" data-start="${e.key}">Simulan ang exam</button>
+        <a class="btn" href="#/sets/${e.key}">${S.config.premium_required && !S.premium ? '🔒 ' : ''}Pumili ng exam set</a>
       </div>`;
     shell('home', `
       <h1>Kumusta, ${esc(S.user.name.split(' ')[0])}! 👋</h1>
+      ${S.config.premium_required && !S.premium ? '<div class="notice" style="margin:8px 0">Libre ang practice. Para sa mock exams, <a href="#/premium">kumuha ng Premium →</a></div>' : ''}
       <p class="muted" style="margin-top:0">Pumili ng mock exam o mag-practice kada subject.</p>
       ${open.length ? `<div class="notice" style="margin:12px 0">May hindi ka pa natatapos na exam: <b>${esc(open[0].title)}</b>. <a href="#/exam/${open[0].id}">Ituloy ito →</a></div>` : ''}
       <div class="grid two" style="margin-top:12px">
@@ -157,7 +284,6 @@
       <h2>Mga huling exam</h2>
       ${done.length ? `<div class="list">${done.slice(0, 5).map(attemptRow).join('')}</div><p><a href="#/history">Tingnan lahat →</a></p>` : '<div class="card empty">Wala ka pang natatapos na exam. Subukan ang isang mock exam!</div>'}
     `);
-    $$('[data-start]').forEach((b) => (b.onclick = () => startExam(b.dataset.start)));
   }
 
   function subjectBars(subj) {
@@ -185,7 +311,10 @@
     try {
       const a = await api('POST', '/api/attempts', { mode, ...opts });
       go('#/exam/' + a.id);
-    } catch (e) { toast(e.message); }
+    } catch (e) {
+      if (e.code === 'premium') { toast(e.message); return go('#/premium'); }
+      if (!e.offline) toast(e.message);
+    }
   }
 
   /* ---------------- practice setup ---------------- */
@@ -441,6 +570,7 @@
         <div class="row between"><div><b>${esc(S.user.name)}</b><div class="muted small">${esc(S.user.email)}</div></div>
         <span class="pill">${S.user.role === 'admin' ? 'Admin' : 'Reviewer'}</span></div>
       </div>
+      <a class="list-item" href="#/premium" style="margin-top:12px"><div class="grow"><b>Premium</b><div class="muted small">${S.user.role === 'admin' ? 'Admin: bukas lahat' : S.premium && S.user.premium_until > Date.now() ? 'Aktibo hanggang ' + new Date(S.user.premium_until).toLocaleDateString('en-PH') : S.config.premium_required ? 'Hindi pa aktibo' : 'Libre pa ang mock exams'}</div></div><span>›</span></a>
       <div class="card" style="margin-top:12px">
         <h3>Palitan ang password</h3>
         <form id="pwf"><label>Kasalukuyang password</label><input type="password" id="cur" autocomplete="current-password">
@@ -449,7 +579,7 @@
       </div>
       <div class="card" style="margin-top:12px">
         <h3>I-install sa phone</h3>
-        <p class="muted small" style="margin:0 0 10px"><b>Android (Chrome):</b> pindutin ang ⋮ menu → "Add to Home screen" o "Install app".<br><b>iPhone (Safari):</b> pindutin ang Share (□↑) → "Add to Home Screen".</p>
+        <p class="muted small" style="margin:0 0 10px"><b>Android (Chrome):</b> pindutin ang ⋮ menu → "Add to Home screen" o "Install app".<br><b>iPhone (Safari):</b> pindutin ang Share (□↑) → "Add to Home Screen".<br>Kailangan ng internet para magamit ang app.</p>
         <button class="btn secondary" id="install" hidden>I-install ang app</button>
       </div>
       <div class="card" style="margin-top:12px">
@@ -468,7 +598,7 @@
   /* ---------------- admin ---------------- */
   async function viewAdmin(tab = 'overview') {
     if (S.user.role !== 'admin') return go('#/');
-    const tabs = [['overview', 'Overview'], ['users', 'Users'], ['questions', 'Mga tanong'], ['results', 'Resulta']];
+    const tabs = [['overview', 'Overview'], ['payments', 'Payments'], ['users', 'Users'], ['sets', 'Exam sets'], ['questions', 'Mga tanong'], ['results', 'Resulta'], ['settings', 'Settings']];
     shell('admin', `<h1>Admin</h1><div class="tabs">${tabs.map(([k, l]) => `<button data-t="${k}" class="${k === tab ? 'active' : ''}">${l}</button>`).join('')}</div><div id="adm"><div class="empty">Naglo-load…</div></div>`);
     $$('.tabs [data-t]').forEach((b) => (b.onclick = () => go('#/admin/' + b.dataset.t)));
     const el = $('#adm');
@@ -476,6 +606,9 @@
       if (tab === 'overview') await admOverview(el);
       else if (tab === 'users') await admUsers(el);
       else if (tab === 'questions') await admQuestions(el);
+      else if (tab === 'payments') await admPayments(el);
+      else if (tab === 'sets') await admSets(el);
+      else if (tab === 'settings') await admSettings(el);
       else await admResults(el);
     } catch (e) { el.innerHTML = `<div class="card err">${esc(e.message)}</div>`; }
   }
@@ -491,6 +624,9 @@
         <div class="card stat"><div class="v">${o.avgMock ?? '–'}${o.avgMock != null ? '%' : ''}</div><div class="l">Average mock score</div></div>
         <div class="card stat"><div class="v">${o.mockAttempts ? pct(o.passed, o.mockAttempts) + '%' : '–'}</div><div class="l">Passing rate ng users</div></div>
       </div>
+      ${o.pendingPayments ? `<a class="notice" href="#/admin/payments" style="display:block;margin-top:12px">💳 May <b>${o.pendingPayments}</b> bayad na hinihintay ma-check →</a>` : ''}
+      ${!o.mail.enabled ? '<div class="notice" style="margin-top:12px;background:var(--warn-soft)">⚠️ Hindi pa naka-set up ang email. Hindi pa nagpapadala ng verification code, resulta at resibo. Tingnan ang README (Email setup).</div>' : ''}
+      <div class="grid stats" style="margin-top:12px"><div class="card stat"><div class="v">${o.premiumUsers}</div><div class="l">Premium users</div></div></div>
       <div class="card" style="margin-top:12px"><h3>Question bank (${totalQ} nakasulat na tanong)</h3>
         <table><tr><th>Subject</th><th>Bilang</th></tr>${o.questions.map((q) => `<tr><td>${esc(subjName(q.subject))}</td><td>${q.n}</td></tr>`).join('')}</table>
         <p class="muted small">Bukod dito, awtomatikong gumagawa ang app ng bagong tanong para sa Numerical, Analytical, Clerical at vocabulary, kaya iba-iba ang bawat exam.</p></div>`;
@@ -500,7 +636,7 @@
       const users = await api('GET', '/api/admin/users?q=' + encodeURIComponent(q));
       $('#ut').innerHTML = users.map((u) => `
         <tr><td><b>${esc(u.name)}</b><div class="muted small">${esc(u.email)}</div></td>
-        <td>${u.role === 'admin' ? '<span class="pill">Admin</span>' : 'User'} ${u.disabled ? '<span class="pill bad">Disabled</span>' : ''}</td>
+        <td>${u.role === 'admin' ? '<span class="pill">Admin</span>' : 'User'} ${u.disabled ? '<span class="pill bad">Disabled</span>' : ''} ${u.premium_until > Date.now() ? '<span class="pill ok">Premium</span>' : ''} ${S.config.verify && !u.email_verified ? '<span class="pill warn">Unverified</span>' : ''}</td>
         <td>${u.attempts}</td><td>${u.avg_mock ?? '–'}${u.avg_mock != null ? '%' : ''}</td>
         <td class="hide-mobile small muted">${esc(u.created_at.slice(0, 10))}</td>
         <td>${u.id === S.user.id ? '<span class="muted small">Ikaw</span>' : `<button class="btn ghost small" data-u="${u.id}">Aksyon</button>`}</td></tr>`).join('') || '<tr><td colspan="6" class="empty">Walang user.</td></tr>';
@@ -516,6 +652,10 @@
       <div class="list">
         <button class="btn secondary" data-a="role">${u.role === 'admin' ? 'Alisin bilang admin' : 'Gawing admin'}</button>
         <button class="btn secondary" data-a="disable">${u.disabled ? 'I-enable ang account' : 'I-disable ang account'}</button>
+        <button class="btn secondary" data-a="prem">${u.premium_until > Date.now() ? `Premium hanggang ${new Date(u.premium_until).toLocaleDateString('en-PH')} · +30 araw` : 'Bigyan ng Premium (30 araw)'}</button>
+        ${u.premium_until > Date.now() ? '<button class="btn secondary" data-a="unprem">Alisin ang Premium</button>' : ''}
+        ${S.config.verify && !u.email_verified ? '<button class="btn secondary" data-a="ver">Markahang verified ang email</button>' : ''}
+        <button class="btn secondary" data-a="report">I-email ang progress report</button>
         <button class="btn secondary" data-a="pw">I-reset ang password</button>
         <button class="btn secondary" data-a="hist">Tingnan ang mga resulta</button>
         <button class="btn danger" data-a="del">Burahin ang account</button>
@@ -525,6 +665,10 @@
       $('[data-a=x]', bg).onclick = close;
       $('[data-a=role]', bg).onclick = () => act(() => api('PATCH', '/api/admin/users/' + u.id, { role: u.role === 'admin' ? 'user' : 'admin' }), 'Na-update ang role.');
       $('[data-a=disable]', bg).onclick = () => act(() => api('PATCH', '/api/admin/users/' + u.id, { disabled: !u.disabled }), u.disabled ? 'Na-enable.' : 'Na-disable.');
+      $('[data-a=prem]', bg).onclick = () => act(() => api('PATCH', '/api/admin/users/' + u.id, { premium_days: 30 }), 'Nabigyan ng 30 araw na Premium.');
+      if ($('[data-a=unprem]', bg)) $('[data-a=unprem]', bg).onclick = () => act(() => api('PATCH', '/api/admin/users/' + u.id, { premium_days: 0 }), 'Inalis ang Premium.');
+      if ($('[data-a=ver]', bg)) $('[data-a=ver]', bg).onclick = () => act(() => api('PATCH', '/api/admin/users/' + u.id, { email_verified: true }), 'Na-verify.');
+      $('[data-a=report]', bg).onclick = () => act(() => api('POST', `/api/admin/users/${u.id}/report`), 'Naipadala ang report sa email ng user.');
       $('[data-a=pw]', bg).onclick = () => {
         $('#extra', bg).innerHTML = '<label>Bagong password</label><input type="text" id="np" placeholder="8 characters o higit pa"><button class="btn" id="sp" style="margin-top:8px">I-save</button>';
         $('#sp', bg).onclick = () => act(() => api('POST', `/api/admin/users/${u.id}/password`, { password: $('#np', bg).value }), 'Na-reset ang password. Ibigay ito sa user.');
@@ -622,6 +766,59 @@
       };
     });
   }
+  async function admPayments(el, status = 'pending') {
+    const rows = await api('GET', '/api/admin/payments?status=' + status);
+    el.innerHTML = `<div class="tabs" id="pst">${[['pending', 'Hinihintay'], ['approved', 'Approved'], ['rejected', 'Rejected']].map(([k, l]) => `<button data-s="${k}" class="${k === status ? 'active' : ''}">${l}</button>`).join('')}</div>
+      <p class="muted small">I-check sa ${'GCash'} app mo kung pumasok ang bayad gamit ang reference number bago i-approve.</p>
+      <div class="list">${rows.map((p) => `<div class="review-item">
+        <div class="row between"><div><b>${esc(p.name)}</b> <span class="muted small">${esc(p.email)}</span></div><span class="muted small">${fmtDate(p.created_at)}</span></div>
+        <div style="margin:6px 0">₱${esc(p.amount)} · ${esc(p.method)} · Ref: <b>${esc(p.reference)}</b>${p.note ? ` · ${esc(p.note)}` : ''}</div>
+        ${status === 'pending' ? `<div class="row"><button class="btn small" data-ok="${p.id}">✓ I-approve</button><button class="btn ghost small" data-no="${p.id}">✕ I-reject</button></div>` : ''}
+      </div>`).join('') || '<div class="card empty">Walang bayad dito.</div>'}</div>`;
+    $$('#pst [data-s]').forEach((b) => (b.onclick = () => admPayments(el, b.dataset.s)));
+    $$('[data-ok]').forEach((b) => (b.onclick = async () => {
+      if (!(await confirmBox('I-approve ang bayad?', 'Mabibigyan ng Premium ang user at padadalhan siya ng email.', 'I-approve'))) return;
+      try { await api('POST', '/api/admin/payments/' + b.dataset.ok, { action: 'approve' }); toast('Na-approve.'); admPayments(el, status); } catch (e) { toast(e.message); }
+    }));
+    $$('[data-no]').forEach((b) => (b.onclick = () => modal(`<h2 style="margin-top:0">I-reject ang bayad</h2><label>Dahilan (makikita ng user)</label><input type="text" id="why" value="Hindi namin makita ang bayad gamit ang reference number na ito.">
+      <div class="row" style="justify-content:flex-end;margin-top:12px"><button class="btn ghost" data-x>Bumalik</button><button class="btn danger" data-go>I-reject</button></div>`, (bg, close) => {
+      $('[data-x]', bg).onclick = close;
+      $('[data-go]', bg).onclick = async () => { try { await api('POST', '/api/admin/payments/' + b.dataset.no, { action: 'reject', note: $('#why', bg).value }); close(); toast('Na-reject.'); admPayments(el, status); } catch (e) { toast(e.message); } };
+    })));
+  }
+  async function admSets(el) {
+    const rows = await api('GET', '/api/admin/sets');
+    const by = (m) => rows.filter((r) => r.mode === m);
+    el.innerHTML = `<p class="muted small">Awtomatikong may bagong set bawat linggo. Pwede ka ring gumawa ng bagong set ngayon.</p>
+      ${['pro', 'subpro'].map((m) => `<div class="card" style="margin-bottom:12px"><div class="row between"><h3>${m === 'pro' ? 'Professional' : 'Subprofessional'} (${by(m).length} set)</h3><button class="btn small" data-new="${m}">+ Bagong set</button></div>
+        <div class="list" style="margin-top:8px">${by(m).map((r) => `<div class="list-item"><div class="grow"><b>Set ${r.number}</b><div class="muted small">${fmtDate(r.created_at)} · ${r.taken} beses nasubukan</div></div><button class="btn ghost small" data-del="${r.id}">Burahin</button></div>`).join('')}</div></div>`).join('')}`;
+    $$('[data-new]').forEach((b) => (b.onclick = async () => { b.disabled = true; try { const r = await api('POST', '/api/admin/sets', { mode: b.dataset.new }); toast(`Nagawa ang Set ${r.number}.`); admSets(el); } catch (e) { toast(e.message); b.disabled = false; } }));
+    $$('[data-del]').forEach((b) => (b.onclick = async () => {
+      if (await confirmBox('Burahin ang set?', 'Hindi na ito makikita ng mga user. Mananatili ang mga resulta ng mga nakasubok na.', 'Burahin', true)) { await api('DELETE', '/api/admin/sets/' + b.dataset.del); toast('Nabura.'); admSets(el); }
+    }));
+  }
+  async function admSettings(el) {
+    const st = await api('GET', '/api/admin/settings');
+    el.innerHTML = `<form class="card" id="stf">
+      <h3>Premium (bayad para sa mock exams)</h3>
+      <label style="display:flex;gap:10px;align-items:center;font-weight:600"><input type="checkbox" id="preq" ${st.premium_required === '1' ? 'checked' : ''} style="width:22px;height:22px"> Kailangan ng Premium para sa mock exams</label>
+      <p class="muted small" style="margin:4px 0 0">Kapag naka-off, libre ang lahat. Laging libre ang practice kada subject.</p>
+      <div class="row"><div style="flex:1;min-width:120px"><label>Presyo (₱)</label><input type="number" id="price" value="${esc(st.price)}"></div>
+      <div style="flex:1;min-width:120px"><label>Ilang araw</label><input type="number" id="days" value="${esc(st.plan_days)}"></div></div>
+      <label>Paraan ng bayad</label><input type="text" id="meth" value="${esc(st.pay_method)}">
+      <label>Account name</label><input type="text" id="pname" value="${esc(st.pay_name)}" placeholder="hal. Juan D.">
+      <label>GCash number</label><input type="text" id="pnum" value="${esc(st.pay_number)}" placeholder="09XX XXX XXXX">
+      <label>Paalala sa user</label><textarea id="pnote">${esc(st.pay_note)}</textarea>
+      <button class="btn" type="submit" style="margin-top:12px">I-save</button></form>`;
+    $('#stf').onsubmit = async (e) => {
+      e.preventDefault();
+      try {
+        await api('PUT', '/api/admin/settings', { premium_required: $('#preq').checked ? '1' : '0', price: $('#price').value, plan_days: $('#days').value, pay_method: $('#meth').value, pay_name: $('#pname').value, pay_number: $('#pnum').value, pay_note: $('#pnote').value });
+        S.config.premium_required = $('#preq').checked;
+        toast('Na-save ang settings.');
+      } catch (err) { toast(err.message); }
+    };
+  }
   async function admResults(el) {
     const rows = await api('GET', '/api/admin/attempts');
     el.innerHTML = `<div class="card table-wrap" style="padding:8px"><table><thead><tr><th>User</th><th>Exam</th><th>Score</th><th class="hide-mobile">Petsa</th></tr></thead><tbody>
@@ -637,8 +834,11 @@
     document.querySelectorAll('.modal-bg').forEach((m) => m.remove());
     const parts = (location.hash.replace(/^#\/?/, '') || '').split('/');
     const [p0, p1] = parts;
-    if (!S.user) { if (p0 === 'register') return viewAuth('register'); return viewAuth('login'); }
+    if (!S.user) { if (p0 === 'register') return viewAuth('register'); if (p0 === 'forgot') return viewForgot(); return viewAuth('login'); }
+    if (S.config.verify && !S.user.email_verified) return viewVerify();
     try {
+      if (p0 === 'sets') return await viewSets(p1);
+      if (p0 === 'premium') return await viewPremium();
       if (p0 === 'login' || p0 === 'register' || !p0) return await viewHome();
       if (p0 === 'practice') return viewPractice();
       if (p0 === 'exam') return await viewExam(p1);
@@ -649,6 +849,8 @@
       return go('#/');
     } catch (e) {
       if (e.status === 401) { S.user = null; return viewAuth('login'); }
+      if (e.code === 'unverified') { S.user.email_verified = false; return viewVerify(); }
+      if (e.offline) return;
       shell('', `<div class="card empty"><p>${esc(e.message)}</p><a class="btn" href="#/">Bumalik sa Home</a></div>`);
     }
   }
@@ -656,13 +858,19 @@
   document.addEventListener('visibilitychange', () => { if (document.hidden) saveAnswers(); });
   window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); window._installPrompt = e; });
 
-  (async function init() {
+  async function refreshMe() {
+    const me = await api('GET', '/api/me');
+    S.user = me.user; S.config = me.config; S.premium = me.premium;
+  }
+  async function init() {
+    if (!navigator.onLine) { showOffline(true); return; }
     try {
-      const [me, meta] = await Promise.all([api('GET', '/api/me'), api('GET', '/api/meta')]);
-      S.user = me.user; S.meta = meta;
-    } catch { $app.innerHTML = '<div class="boot">Hindi makakonekta sa server. I-refresh ang page.</div>'; return; }
+      const [, meta] = await Promise.all([refreshMe(), api('GET', '/api/meta')]);
+      S.meta = meta;
+    } catch (e) { if (!e.offline) $app.innerHTML = '<div class="boot">Hindi makakonekta sa server. I-refresh ang page.</div>'; return; }
     route();
-  })();
+  }
+  init();
 
   if ('serviceWorker' in navigator) window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js').catch(() => {}));
 })();

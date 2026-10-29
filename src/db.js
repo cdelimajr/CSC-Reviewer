@@ -61,13 +61,53 @@ CREATE TABLE IF NOT EXISTS attempts (
 );
 CREATE INDEX IF NOT EXISTS idx_attempts_user ON attempts(user_id, started_at);
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
+CREATE TABLE IF NOT EXISTS email_codes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  email TEXT NOT NULL COLLATE NOCASE,
+  purpose TEXT NOT NULL,
+  code_hash TEXT NOT NULL,
+  expires_at INTEGER NOT NULL,
+  tries INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_codes_email ON email_codes(email, purpose);
+CREATE TABLE IF NOT EXISTS exam_sets (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  mode TEXT NOT NULL,
+  number INTEGER NOT NULL,
+  title TEXT NOT NULL,
+  items TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_sets_mode ON exam_sets(mode, number);
+CREATE TABLE IF NOT EXISTS payments (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  amount TEXT NOT NULL DEFAULT '',
+  method TEXT NOT NULL DEFAULT 'GCash',
+  reference TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending',
+  note TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL,
+  decided_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_payments_status ON payments(status, created_at);
 `;
 
 // Convert libSQL rows into plain objects.
 const plain = (rs) => rs.rows.map((r) => Object.fromEntries(rs.columns.map((c, i) => [c, r[i]])));
 
 const db = {
-  init: () => client.executeMultiple(SCHEMA),
+  init: async () => {
+    await client.executeMultiple(SCHEMA);
+    // Columns added after the first release (ignored if they already exist).
+    for (const sql of [
+      'ALTER TABLE users ADD COLUMN email_verified INTEGER NOT NULL DEFAULT 0',
+      'ALTER TABLE users ADD COLUMN premium_until INTEGER NOT NULL DEFAULT 0',
+      'ALTER TABLE attempts ADD COLUMN set_id INTEGER',
+    ]) {
+      try { await client.execute(sql); } catch (e) { if (!/duplicate column/i.test(e.message)) throw e; }
+    }
+  },
   all: async (sql, ...args) => plain(await client.execute({ sql, args })),
   get: async (sql, ...args) => plain(await client.execute({ sql, args }))[0],
   run: async (sql, ...args) => {

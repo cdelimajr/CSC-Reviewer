@@ -6,8 +6,7 @@
   "scripts": {
     "start": "node --no-warnings src/server.js",
     "dev": "node --no-warnings --watch src/server.js",
-    "test": "node --no-warnings test/smoke.js",
-    "build:offline": "node scripts/build-offline.js"
+    "test": "node --no-warnings test/smoke.js"
   },
   "engines": {
     "node": ">=20"

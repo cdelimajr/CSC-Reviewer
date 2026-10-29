@@ -528,4 +528,7 @@ function generate(subject) {
   return null;
 }
 
-module.exports = { generate, shuffle, GENERATORS };
+module.exports = { generate, shuffle, GENERATORS, helpers: { ri, pick, shuffle, gcd, peso, fmt, ord, mk, numDistractors, misspell, variants }, lists: { VOCAB, SALITA, SURNAMES, FIRST, SPELL } };
+
+// More question types (they add themselves to GENERATORS).
+require('./generators-extra');

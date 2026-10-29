@@ -1,0 +1,96 @@
+# Builds the Android APK, Windows EXE and an unsigned iPhone IPA.
+# All three open the online CSE Reviewer at APP_URL (set it under
+# Settings → Secrets and variables → Actions → Variables → APP_URL).
+# Download the files from the run's "Artifacts", or from Releases when run manually.
+name: Build apps
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ['apps/**', 'public/icons/**', '.github/workflows/apps.yml']
+  pull_request:
+    paths: ['apps/**', '.github/workflows/apps.yml']
+
+permissions:
+  contents: write
+
+env:
+  APP_URL: ${{ vars.APP_URL || 'https://cse-reviewer.onrender.com' }}
+
+jobs:
+  android:
+    runs-on: ubuntu-latest
+    defaults: { run: { working-directory: apps/mobile } }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm, cache-dependency-path: apps/mobile/package-lock.json }
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: 21 }
+      - run: npm ci
+      - run: npm run android
+      - name: App icons and splash screen
+        run: npx @capacitor/assets generate --android --iconBackgroundColor '#1e40af' --iconBackgroundColorDark '#1e40af' --splashBackgroundColor '#1e40af' --splashBackgroundColorDark '#1e40af'
+      - name: Build APK
+        working-directory: apps/mobile/android
+        run: ./gradlew assembleDebug --no-daemon
+      - run: cp android/app/build/outputs/apk/debug/app-debug.apk CSE-Reviewer.apk
+      - uses: actions/upload-artifact@v4
+        with: { name: CSE-Reviewer-Android, path: apps/mobile/CSE-Reviewer.apk }
+
+  windows:
+    runs-on: windows-latest
+    defaults: { run: { working-directory: apps/desktop } }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm, cache-dependency-path: apps/desktop/package-lock.json }
+      - run: npm ci
+      - name: Point the app to APP_URL
+        shell: bash
+        run: |
+          echo "{ \"url\": \"$APP_URL\" }" > app-config.json
+      - run: npm run dist:win
+      - uses: actions/upload-artifact@v4
+        with: { name: CSE-Reviewer-Windows, path: apps/desktop/dist/*.exe }
+
+  ios:
+    # Unsigned build. To install on an iPhone it must be signed: with a paid Apple Developer
+    # account (App Store / TestFlight), or for testing with a free Apple ID using Sideloadly or AltStore.
+    runs-on: macos-latest
+    continue-on-error: true
+    defaults: { run: { working-directory: apps/mobile } }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm, cache-dependency-path: apps/mobile/package-lock.json }
+      - run: npm ci
+      - run: npm run ios
+      - name: App icons and splash screen
+        run: npx @capacitor/assets generate --ios --iconBackgroundColor '#1e40af' --splashBackgroundColor '#1e40af' --splashBackgroundColorDark '#1e40af'
+      - name: Build unsigned IPA
+        run: |
+          xcodebuild -workspace ios/App/App.xcworkspace -scheme App -configuration Release -sdk iphoneos \
+            -derivedDataPath build CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" build
+          mkdir -p Payload && cp -R build/Build/Products/Release-iphoneos/App.app Payload/
+          zip -qr CSE-Reviewer-unsigned.ipa Payload
+      - uses: actions/upload-artifact@v4
+        with: { name: CSE-Reviewer-iPhone-unsigned, path: apps/mobile/CSE-Reviewer-unsigned.ipa }
+
+  release:
+    # Publish the files on the Releases page when the workflow is started by hand.
+    if: github.event_name == 'workflow_dispatch'
+    needs: [android, windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { path: files }
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: apps-${{ github.run_number }}
+          name: CSE Reviewer apps (build ${{ github.run_number }})
+          body: |
+            Android: CSE-Reviewer.apk · Windows: Setup at portable .exe · iPhone: unsigned .ipa (kailangang i-sign bago ma-install).
+            Ang mga app ay nagbubukas ng ${{ env.APP_URL }} at kailangan ng internet.
+          files: files/**/*
