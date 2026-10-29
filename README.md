@@ -1,6 +1,6 @@
 # CSE Reviewer
 
-Reviewer at mock exam para sa Philippine Civil Service Exam (Career Service Exam), Professional at Subprofessional. Website na gumagana sa computer at phone, may Android app (APK), Windows app (EXE) at iPhone project. **Kailangan ng internet** sa lahat ng bersyon.
+Reviewer at mock exam para sa Philippine Civil Service Exam (Career Service Exam), Professional at Subprofessional. Website na gumagana sa computer at phone, may Android app (APK), Windows app (EXE) at iPhone project. **Gumagana kahit offline** pagkatapos ng unang login.
 
 ## Mga feature
 - **Mock exam na kahawig ng totoong CSE:** Professional na 170 tanong sa 3 oras 10 minuto, Subprofessional na 165 tanong sa 2 oras 40 minuto, 4 na pagpipilian (A–D), 80% passing rate, nakahati sa Verbal, Analytical/Clerical, Numerical at General Information.
@@ -9,6 +9,7 @@ Reviewer at mock exam para sa Philippine Civil Service Exam (Career Service Exam
 - **Practice kada subject** na may agarang tama/mali at paliwanag (laging libre).
 - **Account na may aktibong email:** may verification code sa email, forgot password, email ng resulta pagkatapos ng mock exam, at progress report.
 - **Premium (bayad) para sa mock exams:** manual na GCash. Nagbabayad ang user, inilalagay ang reference number, at ang admin ang nag-a-approve. May email sa admin at sa user. Naka-off ito hangga't hindi binubuksan sa Admin → Settings.
+- **Gumagana offline:** pagkatapos mag-login nang may internet, nase-save sa device ang app, 150 practice na tanong kada subject, at ang 3 pinakabagong exam set kada level (kung may Premium). Offline, pwedeng mag-practice at sumagot ng mga set na ito. Ise-save online ang mga resulta kapag may internet na, at saka kukuha ng bagong tanong. Kailangan pa rin ng internet para sa login/register, email verification, Premium/bayad, admin, at "Bagong halo" na mock exam.
 - **Admin panel:** overview, payments, users (gawing admin, Premium, i-disable, reset password, report), exam sets, mga tanong (dagdag/edit/import), resulta, settings.
 
 > Hindi inilalabas ng CSC ang eksaktong bilang ng tanong kada subject, kaya tantiya ang hati. Hindi ito opisyal na produkto ng Civil Service Commission.
@@ -44,8 +45,8 @@ Kapag walang `TURSO_DATABASE_URL`, gumagamit ito ng lokal na SQLite file sa `dat
 Sa libreng Render plan, natutulog ang server kapag 15 minutong walang gumagamit, kaya mga isang minuto ang unang bukas pagkatapos noon.
 
 ## Android, Windows at iPhone apps
-Nasa `apps/` ang mga app. Binubuksan nila ang online CSE Reviewer, kaya kailangan munang naka-deploy ito.
-1. Sa GitHub repo: **Settings → Secrets and variables → Actions → Variables**, gumawa ng `APP_URL` (hal. `https://cse-reviewer.onrender.com`).
+Nasa `apps/` ang mga app. Kasama na sa loob ng app ang mga screen (kinokopya mula sa `public/`), kaya bumubukas ito kahit offline. Kumokonekta ito sa online CSE Reviewer para mag-login, kumuha ng bagong tanong, at mag-save ng resulta, kaya kailangan munang naka-deploy ito. Kapag binago ang `public/`, gumawa ng bagong build para makuha ito ng mga app.
+1. Sa GitHub repo: **Settings → Secrets and variables → Actions → Variables**, gumawa ng `APP_URL` (hal. `https://cse-reviewer-7lmg.onrender.com`).
 2. Sa **Actions → Build apps → Run workflow**. Pagkatapos ng ilang minuto, nasa **Releases** na ang:
    - `CSE-Reviewer.apk` para sa Android (i-allow ang "Install unknown apps" kapag ini-install).
    - `CSE-Reviewer-…-Setup.exe` at `…-portable.exe` para sa Windows.

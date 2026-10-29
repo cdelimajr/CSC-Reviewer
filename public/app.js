@@ -9,39 +9,119 @@
   const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const $ = (sel, root = document) => root.querySelector(sel);
   const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
+  // The website calls its own server. The phone/desktop apps set window.CSE_API (see config.js) and log in with a token.
+  const API = String(window.CSE_API || '').replace(/\/$/, '');
+  const IS_APP = !!API;
+
+  /* Small wrapper around localStorage (it can be full or blocked). */
+  const store = {
+    get(k, def = null) { try { const v = localStorage.getItem(k); return v == null ? def : JSON.parse(v); } catch { return def; } },
+    set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); return true; } catch { return false; } },
+    del(k) { try { localStorage.removeItem(k); } catch { /* ignore */ } },
+  };
+  const uk = (k) => `${k}-${S.user ? S.user.id : 0}`; // key for the logged-in user
+
   async function api(method, url, body) {
     let res;
-    try {
-      res = await fetch(url, { method, headers: body ? { 'Content-Type': 'application/json' } : {}, body: body ? JSON.stringify(body) : undefined, credentials: 'same-origin' });
-    } catch {
-      showOffline(true);
-      const e = new Error('Walang internet. Kailangan ng internet para magamit ang CSE Reviewer.'); e.offline = true; throw e;
+    const headers = body ? { 'Content-Type': 'application/json' } : {};
+    if (IS_APP) {
+      headers['X-App'] = '1';
+      const t = store.get('cse-token');
+      if (t) headers.Authorization = 'Bearer ' + t;
     }
+    try {
+      res = await fetch(API + url, { method, headers, body: body ? JSON.stringify(body) : undefined, credentials: IS_APP ? 'omit' : 'same-origin' });
+    } catch {
+      setOffline(true);
+      const e = new Error('Walang internet. Kailangan ng internet para dito.'); e.offline = true; throw e;
+    }
+    setOffline(false);
     let data = null;
     try { data = await res.json(); } catch { /* empty */ }
+    if (data && data.token) store.set('cse-token', data.token);
     if (!res.ok) { const e = new Error((data && data.error) || 'May problema sa koneksyon.'); e.status = res.status; e.code = data && data.code; throw e; }
     return data;
   }
+  // GET that remembers the last answer, so the screen still works offline.
+  async function cachedGet(url) {
+    const key = uk('cse-c') + url;
+    try { const d = await api('GET', url); store.set(key, d); return d; } catch (e) {
+      const d = e.offline ? store.get(key) : null;
+      if (d) return d;
+      throw e;
+    }
+  }
 
-  /* The app only works online: cover the screen while there is no connection. */
-  function showOffline(on) {
+  /* Offline: a small banner on top. Practice and downloaded exam sets keep working. */
+  function setOffline(on) {
+    if (!!S.offline === on) return;
+    S.offline = on;
     let el = document.getElementById('offline');
-    if (!on) { if (el) { el.remove(); if (S.exam) saveAnswers(true); } return; }
+    if (!on) { if (el) el.remove(); syncSoon(); return; }
     if (el) return;
     el = document.createElement('div');
     el.id = 'offline';
-    el.className = 'offline-cover';
-    el.innerHTML = `<div class="card" style="max-width:380px;text-align:center">
-      <div style="font-size:44px">📡</div><h2 style="margin:6px 0">Walang internet</h2>
-      <p class="muted">Kailangan ng internet para magamit ang CSE Reviewer.${S.exam ? ' Naka-save sa device ang mga sagot mo at ise-save ito kapag bumalik ang internet.' : ''}</p>
-      <button class="btn block" id="retryNet">Subukan ulit</button></div>`;
-    document.body.appendChild(el);
-    $('#retryNet').onclick = async () => {
-      try { await fetch('/api/meta', { cache: 'no-store' }); showOffline(false); if (!S.meta) init(); } catch { toast('Wala pa ring internet.'); }
-    };
+    el.className = 'offline-bar';
+    el.innerHTML = '📡 <b>Offline ka.</b> Gumagana pa rin ang practice at ang mga na-download na exam set. Ise-save online ang mga resulta mo kapag may internet na.';
+    document.body.prepend(el);
   }
-  window.addEventListener('offline', () => showOffline(true));
-  window.addEventListener('online', () => { showOffline(false); if (!S.meta) init(); });
+  window.addEventListener('offline', () => setOffline(true));
+  window.addEventListener('online', () => { syncSoon(); if (!S.meta) init(); });
+
+  /* Exams taken offline are kept on the device until they are saved online. */
+  const local = {
+    all: () => store.get(uk('cse-local'), []),
+    get: (id) => local.all().find((a) => a.id === id),
+    save(a) { const list = local.all().filter((x) => x.id !== a.id); list.push(a); if (!store.set(uk('cse-local'), list)) toast('Puno na ang storage ng device.'); },
+    del(id) { store.set(uk('cse-local'), local.all().filter((x) => x.id !== id)); },
+  };
+  const isLocal = (id) => String(id).startsWith('L');
+  const pack = () => { const p = store.get(uk('cse-pack')); return p && S.user && p.user_id === S.user.id ? p : null; };
+
+  async function refreshPack(force) {
+    if (!S.user || (S.config.verify && !S.user.email_verified)) return;
+    const p = pack();
+    if (!force && p && Date.now() - p.created_at < 6 * 3600e3 && p.premium === !!S.premium) return;
+    try {
+      const fresh = await api('GET', '/api/offline/pack');
+      if (!store.set(uk('cse-pack'), fresh)) {
+        // Not enough space: keep fewer practice questions.
+        Object.keys(fresh.practice).forEach((k) => (fresh.practice[k] = fresh.practice[k].slice(0, 60)));
+        store.set(uk('cse-pack'), fresh);
+      }
+    } catch { /* try again later */ }
+  }
+
+  // Send offline results to the server, then download fresh questions.
+  let syncing = null, syncT = null;
+  function syncSoon() { clearTimeout(syncT); syncT = setTimeout(() => syncNow(), 800); }
+  async function syncNow() {
+    if (syncing || !S.user || (S.config.verify && !S.user.email_verified)) return syncing;
+    syncing = (async () => {
+      let n = 0;
+      for (const p of store.get(uk('cse-psub'), [])) {
+        try {
+          await api('POST', `/api/attempts/${p.id}/submit`, { answers: p.answers });
+          store.set(uk('cse-psub'), store.get(uk('cse-psub'), []).filter((x) => x.id !== p.id));
+          store.del('cse-ans-' + p.id); n++;
+        } catch (e) { if (e.offline) return; if (e.status === 404 || e.status === 409) store.set(uk('cse-psub'), store.get(uk('cse-psub'), []).filter((x) => x.id !== p.id)); }
+      }
+      const done = local.all().filter((a) => a.finished_at);
+      if (done.length) {
+        try {
+          const r = await api('POST', '/api/offline/sync', { attempts: done });
+          const map = store.get(uk('cse-map'), {});
+          for (const [cid, id] of Object.entries(r.saved)) { map[cid] = id; local.del(cid); n++; }
+          for (const cid of Object.keys(r.rejected)) local.del(cid);
+          store.set(uk('cse-map'), map);
+        } catch (e) { if (e.offline) return; }
+      }
+      if (n) toast(`Na-save na online ang ${n} exam na ginawa mo habang offline.`);
+      await refreshPack();
+    })().finally(() => { syncing = null; });
+    return syncing;
+  }
+
   function toast(msg) {
     const t = document.getElementById('toast');
     t.textContent = msg; t.classList.add('show');
@@ -58,6 +138,29 @@
   const subjName = (k) => (S.meta?.subjects[k]?.name) || k;
   const go = (hash) => { if (location.hash === hash) route(); else location.hash = hash; };
   function stopTimer() { clearInterval(S.timer); S.timer = null; }
+  const shuffle = (arr) => { const a = arr.slice(); for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; };
+  function gradeLocal(items, answers) {
+    const breakdown = {}; let score = 0;
+    items.forEach((it, i) => {
+      const b = (breakdown[it.subject] ||= { correct: 0, total: 0 }); b.total++;
+      if (answers[i] !== undefined && Number(answers[i]) === it.answer) { b.correct++; score++; }
+    });
+    return { score, breakdown };
+  }
+  // Results saved on the device but not yet online, added to the list and stats from the server.
+  function withLocal(list, stats) {
+    const mine = local.all();
+    const view = mine.map((a) => ({ ...a, passing: S.meta.exams[a.mode]?.passing || 80, items: undefined, pending: true }));
+    list = [...view, ...(list || [])].sort((a, b) => (b.finished_at || b.started_at) - (a.finished_at || a.started_at));
+    stats = JSON.parse(JSON.stringify(stats || { attempts: 0, subjects: {}, mocks: [] }));
+    for (const a of mine.filter((x) => x.finished_at)) {
+      stats.attempts++;
+      for (const [k, b] of Object.entries(a.breakdown || {})) { const x = (stats.subjects[k] ||= { correct: 0, total: 0 }); x.correct += b.correct; x.total += b.total; }
+      if (a.mode !== 'practice') stats.mocks.push({ mode: a.mode, pct: pct(a.score, a.total), at: a.finished_at });
+    }
+    stats.mocks.sort((a, b) => a.at - b.at);
+    return { list, stats };
+  }
 
   function modal(html, onMount) {
     const bg = document.createElement('div');
@@ -86,7 +189,7 @@
     const links = [['home', '#/', 'Home', '🏠'], ['practice', '#/practice', 'Practice', '📝'], ['history', '#/history', 'Resulta', '📊'], ...(isAdmin ? [['admin', '#/admin', 'Admin', '🛠️']] : []), ['account', '#/account', 'Account', '👤']];
     $app.innerHTML = `
       <header class="topbar">
-        <a class="brand" href="#/"><img src="/icons/icon.svg" alt="">CSE Reviewer</a>
+        <a class="brand" href="#/"><img src="icons/icon.svg" alt="">CSE Reviewer</a>
         <span class="spacer"></span>
         <nav class="nav-desktop row" style="gap:2px">${links.map(([k, h, l]) => `<a class="link ${active === k ? 'active' : ''}" href="${h}">${l}</a>`).join('')}</nav>
       </header>
@@ -101,7 +204,7 @@
     $app.innerHTML = `
       <main class="wrap">
         <div class="hero">
-          <img class="logo" src="/icons/icon.svg" alt="">
+          <img class="logo" src="icons/icon.svg" alt="">
           <h1>CSE Reviewer</h1>
           <p class="muted">Mag-review para sa Civil Service Exam gamit ang mock exam na kahawig ng totoong exam: parehong format, dami ng tanong, oras, at 4 na pagpipilian.</p>
         </div>
@@ -145,7 +248,7 @@
   }
 
   function viewVerify() {
-    $app.innerHTML = `<main class="wrap"><div class="hero"><img class="logo" src="/icons/icon.svg" alt=""><h1>I-verify ang iyong email</h1>
+    $app.innerHTML = `<main class="wrap"><div class="hero"><img class="logo" src="icons/icon.svg" alt=""><h1>I-verify ang iyong email</h1>
       <p class="muted">Nagpadala kami ng 6-digit na code sa <b>${esc(S.user.email)}</b>. Tingnan din ang Spam o Promotions folder.</p></div>
       <div class="card auth"><form id="vf"><label for="code">Code</label>
         <input id="code" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="123456" style="font-size:24px;letter-spacing:6px;text-align:center">
@@ -162,7 +265,7 @@
 
   function viewForgot() {
     let email = '';
-    $app.innerHTML = `<main class="wrap"><div class="hero"><img class="logo" src="/icons/icon.svg" alt=""><h1>Nakalimutan ang password</h1>
+    $app.innerHTML = `<main class="wrap"><div class="hero"><img class="logo" src="icons/icon.svg" alt=""><h1>Nakalimutan ang password</h1>
       <p class="muted">Magpapadala kami ng code sa email mo para makagawa ka ng bagong password.</p></div>
       <div class="card auth" id="fbox"><form id="ff"><label for="email">Email</label><input id="email" type="email" autocomplete="email">
         <div class="err" id="err"></div><button class="btn block" type="submit">Ipadala ang code</button></form>
@@ -188,22 +291,30 @@
     const e = S.meta.exams[mode];
     if (!e) return go('#/');
     shell('home', '<div class="empty">Naglo-load…</div>');
-    const sets = await api('GET', '/api/sets?mode=' + mode);
+    const saved = (pack()?.sets || []).filter((x) => x.mode === mode);
+    let sets;
+    try { sets = await api('GET', '/api/sets?mode=' + mode); } catch (err) {
+      if (!err.offline) throw err;
+      sets = saved.map((x) => ({ id: x.id, number: x.number, created_at: x.created_at, taken: 0 }));
+    }
+    const offline = S.offline;
+    if (offline) sets = sets.filter((x) => saved.some((y) => y.id === x.id));
     const locked = S.config.premium_required && !S.premium;
     shell('home', `
       <p class="small" style="margin:0"><a href="#/">‹ Home</a></p>
       <h1>${esc(e.title.replace(' Mock Exam', ''))}</h1>
       <p class="muted" style="margin-top:0">${e.items} tanong · ${fmtDur(e.minutes)} · Passing ${e.passing}%. Pumili ng exam set, mula pinakabago hanggang pinakaluma.</p>
       ${locked ? `<div class="notice" style="margin:12px 0">🔒 Kailangan ng <b>Premium</b> para sa mock exams. <a href="#/premium">Kumuha ng Premium →</a></div>` : ''}
-      <div class="card" style="margin-bottom:12px"><div class="row between"><div><h3>Bagong halo ng tanong</h3><p class="muted small" style="margin:0">Bagong random na ${e.items} tanong na hindi pa lumalabas sa mga set.</p></div>
-        <button class="btn secondary" data-random>Simulan</button></div></div>
+      ${offline ? `<div class="notice" style="margin-bottom:12px">Offline ka, kaya ang mga exam set lang na na-download sa device na ito ang makikita.${saved.length ? '' : ' Wala pang na-download. Buksan ang app habang may internet para ma-download ang pinakabagong mga set.'}</div>`
+        : `<div class="card" style="margin-bottom:12px"><div class="row between"><div><h3>Bagong halo ng tanong</h3><p class="muted small" style="margin:0">Bagong random na ${e.items} tanong na hindi pa lumalabas sa mga set.</p></div>
+        <button class="btn secondary" data-random>Simulan</button></div></div>`}
       <div class="list">${sets.map((x, i) => `
         <div class="list-item">
           <div class="grow"><div class="row" style="gap:6px"><b>Set ${x.number}</b>${i === 0 ? '<span class="pill ok">Pinakabago</span>' : ''}</div>
-          <div class="muted small">Inilabas ${new Date(x.created_at).toLocaleDateString('en-PH', { year: 'numeric', month: 'short', day: 'numeric' })}${x.taken ? ` · Nasubukan ${x.taken}x · Best ${x.best}%` : ''}</div></div>
+          <div class="muted small">Inilabas ${new Date(x.created_at).toLocaleDateString('en-PH', { year: 'numeric', month: 'short', day: 'numeric' })}${x.taken ? ` · Nasubukan ${x.taken}x · Best ${x.best}%` : ''}${saved.some((y) => y.id === x.id) ? ' · ⬇ Pwede offline' : ''}</div></div>
           <button class="btn small" data-set="${x.id}">${x.taken ? 'Ulitin' : 'Simulan'}</button>
         </div>`).join('') || '<div class="card empty">Wala pang exam set.</div>'}</div>`);
-    $('[data-random]').onclick = () => startExam(mode);
+    if ($('[data-random]')) $('[data-random]').onclick = () => startExam(mode);
     $$('[data-set]').forEach((b) => (b.onclick = () => startExam(mode, { set_id: +b.dataset.set })));
   }
 
@@ -246,7 +357,9 @@
   /* ---------------- home ---------------- */
   async function viewHome() {
     shell('home', '<div class="empty">Naglo-load…</div>');
-    const [list, stats] = await Promise.all([api('GET', '/api/attempts'), api('GET', '/api/stats'), refreshMe()]);
+    refreshMe().catch(() => {});
+    const [l0, s0] = await Promise.all([cachedGet('/api/attempts').catch(() => []), cachedGet('/api/stats').catch(() => null)]);
+    const { list, stats } = withLocal(l0, s0);
     const open = list.filter((a) => !a.finished_at);
     const done = list.filter((a) => a.finished_at);
     const mocks = stats.mocks;
@@ -265,6 +378,7 @@
       ${S.config.premium_required && !S.premium ? '<div class="notice" style="margin:8px 0">Libre ang practice. Para sa mock exams, <a href="#/premium">kumuha ng Premium →</a></div>' : ''}
       <p class="muted" style="margin-top:0">Pumili ng mock exam o mag-practice kada subject.</p>
       ${open.length ? `<div class="notice" style="margin:12px 0">May hindi ka pa natatapos na exam: <b>${esc(open[0].title)}</b>. <a href="#/exam/${open[0].id}">Ituloy ito →</a></div>` : ''}
+      ${list.some((a) => a.pending && a.finished_at) ? '<p class="muted small">⏳ May mga resulta kang ginawa offline. Ise-save ang mga ito online kapag may internet na.</p>' : ''}
       <div class="grid two" style="margin-top:12px">
         ${examCard(ex.pro, 'Para sa second-level positions sa gobyerno (hal. Admin Officer, Analyst).')}
         ${examCard(ex.subpro, 'Para sa first-level positions (hal. clerk, aide, technician).')}
@@ -297,7 +411,7 @@
     const p = pct(a.score, a.total);
     const pass = p >= (a.passing || 80);
     return `<a class="list-item" href="#/result/${a.id}">
-      <div class="grow"><div class="ellipsis"><b>${esc(a.title)}</b></div><div class="muted small">${fmtDate(a.finished_at || a.started_at)}</div></div>
+      <div class="grow"><div class="ellipsis"><b>${esc(a.title)}</b></div><div class="muted small">${fmtDate(a.finished_at || a.started_at)}${a.pending ? ' · ⏳ Offline' : ''}</div></div>
       ${a.finished_at ? `<span class="pill ${a.mode === 'practice' ? '' : pass ? 'ok' : 'bad'}">${p}%</span>` : '<span class="pill warn">Hindi tapos</span>'}
     </a>`;
   }
@@ -308,13 +422,37 @@
       const ok = await confirmBox(`Simulan ang ${e.title}?`, `Mayroon itong <b>${e.items} tanong</b> at <b>${fmtDur(e.minutes)}</b> na oras, tulad ng totoong CSE. Tuloy-tuloy ang timer kahit isara mo ang app, pero naka-save ang mga sagot mo. Kailangan ng ${e.passing}% para pumasa.`, 'Simulan na');
       if (!ok) return;
     }
+    if (S.offline || !navigator.onLine) return startLocal(mode, opts);
     try {
       const a = await api('POST', '/api/attempts', { mode, ...opts });
       go('#/exam/' + a.id);
     } catch (e) {
       if (e.code === 'premium') { toast(e.message); return go('#/premium'); }
-      if (!e.offline) toast(e.message);
+      if (e.offline) return startLocal(mode, opts);
+      toast(e.message);
     }
+  }
+  // Start an exam from the questions saved on the device.
+  function startLocal(mode, opts = {}) {
+    const p = pack();
+    if (!p) return toast('Wala pang na-download na tanong. Buksan muna ang app habang may internet.');
+    let items, title, limit = 0, setId = null;
+    if (mode === 'practice') {
+      const pool = p.practice[opts.subject] || [];
+      if (!pool.length) return toast('Walang na-download na tanong para sa subject na ito.');
+      items = shuffle(pool).slice(0, Math.min(opts.count || 20, pool.length));
+      const topics = shuffle([...new Set(items.map((x) => x.topic))]);
+      items.sort((a, b) => topics.indexOf(a.topic) - topics.indexOf(b.topic));
+      title = `Practice: ${subjName(opts.subject)} (${items.length} items)`;
+      limit = (Number(opts.minutes) || 0) * 60;
+    } else {
+      const set = opts.set_id ? p.sets.find((x) => x.id === opts.set_id) : null;
+      if (!set) return toast('Offline ka. Pumili ng exam set na may "⬇ Pwede offline".');
+      items = set.items; title = set.title; setId = set.id; limit = S.meta.exams[mode].minutes * 60;
+    }
+    const id = 'L' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+    local.save({ id, client_id: id, mode, set_id: setId, subject: opts.subject, title, items, answers: {}, time_limit_sec: limit, started_at: Date.now(), finished_at: null, total: items.length });
+    go('#/exam/' + id);
   }
 
   /* ---------------- practice setup ---------------- */
@@ -347,7 +485,18 @@
 
   /* ---------------- exam ---------------- */
   async function viewExam(id) {
-    const a = await api('GET', '/api/attempts/' + id);
+    let a;
+    if (isLocal(id)) {
+      const la = local.get(id);
+      if (!la) { const sid = store.get(uk('cse-map'), {})[id]; return go(sid ? '#/result/' + sid : '#/'); }
+      a = { ...la, now: Date.now() };
+    } else {
+      a = await cachedGet('/api/attempts/' + id);
+      if (!a.finished_at && store.get(uk('cse-psub'), []).some((x) => String(x.id) === String(id))) {
+        toast('Naisumite mo na ito. Lalabas ang resulta kapag may internet na.'); return go('#/');
+      }
+      if (S.offline) a = { ...a, now: Date.now() }; // saved copy: use the device clock for the timer
+    }
     if (a.finished_at) return go('#/result/' + id);
     const practice = a.mode === 'practice';
     let saved = {};
@@ -456,6 +605,7 @@
   async function saveAnswers(force) {
     const ex = S.exam; if (!ex || (!ex.dirty && !force)) return;
     ex.dirty = false;
+    if (isLocal(ex.a.id)) { const la = local.get(ex.a.id); if (la) local.save({ ...la, answers: ex.answers }); return; }
     try { await api('PUT', `/api/attempts/${ex.a.id}/answers`, { answers: ex.answers }); } catch { ex.dirty = true; }
   }
   function openNav() {
@@ -483,17 +633,43 @@
     const ex = S.exam; if (!ex || ex.submitting) return;
     ex.submitting = true;
     stopTimer(); clearTimeout(S.saveT);
+    const finish = () => { try { localStorage.removeItem('cse-ans-' + ex.a.id); localStorage.removeItem('cse-flag-' + ex.a.id); } catch { /* ignore */ } S.exam = null; document.onkeydown = null; };
+    if (isLocal(ex.a.id)) {
+      const la = local.get(ex.a.id);
+      const { score, breakdown } = gradeLocal(la.items, ex.answers);
+      let end = Date.now();
+      if (la.time_limit_sec) end = Math.min(end, la.started_at + la.time_limit_sec * 1000 + 60000);
+      local.save({ ...la, answers: ex.answers, score, breakdown, finished_at: end });
+      finish(); syncSoon();
+      return go('#/result/' + la.id);
+    }
     try {
       const r = await api('POST', `/api/attempts/${ex.a.id}/submit`, { answers: ex.answers });
       try { localStorage.removeItem('cse-ans-' + ex.a.id); localStorage.removeItem('cse-flag-' + ex.a.id); } catch { /* ignore */ }
       S.exam = null; document.onkeydown = null;
       go('#/result/' + r.id);
-    } catch (e) { ex.submitting = false; toast(e.message + ' Subukan ulit.'); }
+    } catch (e) {
+      if (e.offline) {
+        // Save it on the device and submit it when the internet is back.
+        const list = store.get(uk('cse-psub'), []).filter((x) => x.id !== ex.a.id);
+        list.push({ id: ex.a.id, answers: ex.answers, at: Date.now() });
+        store.set(uk('cse-psub'), list);
+        finish();
+        await confirmBox('Naisumite offline', 'Walang internet, kaya naka-save muna sa device ang mga sagot mo. Awtomatiko itong isusumite at lalabas ang score kapag may internet na.', 'Sige');
+        return go('#/');
+      }
+      ex.submitting = false; toast(e.message + ' Subukan ulit.');
+    }
   }
 
   /* ---------------- results ---------------- */
   async function viewResult(id) {
-    const a = await api('GET', '/api/attempts/' + id);
+    let a;
+    if (isLocal(id)) {
+      a = local.get(id);
+      if (!a) { const sid = store.get(uk('cse-map'), {})[id]; return go(sid ? '#/result/' + sid : '#/history'); }
+      a = { ...a, passing: S.meta.exams[a.mode]?.passing || 80 };
+    } else a = await cachedGet('/api/attempts/' + id);
     if (!a.finished_at) return go('#/exam/' + id);
     const p = pct(a.score, a.total);
     const pass = p >= a.passing;
@@ -509,6 +685,7 @@
         ${practice ? '<h2 style="margin:6px 0">Tapos na ang practice!</h2>' : pass ? '<h2 style="margin:6px 0;color:var(--ok)">🎉 PASADO!</h2>' : '<h2 style="margin:6px 0;color:var(--bad)">Hindi pa pasado</h2>'}
         <p class="muted" style="margin:0">${practice ? 'Ituloy lang ang pag-practice!' : pass ? `Lampas sa ${a.passing}% na passing rate. Galing!` : `Kailangan ng ${a.passing}% para pumasa. Kaya mo 'yan, review pa!`}</p>
         <p class="muted small">Tagal: ${mins} minuto · ${wrongCount} mali · ${blankCount} walang sagot</p>
+        ${isLocal(id) ? '<p class="muted small">⏳ Ginawa offline. Ise-save ito online kapag may internet na.</p>' : ''}
         <div class="row" style="justify-content:center"><a class="btn secondary" href="#/">Home</a><button class="btn" id="again">Ulitin (bagong set)</button></div>
       </div>
       <div class="card" style="margin-top:12px"><h3>Score kada subject</h3>${subjectBars(a.breakdown || {})}</div>
@@ -535,14 +712,16 @@
       if (practice) {
         const subject = a.items[0]?.subject || 'verbal';
         startExam('practice', { subject, count: a.total, minutes: Math.round(a.time_limit_sec / 60), level: subject === 'clerical' ? 'subpro' : 'pro' });
-      } else startExam(a.mode);
+      } else if (S.offline) go('#/sets/' + a.mode);
+      else startExam(a.mode);
     };
   }
 
   /* ---------------- history ---------------- */
   async function viewHistory() {
     shell('history', '<div class="empty">Naglo-load…</div>');
-    const [list, stats] = await Promise.all([api('GET', '/api/attempts'), api('GET', '/api/stats')]);
+    const [l0, s0] = await Promise.all([cachedGet('/api/attempts').catch(() => []), cachedGet('/api/stats').catch(() => null)]);
+    const { list, stats } = withLocal(l0, s0);
     const trend = stats.mocks.slice(-10);
     shell('history', `
       <h1>Mga resulta</h1>
@@ -557,7 +736,7 @@
       ${list.length ? `<div class="list">${list.map(attemptRow).join('')}</div>` : '<div class="card empty">Wala pang resulta.</div>'}`);
     $$('.list-item').forEach((el) => {
       const id = el.getAttribute('href').split('/').pop();
-      const a = list.find((x) => String(x.id) === id);
+      const a = list.find((x) => String(x.id) === id && !x.pending) || list.find((x) => String(x.id) === id);
       if (a && !a.finished_at) el.setAttribute('href', '#/exam/' + id);
     });
   }
@@ -579,7 +758,7 @@
       </div>
       <div class="card" style="margin-top:12px">
         <h3>I-install sa phone</h3>
-        <p class="muted small" style="margin:0 0 10px"><b>Android (Chrome):</b> pindutin ang ⋮ menu → "Add to Home screen" o "Install app".<br><b>iPhone (Safari):</b> pindutin ang Share (□↑) → "Add to Home Screen".<br>Kailangan ng internet para magamit ang app.</p>
+        <p class="muted small" style="margin:0 0 10px"><b>Android (Chrome):</b> pindutin ang ⋮ menu → "Add to Home screen" o "Install app".<br><b>iPhone (Safari):</b> pindutin ang Share (□↑) → "Add to Home Screen".<br>Gumagana ito kahit offline: ang practice at ang mga na-download na exam set. Kailangan ng internet para mag-login, magbayad, at makatanggap ng email.</p>
         <button class="btn secondary" id="install" hidden>I-install ang app</button>
       </div>
       <div class="card" style="margin-top:12px">
@@ -591,7 +770,11 @@
       e.preventDefault();
       try { await api('POST', '/api/me/password', { current: $('#cur').value, password: $('#npw').value }); toast('Napalitan na ang password.'); e.target.reset(); $('#err').textContent = ''; } catch (err) { $('#err').textContent = err.message; }
     };
-    $('#logout').onclick = async () => { await api('POST', '/api/auth/logout'); S.user = null; go('#/login'); };
+    $('#logout').onclick = async () => {
+      if (local.all().some((a) => a.finished_at) && !(await confirmBox('Mag-logout?', 'May mga resulta kang ginawa offline na hindi pa naka-save online. Mase-save pa rin ang mga ito kapag nag-login ka ulit sa device na ito.', 'Mag-logout'))) return;
+      try { await api('POST', '/api/auth/logout'); } catch { /* offline: still log out on this device */ }
+      store.del('cse-token'); store.del('cse-boot'); S.user = null; go('#/login');
+    };
     if (window._installPrompt) { const b = $('#install'); b.hidden = false; b.onclick = () => window._installPrompt.prompt(); }
   }
 
@@ -850,7 +1033,7 @@
     } catch (e) {
       if (e.status === 401) { S.user = null; return viewAuth('login'); }
       if (e.code === 'unverified') { S.user.email_verified = false; return viewVerify(); }
-      if (e.offline) return;
+      if (e.offline) return shell('', '<div class="card empty"><div style="font-size:40px">📡</div><p>Kailangan ng internet para sa bahaging ito. Pwede ka pa ring mag-practice o sumagot ng na-download na exam set.</p><a class="btn" href="#/">Bumalik sa Home</a></div>');
       shell('', `<div class="card empty"><p>${esc(e.message)}</p><a class="btn" href="#/">Bumalik sa Home</a></div>`);
     }
   }
@@ -861,16 +1044,32 @@
   async function refreshMe() {
     const me = await api('GET', '/api/me');
     S.user = me.user; S.config = me.config; S.premium = me.premium;
+    if (me.user) { store.set('cse-boot', me); syncSoon(); } else { store.del('cse-boot'); if (IS_APP) store.del('cse-token'); }
   }
   async function init() {
-    if (!navigator.onLine) { showOffline(true); return; }
     try {
       const [, meta] = await Promise.all([refreshMe(), api('GET', '/api/meta')]);
-      S.meta = meta;
-    } catch (e) { if (!e.offline) $app.innerHTML = '<div class="boot">Hindi makakonekta sa server. I-refresh ang page.</div>'; return; }
+      S.meta = meta; store.set('cse-meta', meta);
+    } catch (e) {
+      // No internet: open with the account and questions saved on this device.
+      const boot = store.get('cse-boot'), meta = store.get('cse-meta');
+      if (e.offline && boot && meta) {
+        S.user = boot.user; S.config = boot.config; S.premium = boot.premium; S.meta = meta;
+        setOffline(true);
+      } else {
+        $app.innerHTML = e.offline
+          ? '<main class="wrap"><div class="card empty" style="margin-top:18vh;text-align:center"><div style="font-size:44px">📡</div><h2 style="margin:6px 0">Walang internet</h2><p class="muted">Kailangan ng internet sa unang pagbukas para mag-login at ma-download ang mga tanong. Pagkatapos noon, gagana na ito kahit offline.</p><button class="btn" onclick="location.reload()">Subukan ulit</button></div></main>'
+          : '<div class="boot">Hindi makakonekta sa server. I-refresh ang page.</div>';
+        return;
+      }
+    }
     route();
+    if (!S.offline) syncNow();
   }
   init();
 
-  if ('serviceWorker' in navigator) window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js').catch(() => {}));
+  // The website saves itself on the device with a service worker. The apps already have the files built in.
+  if (!IS_APP && 'serviceWorker' in navigator && location.protocol.startsWith('http')) {
+    window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js').catch(() => {}));
+  }
 })();

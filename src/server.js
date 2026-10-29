@@ -80,7 +80,15 @@ async function newSession(res, userId) {
   const token = crypto.randomBytes(32).toString('hex');
   await db.run('INSERT INTO sessions (token, user_id, expires_at) VALUES (?, ?, ?)', sha(token), userId, Date.now() + SESSION_DAYS * 864e5);
   res.cookie('sid', token, { httpOnly: true, sameSite: 'lax', secure: res.req.secure, maxAge: SESSION_DAYS * 864e5, path: '/' });
+  // The phone and desktop apps can't use the cookie, so they get the token and send it as "Authorization: Bearer".
+  if (res.req.get('X-App')) res.locals.token = token;
 }
+// Session token from the cookie (website) or the Authorization header (apps).
+function sessionToken(req) {
+  const h = req.get('authorization') || '';
+  return h.startsWith('Bearer ') ? h.slice(7).trim() : readCookie(req, 'sid');
+}
+const withToken = (res, body) => (res.locals.token ? { ...body, token: res.locals.token } : body);
 function readCookie(req, name) {
   const m = (req.headers.cookie || '').split(';').map((s) => s.trim()).find((s) => s.startsWith(name + '='));
   return m ? decodeURIComponent(m.slice(name.length + 1)) : null;
@@ -98,10 +106,22 @@ function limited(key, max = 10, windowMs = 10 * 60 * 1000) {
 /* ------------------------------ app ------------------------------ */
 const app = express();
 app.set('trust proxy', 1);
-app.use(express.json({ limit: '2mb' }));
+// The apps load the screens from the device and call this server from another origin.
+// They log in with a token (not a cookie), so allowing any origin is safe here.
+app.use('/api', (req, res, next) => {
+  if (req.get('origin')) {
+    res.set('Access-Control-Allow-Origin', '*');
+    res.set('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-App');
+    res.set('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
+    res.set('Access-Control-Max-Age', '86400');
+  }
+  if (req.method === 'OPTIONS') return res.sendStatus(204);
+  next();
+});
+app.use(express.json({ limit: '4mb' }));
 
 app.use(async (req, res, next) => {
-  const token = readCookie(req, 'sid');
+  const token = sessionToken(req);
   if (token && req.path.startsWith('/api/')) {
     try {
       const row = await db.get(`SELECT u.*, s.expires_at FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token = ?`, sha(token));
@@ -133,7 +153,7 @@ app.post('/api/auth/register', wrap(async (req, res) => {
   await newSession(res, r.lastInsertRowid);
   const user = await db.get('SELECT * FROM users WHERE id = ?', r.lastInsertRowid);
   if (REQUIRE_VERIFY) await sendCode(user, 'verify');
-  res.json({ user: publicUser(user) });
+  res.json(withToken(res, { user: publicUser(user) }));
 }));
 
 app.post('/api/auth/login', wrap(async (req, res) => {
@@ -143,11 +163,11 @@ app.post('/api/auth/login', wrap(async (req, res) => {
   if (!u || !checkPassword(String(req.body.password || ''), u)) return res.status(401).json({ error: 'Mali ang email o password.' });
   if (u.disabled) return res.status(403).json({ error: 'Naka-disable ang account na ito. Makipag-ugnayan sa admin.' });
   await newSession(res, u.id);
-  res.json({ user: publicUser(u) });
+  res.json(withToken(res, { user: publicUser(u) }));
 }));
 
 app.post('/api/auth/logout', async (req, res) => {
-  const token = readCookie(req, 'sid');
+  const token = sessionToken(req);
   if (token) await db.run('DELETE FROM sessions WHERE token = ?', sha(token));
   res.clearCookie('sid', { path: '/' });
   res.json({ ok: true });
@@ -325,6 +345,85 @@ async function statsFor(userId) {
   return { attempts: rows.length, subjects: subj, mocks };
 }
 app.get('/api/stats', auth, verified, wrap(async (req, res) => res.json(await statsFor(req.user.id))));
+
+/* ------------------------------ offline use ------------------------------ */
+// Questions the app keeps on the device so it works without internet.
+const OFFLINE_PRACTICE = Number(process.env.OFFLINE_PRACTICE ?? 150); // per subject
+const OFFLINE_SETS = Number(process.env.OFFLINE_SETS ?? 3); // newest sets per level
+const fullItems = (items) => items.map((it) => ({
+  subject: it.subject, topic: it.topic, question: it.question, passage: it.passage || '', choices: it.choices,
+  answer: it.answer, explanation: it.explanation || '',
+}));
+
+app.get('/api/offline/pack', auth, verified, wrap(async (req, res) => {
+  const st = await getSettings();
+  const premium = hasPremium(req.user, st);
+  const practice = {};
+  for (const subject of Object.keys(SUBJECTS)) {
+    const ex = await buildExam('practice', { subject, count: 100, level: subject === 'clerical' ? 'subpro' : 'pro' });
+    const more = OFFLINE_PRACTICE > 100 ? await buildExam('practice', { subject, count: OFFLINE_PRACTICE - 100, level: subject === 'clerical' ? 'subpro' : 'pro' }) : { items: [] };
+    practice[subject] = fullItems([...ex.items, ...more.items]);
+  }
+  const setsOut = [];
+  if (premium) {
+    for (const mode of Object.keys(EXAMS)) {
+      const rows = await db.all('SELECT * FROM exam_sets WHERE mode = ? ORDER BY number DESC LIMIT ?', mode, OFFLINE_SETS);
+      rows.forEach((r) => setsOut.push({ id: r.id, mode, number: r.number, title: r.title, created_at: r.created_at, items: fullItems(JSON.parse(r.items)) }));
+    }
+  }
+  res.json({ user_id: req.user.id, created_at: Date.now(), premium, practice, sets: setsOut });
+}));
+
+// Save exams that were taken offline. Each one has a client_id so it is saved only once.
+function offlineItems(items) {
+  if (!Array.isArray(items) || !items.length || items.length > 200) return null;
+  const out = [];
+  for (const it of items) {
+    if (!it || !SUBJECTS[it.subject] || typeof it.question !== 'string' || !Array.isArray(it.choices) || it.choices.length !== 4) return null;
+    const answer = Number(it.answer);
+    if (!Number.isInteger(answer) || answer < 0 || answer > 3) return null;
+    out.push({ subject: it.subject, topic: String(it.topic || '').slice(0, 80), question: it.question.slice(0, 4000), passage: String(it.passage || '').slice(0, 8000),
+      choices: it.choices.map((c) => String(c).slice(0, 1000)), answer, explanation: String(it.explanation || '').slice(0, 4000) });
+  }
+  return out;
+}
+
+app.post('/api/offline/sync', auth, verified, wrap(async (req, res) => {
+  const list = Array.isArray(req.body.attempts) ? req.body.attempts.slice(0, 50) : [];
+  const st = await getSettings();
+  const saved = {}, rejected = {};
+  for (const x of list) {
+    const cid = String(x.client_id || '').slice(0, 64);
+    if (!cid) continue;
+    const dup = await db.get('SELECT id FROM attempts WHERE user_id = ? AND client_id = ?', req.user.id, cid);
+    if (dup) { saved[cid] = dup.id; continue; }
+    const mode = EXAMS[x.mode] ? x.mode : 'practice';
+    const started = Math.min(Number(x.started_at) || Date.now(), Date.now());
+    let items, title, setId = null, limit = Math.max(0, Number(x.time_limit_sec) || 0);
+    if (mode !== 'practice') {
+      // Mock exams count only if the user had Premium when they took it.
+      const allowed = hasPremium(req.user, st) || (req.user.premium_until || 0) >= started;
+      const set = await db.get('SELECT * FROM exam_sets WHERE id = ? AND mode = ?', Number(x.set_id), mode);
+      if (!allowed || !set) { rejected[cid] = allowed ? 'set' : 'premium'; continue; }
+      items = JSON.parse(set.items); title = set.title; setId = set.id; limit = EXAMS[mode].minutes * 60;
+    } else {
+      items = offlineItems(x.items);
+      if (!items) { rejected[cid] = 'items'; continue; }
+      title = String(x.title || 'Practice').slice(0, 120);
+    }
+    const answers = cleanAnswers(x.answers, items.length);
+    const { score, breakdown } = grade(items, answers);
+    let finished = Math.min(Number(x.finished_at) || Date.now(), Date.now());
+    if (finished < started) finished = started;
+    if (limit) finished = Math.min(finished, started + limit * 1000 + 60000);
+    const r = await db.run(`INSERT INTO attempts (user_id, mode, title, items, answers, time_limit_sec, started_at, finished_at, score, total, breakdown, set_id, client_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, req.user.id, mode, title, JSON.stringify(items), JSON.stringify(answers), limit, started, finished,
+      score, items.length, JSON.stringify(breakdown), setId, cid);
+    saved[cid] = r.lastInsertRowid;
+    if (mode !== 'practice') mail.result(req.user.email, req.user.name, { title, score, total: items.length }, breakdown, SUBJECTS);
+  }
+  res.json({ saved, rejected });
+}));
 
 /* ------------------------------ premium & payments ------------------------------ */
 app.get('/api/premium', auth, wrap(async (req, res) => {

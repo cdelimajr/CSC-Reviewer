@@ -3,11 +3,12 @@
   "productName": "CSE Reviewer",
   "version": "1.0.0",
   "private": true,
-  "description": "Windows app for CSE Reviewer. It opens the online CSE Reviewer (internet required).",
+  "description": "Windows app for CSE Reviewer. Works offline; syncs with the online CSE Reviewer.",
   "main": "main.js",
   "scripts": {
-    "start": "electron .",
-    "dist:win": "electron-builder --win nsis portable --publish never"
+    "web": "node ../copy-web.js www",
+    "start": "npm run web && electron .",
+    "dist:win": "npm run web && electron-builder --win nsis portable --publish never"
   },
   "devDependencies": {
     "electron": "^45.0.0",
@@ -16,10 +17,25 @@
   "build": {
     "appId": "ph.csereviewer.desktop",
     "productName": "CSE Reviewer",
-    "files": ["main.js", "offline.html", "app-config.json"],
-    "directories": { "output": "dist", "buildResources": "build" },
-    "win": { "icon": "build/icon.png" },
-    "nsis": { "artifactName": "CSE-Reviewer-Setup-${version}.exe", "oneClick": false, "allowToChangeInstallationDirectory": true, "shortcutName": "CSE Reviewer" },
-    "portable": { "artifactName": "CSE-Reviewer-${version}-portable.exe" }
+    "files": [
+      "main.js",
+      "www/**/*"
+    ],
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "win": {
+      "icon": "build/icon.png"
+    },
+    "nsis": {
+      "artifactName": "CSE-Reviewer-Setup-${version}.exe",
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "shortcutName": "CSE Reviewer"
+    },
+    "portable": {
+      "artifactName": "CSE-Reviewer-${version}-portable.exe"
+    }
   }
 }
