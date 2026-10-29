@@ -1,0 +1,20 @@
+{
+  "name": "cse-reviewer-mobile",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Android and iPhone app for CSE Reviewer. It opens the online CSE Reviewer (internet required).",
+  "scripts": {
+    "config": "node scripts/write-config.js",
+    "android": "npm run config && npx cap add android && npx cap sync android",
+    "ios": "npm run config && npx cap add ios && npx cap sync ios"
+  },
+  "dependencies": {
+    "@capacitor/android": "^7.0.0",
+    "@capacitor/core": "^7.0.0",
+    "@capacitor/ios": "^7.0.0"
+  },
+  "devDependencies": {
+    "@capacitor/assets": "^3.0.5",
+    "@capacitor/cli": "^7.0.0"
+  }
+}

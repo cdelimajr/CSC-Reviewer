@@ -5,11 +5,15 @@ const db = require('./db');
 const { seed } = require('./seed');
 const { SUBJECTS, EXAMS } = require('./blueprint');
 const { buildExam, grade } = require('./exam');
-const { versionOf } = require('./bank');
+const mail = require('./mail');
+const sets = require('./sets');
 
 const PORT = Number(process.env.PORT) || 3000;
 const ADMIN_EMAIL = (process.env.ADMIN_EMAIL || '').trim().toLowerCase();
 const SESSION_DAYS = 30;
+// Email verification is required when an email provider is set up (or forced with REQUIRE_EMAIL_VERIFICATION=1).
+const REQUIRE_VERIFY = process.env.REQUIRE_EMAIL_VERIFICATION ? process.env.REQUIRE_EMAIL_VERIFICATION === '1' : mail.enabled;
+const CODE_MINUTES = 15;
 
 
 /* ------------------------------ helpers ------------------------------ */
@@ -21,7 +25,43 @@ function checkPassword(password, user) {
   const h = crypto.scryptSync(password, user.salt, 64);
   return crypto.timingSafeEqual(h, Buffer.from(user.pass_hash, 'hex'));
 }
-const publicUser = (u) => u && { id: u.id, name: u.name, email: u.email, role: u.role, created_at: u.created_at };
+const publicUser = (u) => u && {
+  id: u.id, name: u.name, email: u.email, role: u.role, created_at: u.created_at,
+  email_verified: !!u.email_verified || !REQUIRE_VERIFY, premium_until: u.premium_until || 0,
+};
+
+/* settings (stored in the meta table, edited by the admin) */
+const SETTING_DEFAULTS = {
+  premium_required: '0', price: '149', plan_days: '30', pay_method: 'GCash', pay_name: '', pay_number: '',
+  pay_note: 'Ipadala ang bayad sa GCash number sa itaas, tapos ilagay ang reference number dito.',
+};
+async function getSettings() {
+  const rows = await db.all(`SELECT key, value FROM meta WHERE key LIKE 'set:%'`);
+  const out = { ...SETTING_DEFAULTS };
+  rows.forEach((r) => { out[r.key.slice(4)] = r.value; });
+  return out;
+}
+const hasPremium = (u, st) => u.role === 'admin' || st.premium_required !== '1' || (u.premium_until || 0) > Date.now();
+
+/* one-time email codes */
+async function sendCode(user, purpose) {
+  const code = String(crypto.randomInt(100000, 1000000));
+  await db.batch([
+    ['DELETE FROM email_codes WHERE email = ? AND purpose = ?', [user.email, purpose]],
+    ['INSERT INTO email_codes (email, purpose, code_hash, expires_at) VALUES (?, ?, ?, ?)', [user.email, purpose, sha(user.email + ':' + code), Date.now() + CODE_MINUTES * 60000]],
+  ]);
+  await mail.code(user.email, user.name, code, purpose);
+}
+async function useCode(email, purpose, code) {
+  const row = await db.get('SELECT * FROM email_codes WHERE email = ? AND purpose = ?', email, purpose);
+  if (!row || row.expires_at < Date.now() || row.tries >= 5) return false;
+  if (row.code_hash !== sha(email + ':' + String(code || '').trim())) {
+    await db.run('UPDATE email_codes SET tries = tries + 1 WHERE id = ?', row.id);
+    return false;
+  }
+  await db.run('DELETE FROM email_codes WHERE id = ?', row.id);
+  return true;
+}
 const isEmail = (s) => typeof s === 'string' && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s) && s.length <= 200;
 
 async function createAdminFromEnv() {
@@ -29,7 +69,7 @@ async function createAdminFromEnv() {
   const u = await db.get('SELECT * FROM users WHERE email = ?', ADMIN_EMAIL);
   if (!u) {
     const { salt, hash } = hashPassword(process.env.ADMIN_PASSWORD);
-    await db.run(`INSERT INTO users (name, email, pass_hash, salt, role) VALUES (?, ?, ?, ?, 'admin')`, 'Admin', ADMIN_EMAIL, hash, salt);
+    await db.run(`INSERT INTO users (name, email, pass_hash, salt, role, email_verified) VALUES (?, ?, ?, ?, 'admin', 1)`, 'Admin', ADMIN_EMAIL, hash, salt);
     console.log(`Admin account created for ${ADMIN_EMAIL}`);
   } else if (u.role !== 'admin') {
     await db.run(`UPDATE users SET role = 'admin' WHERE id = ?`, u.id);
@@ -72,6 +112,8 @@ app.use(async (req, res, next) => {
 });
 const auth = (req, res, next) => (req.user ? next() : res.status(401).json({ error: 'Kailangan mong mag-login.' }));
 const admin = (req, res, next) => (req.user && req.user.role === 'admin' ? next() : res.status(403).json({ error: 'Para sa admin lamang.' }));
+const verified = (req, res, next) => (!REQUIRE_VERIFY || req.user.email_verified ? next()
+  : res.status(403).json({ error: 'I-verify muna ang iyong email.', code: 'unverified' }));
 const wrap = (fn) => async (req, res) => { try { await fn(req, res); } catch (e) { console.error(e); if (!res.headersSent) res.status(500).json({ error: 'May nangyaring error. Subukan ulit.' }); } };
 
 /* ------------------------------ auth ------------------------------ */
@@ -87,9 +129,11 @@ app.post('/api/auth/register', wrap(async (req, res) => {
   const hasAdmin = await db.get(`SELECT 1 FROM users WHERE role = 'admin'`);
   const role = (ADMIN_EMAIL && email === ADMIN_EMAIL) || (!ADMIN_EMAIL && !hasAdmin) ? 'admin' : 'user';
   const { salt, hash } = hashPassword(password);
-  const r = await db.run('INSERT INTO users (name, email, pass_hash, salt, role) VALUES (?, ?, ?, ?, ?)', name, email, hash, salt, role);
+  const r = await db.run('INSERT INTO users (name, email, pass_hash, salt, role, email_verified) VALUES (?, ?, ?, ?, ?, ?)', name, email, hash, salt, role, REQUIRE_VERIFY ? 0 : 1);
   await newSession(res, r.lastInsertRowid);
-  res.json({ user: publicUser(await db.get('SELECT * FROM users WHERE id = ?', r.lastInsertRowid)) });
+  const user = await db.get('SELECT * FROM users WHERE id = ?', r.lastInsertRowid);
+  if (REQUIRE_VERIFY) await sendCode(user, 'verify');
+  res.json({ user: publicUser(user) });
 }));
 
 app.post('/api/auth/login', wrap(async (req, res) => {
@@ -109,7 +153,52 @@ app.post('/api/auth/logout', async (req, res) => {
   res.json({ ok: true });
 });
 
-app.get('/api/me', (req, res) => res.json({ user: publicUser(req.user) || null }));
+app.post('/api/auth/verify', auth, wrap(async (req, res) => {
+  if (limited('verify:' + req.user.id, 15)) return res.status(429).json({ error: 'Masyadong maraming subok. Maghintay ng ilang minuto.' });
+  if (!(await useCode(req.user.email, 'verify', req.body.code))) return res.status(400).json({ error: 'Mali o expired na ang code. Humingi ng bagong code.' });
+  await db.run('UPDATE users SET email_verified = 1 WHERE id = ?', req.user.id);
+  res.json({ user: publicUser({ ...req.user, email_verified: 1 }) });
+}));
+
+app.post('/api/auth/resend', auth, wrap(async (req, res) => {
+  if (req.user.email_verified) return res.json({ ok: true });
+  if (limited('resend:' + req.user.id, 3, 5 * 60 * 1000)) return res.status(429).json({ error: 'Naipadala na ang code. Maghintay ng ilang minuto bago humingi ulit.' });
+  await sendCode(req.user, 'verify');
+  res.json({ ok: true });
+}));
+
+app.post('/api/auth/forgot', wrap(async (req, res) => {
+  const email = String(req.body.email || '').trim().toLowerCase();
+  if (limited('forgot:' + req.ip, 8)) return res.status(429).json({ error: 'Masyadong maraming subok. Maghintay muna.' });
+  const u = isEmail(email) && (await db.get('SELECT * FROM users WHERE email = ?', email));
+  if (u && !u.disabled) await sendCode(u, 'reset');
+  res.json({ ok: true }); // Same answer either way, so emails cannot be guessed.
+}));
+
+app.post('/api/auth/reset', wrap(async (req, res) => {
+  const email = String(req.body.email || '').trim().toLowerCase();
+  const password = String(req.body.password || '');
+  if (limited('reset:' + req.ip + email, 10)) return res.status(429).json({ error: 'Masyadong maraming subok. Maghintay muna.' });
+  if (password.length < 8) return res.status(400).json({ error: 'Ang bagong password ay dapat may 8 characters o higit pa.' });
+  const u = await db.get('SELECT * FROM users WHERE email = ?', email);
+  if (!u || !(await useCode(email, 'reset', req.body.code))) return res.status(400).json({ error: 'Mali o expired na ang code.' });
+  const { salt, hash } = hashPassword(password);
+  // Receiving the code proves the email works, so the account also counts as verified.
+  await db.batch([
+    ['UPDATE users SET pass_hash = ?, salt = ?, email_verified = 1 WHERE id = ?', [hash, salt, u.id]],
+    ['DELETE FROM sessions WHERE user_id = ?', [u.id]],
+  ]);
+  res.json({ ok: true });
+}));
+
+app.get('/api/me', wrap(async (req, res) => {
+  const st = await getSettings();
+  res.json({
+    user: publicUser(req.user) || null,
+    config: { verify: REQUIRE_VERIFY, mail: mail.enabled, premium_required: st.premium_required === '1' },
+    premium: req.user ? hasPremium(req.user, st) : false,
+  });
+}));
 
 app.post('/api/me/password', auth, wrap(async (req, res) => {
   const { current, password } = req.body;
@@ -121,17 +210,6 @@ app.post('/api/me/password', auth, wrap(async (req, res) => {
 }));
 
 app.get('/api/meta', (req, res) => res.json({ subjects: SUBJECTS, exams: EXAMS }));
-
-// Public list of active questions, used by the offline version to update itself when online.
-app.get('/api/public/questions', wrap(async (req, res) => {
-  const rows = await db.all('SELECT * FROM questions WHERE active = 1 ORDER BY id');
-  const questions = rows.map((r) => {
-    const choices = JSON.parse(r.choices);
-    return { s: r.subject, t: r.topic, l: r.level, q: r.question, a: choices[r.answer], d: choices.filter((_, i) => i !== r.answer), e: r.explanation, p: r.passage };
-  });
-  res.set('Access-Control-Allow-Origin', '*').set('Cache-Control', 'no-store');
-  res.json({ version: versionOf(questions), count: questions.length, questions });
-}));
 
 /* ------------------------------ attempts ------------------------------ */
 // Items sent to the browser. Answers are hidden during a timed mock exam.
@@ -155,13 +233,33 @@ function attemptView(a, full = true) {
 }
 const getOwnAttempt = (req) => db.get('SELECT * FROM attempts WHERE id = ? AND (user_id = ? OR ? = 1)', Number(req.params.id), req.user.id, req.user.role === 'admin' ? 1 : 0);
 
-app.post('/api/attempts', auth, wrap(async (req, res) => {
+app.post('/api/attempts', auth, verified, wrap(async (req, res) => {
   const mode = EXAMS[req.body.mode] ? req.body.mode : 'practice';
-  const ex = await buildExam(mode, req.body);
+  if (mode !== 'practice' && !hasPremium(req.user, await getSettings())) {
+    return res.status(402).json({ error: 'Kailangan ng Premium para sa mock exam.', code: 'premium' });
+  }
+  let ex, setId = null;
+  if (mode !== 'practice' && req.body.set_id) {
+    const set = await db.get('SELECT * FROM exam_sets WHERE id = ? AND mode = ?', Number(req.body.set_id), mode);
+    if (!set) return res.status(404).json({ error: 'Hindi makita ang exam set.' });
+    ex = { title: set.title, items: JSON.parse(set.items), timeLimitSec: EXAMS[mode].minutes * 60 };
+    setId = set.id;
+  } else {
+    ex = await buildExam(mode, req.body);
+  }
   if (!ex.items.length) return res.status(400).json({ error: 'Wala pang tanong para dito.' });
-  const r = await db.run(`INSERT INTO attempts (user_id, mode, title, items, time_limit_sec, started_at, total) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    req.user.id, mode, ex.title, JSON.stringify(ex.items), ex.timeLimitSec, Date.now(), ex.items.length);
+  const r = await db.run(`INSERT INTO attempts (user_id, mode, title, items, time_limit_sec, started_at, total, set_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    req.user.id, mode, ex.title, JSON.stringify(ex.items), ex.timeLimitSec, Date.now(), ex.items.length, setId);
   res.json(attemptView(await db.get('SELECT * FROM attempts WHERE id = ?', r.lastInsertRowid)));
+}));
+
+app.get('/api/sets', auth, verified, wrap(async (req, res) => {
+  const mode = EXAMS[req.query.mode] ? req.query.mode : 'pro';
+  const rows = await db.all(`SELECT s.id, s.number, s.title, s.created_at,
+      (SELECT COUNT(*) FROM attempts a WHERE a.set_id = s.id AND a.user_id = ? AND a.finished_at IS NOT NULL) AS taken,
+      (SELECT MAX(score * 100.0 / total) FROM attempts a WHERE a.set_id = s.id AND a.user_id = ? AND a.finished_at IS NOT NULL) AS best
+    FROM exam_sets s WHERE s.mode = ? ORDER BY s.number DESC`, req.user.id, req.user.id, mode);
+  res.json(rows.map((r) => ({ ...r, best: r.best == null ? null : Math.round(r.best * 10) / 10 })));
 }));
 
 app.get('/api/attempts', auth, wrap(async (req, res) => {
@@ -169,7 +267,7 @@ app.get('/api/attempts', auth, wrap(async (req, res) => {
   res.json(rows.map((a) => attemptView(a, false)));
 }));
 
-app.get('/api/attempts/:id', auth, wrap(async (req, res) => {
+app.get('/api/attempts/:id', auth, verified, wrap(async (req, res) => {
   const a = await getOwnAttempt(req);
   if (!a) return res.status(404).json({ error: 'Hindi makita ang exam.' });
   res.json(attemptView(a));
@@ -184,7 +282,7 @@ function cleanAnswers(raw, total) {
   return out;
 }
 
-app.put('/api/attempts/:id/answers', auth, wrap(async (req, res) => {
+app.put('/api/attempts/:id/answers', auth, verified, wrap(async (req, res) => {
   const a = await getOwnAttempt(req);
   if (!a || a.user_id !== req.user.id) return res.status(404).json({ error: 'Hindi makita ang exam.' });
   if (a.finished_at) return res.status(409).json({ error: 'Tapos na ang exam na ito.' });
@@ -192,7 +290,7 @@ app.put('/api/attempts/:id/answers', auth, wrap(async (req, res) => {
   res.json({ ok: true });
 }));
 
-app.post('/api/attempts/:id/submit', auth, wrap(async (req, res) => {
+app.post('/api/attempts/:id/submit', auth, verified, wrap(async (req, res) => {
   const a = await getOwnAttempt(req);
   if (!a || a.user_id !== req.user.id) return res.status(404).json({ error: 'Hindi makita ang exam.' });
   if (!a.finished_at) {
@@ -202,6 +300,9 @@ app.post('/api/attempts/:id/submit', auth, wrap(async (req, res) => {
     if (a.time_limit_sec) finished = Math.min(finished, a.started_at + a.time_limit_sec * 1000 + 60000);
     await db.run('UPDATE attempts SET answers = ?, score = ?, breakdown = ?, finished_at = ? WHERE id = ?',
       JSON.stringify(answers), score, JSON.stringify(breakdown), finished, a.id);
+    if (a.mode !== 'practice' && req.body.email !== false) {
+      mail.result(req.user.email, req.user.name, { title: a.title, score, total: a.total }, breakdown, SUBJECTS);
+    }
   }
   res.json(attemptView(await db.get('SELECT * FROM attempts WHERE id = ?', a.id)));
 }));
@@ -211,8 +312,8 @@ app.delete('/api/attempts/:id', auth, wrap(async (req, res) => {
   res.json({ ok: true });
 }));
 
-app.get('/api/stats', auth, wrap(async (req, res) => {
-  const rows = await db.all('SELECT mode, score, total, breakdown, finished_at FROM attempts WHERE user_id = ? AND finished_at IS NOT NULL ORDER BY finished_at', req.user.id);
+async function statsFor(userId) {
+  const rows = await db.all('SELECT mode, score, total, breakdown, finished_at FROM attempts WHERE user_id = ? AND finished_at IS NOT NULL ORDER BY finished_at', userId);
   const subj = {};
   for (const r of rows) {
     for (const [s, b] of Object.entries(JSON.parse(r.breakdown || '{}'))) {
@@ -221,7 +322,33 @@ app.get('/api/stats', auth, wrap(async (req, res) => {
     }
   }
   const mocks = rows.filter((r) => r.mode !== 'practice').map((r) => ({ mode: r.mode, pct: Math.round((r.score / r.total) * 1000) / 10, at: r.finished_at }));
-  res.json({ attempts: rows.length, subjects: subj, mocks });
+  return { attempts: rows.length, subjects: subj, mocks };
+}
+app.get('/api/stats', auth, verified, wrap(async (req, res) => res.json(await statsFor(req.user.id))));
+
+/* ------------------------------ premium & payments ------------------------------ */
+app.get('/api/premium', auth, wrap(async (req, res) => {
+  const st = await getSettings();
+  const payments = await db.all('SELECT id, amount, method, reference, status, note, created_at, decided_at FROM payments WHERE user_id = ? ORDER BY created_at DESC LIMIT 20', req.user.id);
+  res.json({
+    required: st.premium_required === '1', active: hasPremium(req.user, st), until: req.user.premium_until || 0,
+    price: st.price, plan_days: Number(st.plan_days) || 30, method: st.pay_method, pay_name: st.pay_name, pay_number: st.pay_number, note: st.pay_note, payments,
+  });
+}));
+
+app.post('/api/payments', auth, verified, wrap(async (req, res) => {
+  const reference = String(req.body.reference || '').trim().slice(0, 60);
+  if (reference.length < 4) return res.status(400).json({ error: 'Ilagay ang reference number ng bayad.' });
+  if (limited('pay:' + req.user.id, 5, 60 * 60 * 1000)) return res.status(429).json({ error: 'Masyadong marami nang naipadala. Hintayin ang sagot ng admin.' });
+  if (await db.get(`SELECT 1 FROM payments WHERE user_id = ? AND status = 'pending'`, req.user.id)) {
+    return res.status(409).json({ error: 'May nakabinbin ka pang bayad na hinihintay ma-check.' });
+  }
+  const st = await getSettings();
+  const p = { amount: String(req.body.amount || st.price).slice(0, 20), method: st.pay_method || 'GCash', reference };
+  await db.run('INSERT INTO payments (user_id, amount, method, reference, created_at) VALUES (?, ?, ?, ?, ?)', req.user.id, p.amount, p.method, p.reference, Date.now());
+  const admins = await db.all(`SELECT email FROM users WHERE role = 'admin' AND disabled = 0`);
+  admins.forEach((a) => mail.newPayment(a.email, req.user, p));
+  res.json({ ok: true });
 }));
 
 /* ------------------------------ admin ------------------------------ */
@@ -235,12 +362,15 @@ app.get('/api/admin/overview', admin, wrap(async (req, res) => {
     passed: await one(`SELECT COUNT(*) FROM attempts WHERE finished_at IS NOT NULL AND mode != 'practice' AND score * 100.0 / total >= 80`),
     avgMock: await one(`SELECT ROUND(AVG(score * 100.0 / total), 1) FROM attempts WHERE finished_at IS NOT NULL AND mode != 'practice'`),
     questions: await db.all('SELECT subject, COUNT(*) AS n FROM questions WHERE active = 1 GROUP BY subject'),
+    premiumUsers: await one(`SELECT COUNT(*) FROM users WHERE premium_until > ${Date.now()}`),
+    pendingPayments: await one(`SELECT COUNT(*) FROM payments WHERE status = 'pending'`),
+    mail: { enabled: mail.enabled, provider: mail.provider, verify: REQUIRE_VERIFY },
   });
 }));
 
 app.get('/api/admin/users', admin, wrap(async (req, res) => {
   const q = `%${String(req.query.q || '').trim()}%`;
-  res.json(await db.all(`SELECT u.id, u.name, u.email, u.role, u.disabled, u.created_at,
+  res.json(await db.all(`SELECT u.id, u.name, u.email, u.role, u.disabled, u.created_at, u.email_verified, u.premium_until,
       (SELECT COUNT(*) FROM attempts a WHERE a.user_id = u.id AND a.finished_at IS NOT NULL) AS attempts,
       (SELECT ROUND(AVG(score * 100.0 / total), 1) FROM attempts a WHERE a.user_id = u.id AND a.finished_at IS NOT NULL AND a.mode != 'practice') AS avg_mock,
       (SELECT MAX(started_at) FROM attempts a WHERE a.user_id = u.id) AS last_active
@@ -255,6 +385,13 @@ app.patch('/api/admin/users/:id', admin, wrap(async (req, res) => {
     await db.run('UPDATE users SET disabled = ? WHERE id = ?', req.body.disabled ? 1 : 0, id);
     if (req.body.disabled) await db.run('DELETE FROM sessions WHERE user_id = ?', id);
   }
+  if (req.body.premium_days !== undefined) {
+    const days = Number(req.body.premium_days);
+    const u = await db.get('SELECT premium_until FROM users WHERE id = ?', id);
+    const until = days > 0 ? Math.max(Date.now(), u?.premium_until || 0) + days * 864e5 : 0;
+    await db.run('UPDATE users SET premium_until = ? WHERE id = ?', until, id);
+  }
+  if (req.body.email_verified !== undefined) await db.run('UPDATE users SET email_verified = ? WHERE id = ?', req.body.email_verified ? 1 : 0, id);
   res.json({ ok: true });
 }));
 
@@ -270,7 +407,62 @@ app.post('/api/admin/users/:id/password', admin, wrap(async (req, res) => {
 app.delete('/api/admin/users/:id', admin, wrap(async (req, res) => {
   const id = Number(req.params.id);
   if (id === req.user.id) return res.status(400).json({ error: 'Hindi mo mabubura ang sarili mong account.' });
-  await db.batch([['DELETE FROM attempts WHERE user_id = ?', [id]], ['DELETE FROM sessions WHERE user_id = ?', [id]], ['DELETE FROM users WHERE id = ?', [id]]]);
+  await db.batch([['DELETE FROM payments WHERE user_id = ?', [id]], ['DELETE FROM attempts WHERE user_id = ?', [id]], ['DELETE FROM sessions WHERE user_id = ?', [id]], ['DELETE FROM users WHERE id = ?', [id]]]);
+  res.json({ ok: true });
+}));
+
+app.post('/api/admin/users/:id/report', admin, wrap(async (req, res) => {
+  const u = await db.get('SELECT * FROM users WHERE id = ?', Number(req.params.id));
+  if (!u) return res.status(404).json({ error: 'Walang ganitong user.' });
+  const r = await mail.report(u.email, u.name, await statsFor(u.id), SUBJECTS);
+  if (!r.ok) return res.status(502).json({ error: 'Hindi naipadala ang email. I-check ang email settings.' });
+  res.json({ ok: true, logged: !!r.logged });
+}));
+
+app.get('/api/admin/payments', admin, wrap(async (req, res) => {
+  const status = ['pending', 'approved', 'rejected'].includes(req.query.status) ? req.query.status : 'pending';
+  res.json(await db.all(`SELECT p.*, u.name, u.email, u.premium_until FROM payments p JOIN users u ON u.id = p.user_id
+    WHERE p.status = ? ORDER BY p.created_at DESC LIMIT 200`, status));
+}));
+
+app.post('/api/admin/payments/:id', admin, wrap(async (req, res) => {
+  const p = await db.get('SELECT * FROM payments WHERE id = ?', Number(req.params.id));
+  if (!p) return res.status(404).json({ error: 'Walang ganitong bayad.' });
+  if (p.status !== 'pending') return res.status(409).json({ error: 'Na-check na ang bayad na ito.' });
+  const approve = req.body.action === 'approve';
+  const note = String(req.body.note || '').slice(0, 300);
+  const u = await db.get('SELECT * FROM users WHERE id = ?', p.user_id);
+  let until = u?.premium_until || 0;
+  const stmts = [['UPDATE payments SET status = ?, note = ?, decided_at = ? WHERE id = ?', [approve ? 'approved' : 'rejected', note, Date.now(), p.id]]];
+  if (approve && u) {
+    const days = Number(req.body.days) || Number((await getSettings()).plan_days) || 30;
+    until = Math.max(Date.now(), until) + days * 864e5;
+    stmts.push(['UPDATE users SET premium_until = ? WHERE id = ?', [until, u.id]]);
+  }
+  await db.batch(stmts);
+  if (u) mail.payment(u.email, u.name, approve ? 'approved' : 'rejected', until, note);
+  res.json({ ok: true, until });
+}));
+
+app.get('/api/admin/settings', admin, wrap(async (req, res) => res.json(await getSettings())));
+app.put('/api/admin/settings', admin, wrap(async (req, res) => {
+  const stmts = Object.keys(SETTING_DEFAULTS).filter((k) => req.body[k] !== undefined)
+    .map((k) => [`INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`, ['set:' + k, String(req.body[k]).slice(0, 500)]]);
+  if (stmts.length) await db.batch(stmts);
+  res.json(await getSettings());
+}));
+
+app.get('/api/admin/sets', admin, wrap(async (req, res) => {
+  res.json(await db.all(`SELECT s.id, s.mode, s.number, s.title, s.created_at,
+    (SELECT COUNT(*) FROM attempts a WHERE a.set_id = s.id AND a.finished_at IS NOT NULL) AS taken
+    FROM exam_sets s ORDER BY s.mode, s.number DESC`));
+}));
+app.post('/api/admin/sets', admin, wrap(async (req, res) => {
+  if (!EXAMS[req.body.mode]) return res.status(400).json({ error: 'Piliin ang Professional o Subprofessional.' });
+  res.json(await sets.createSet(req.body.mode));
+}));
+app.delete('/api/admin/sets/:id', admin, wrap(async (req, res) => {
+  await db.run('DELETE FROM exam_sets WHERE id = ?', Number(req.params.id));
   res.json({ ok: true });
 }));
 
@@ -345,7 +537,7 @@ app.get('/api/admin/attempts', admin, wrap(async (req, res) => {
 }));
 
 /* ------------------------------ static ------------------------------ */
-app.use(express.static(path.join(__dirname, '..', 'public'), { extensions: ['html'], maxAge: '1h' }));
+app.use(express.static(path.join(__dirname, '..', 'public'), { extensions: ['html'], maxAge: '10m' }));
 app.use('/api', (req, res) => res.status(404).json({ error: 'Not found' }));
 app.get('*', (req, res) => res.sendFile(path.join(__dirname, '..', 'public', 'index.html')));
 
@@ -358,7 +550,10 @@ app.ready = (async () => {
   const seeded = await seed();
   if (seeded) console.log(`Loaded ${seeded} built-in questions.`);
   await createAdminFromEnv();
+  await sets.ensureSets();
 })();
+// Publish a new exam set automatically when the latest one is older than SET_INTERVAL_DAYS.
+setInterval(() => sets.ensureSets().catch((e) => console.error('Exam set error:', e)), 3600e3).unref();
 
 if (require.main === module) {
   app.ready.then(() => app.listen(PORT, () => console.log(`CSE Reviewer running on http://localhost:${PORT}`)))

@@ -4,7 +4,7 @@ const { SUBJECTS, EXAMS } = require('./blueprint');
 const { generate, shuffle } = require('./generators');
 
 // Share of each section that comes from the saved question bank (the rest is generated).
-const BANK_RATIO = { verbal: 0.65, analytical: 0.45, numerical: 0.5, clerical: 0.5, general: 1 };
+const BANK_RATIO = { verbal: 0.5, analytical: 0.35, numerical: 0.3, clerical: 0.3, general: 0.6 };
 
 function rowToItem(r) {
   return {
