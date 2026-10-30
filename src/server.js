@@ -1,6 +1,7 @@
 const path = require('node:path');
 const crypto = require('node:crypto');
 const express = require('express');
+const compression = require('compression');
 const db = require('./db');
 const { seed } = require('./seed');
 const { SUBJECTS, EXAMS } = require('./blueprint');
@@ -34,6 +35,8 @@ const publicUser = (u) => u && {
 const SETTING_DEFAULTS = {
   premium_required: '0', price: '149', plan_days: '30', pay_method: 'GCash', pay_name: '', pay_number: '',
   pay_note: 'Ipadala ang bayad sa GCash number sa itaas, tapos ilagay ang reference number dito.',
+  // Free plan (only when Premium is turned on): online only, with these limits.
+  free_practice_daily: '3', free_practice_items: '20', free_sets: '1',
 };
 async function getSettings() {
   const rows = await db.all(`SELECT key, value FROM meta WHERE key LIKE 'set:%'`);
@@ -42,6 +45,14 @@ async function getSettings() {
   return out;
 }
 const hasPremium = (u, st) => u.role === 'admin' || st.premium_required !== '1' || (u.premium_until || 0) > Date.now();
+const freeLimits = (st) => ({
+  practice_daily: Math.max(0, Number(st.free_practice_daily) || 0),
+  practice_items: Math.max(5, Number(st.free_practice_items) || 20),
+  sets: Math.max(0, Number(st.free_sets) || 0),
+});
+// Start of today in the Philippines (UTC+8), for the daily practice limit.
+const phDayStart = () => { const n = Date.now() + 8 * 3600e3; return n - (n % 864e5) - 8 * 3600e3; };
+const practiceToday = async (userId) => (await db.get(`SELECT COUNT(*) AS n FROM attempts WHERE user_id = ? AND mode = 'practice' AND started_at >= ?`, userId, phDayStart())).n;
 
 /* one-time email codes */
 async function sendCode(user, purpose) {
@@ -106,6 +117,7 @@ function limited(key, max = 10, windowMs = 10 * 60 * 1000) {
 /* ------------------------------ app ------------------------------ */
 const app = express();
 app.set('trust proxy', 1);
+app.use(compression()); // smaller downloads (the offline question pack shrinks about 5x)
 // The apps load the screens from the device and call this server from another origin.
 // They log in with a token (not a cookie), so allowing any origin is safe here.
 app.use('/api', (req, res, next) => {
@@ -134,7 +146,7 @@ const auth = (req, res, next) => (req.user ? next() : res.status(401).json({ err
 const admin = (req, res, next) => (req.user && req.user.role === 'admin' ? next() : res.status(403).json({ error: 'Para sa admin lamang.' }));
 const verified = (req, res, next) => (!REQUIRE_VERIFY || req.user.email_verified ? next()
   : res.status(403).json({ error: 'I-verify muna ang iyong email.', code: 'unverified' }));
-const wrap = (fn) => async (req, res) => { try { await fn(req, res); } catch (e) { console.error(e); if (!res.headersSent) res.status(500).json({ error: 'May nangyaring error. Subukan ulit.' }); } };
+const wrap = (fn) => async (req, res, next) => { try { await fn(req, res, next); } catch (e) { console.error(e); if (!res.headersSent) res.status(500).json({ error: 'May nangyaring error. Subukan ulit.' }); } };
 
 /* ------------------------------ auth ------------------------------ */
 app.post('/api/auth/register', wrap(async (req, res) => {
@@ -215,8 +227,9 @@ app.get('/api/me', wrap(async (req, res) => {
   const st = await getSettings();
   res.json({
     user: publicUser(req.user) || null,
-    config: { verify: REQUIRE_VERIFY, mail: mail.enabled, premium_required: st.premium_required === '1' },
+    config: { verify: REQUIRE_VERIFY, mail: mail.enabled, premium_required: st.premium_required === '1', free: freeLimits(st) },
     premium: req.user ? hasPremium(req.user, st) : false,
+    practice_today: req.user ? await practiceToday(req.user.id) : 0,
   });
 }));
 
@@ -255,8 +268,19 @@ const getOwnAttempt = (req) => db.get('SELECT * FROM attempts WHERE id = ? AND (
 
 app.post('/api/attempts', auth, verified, wrap(async (req, res) => {
   const mode = EXAMS[req.body.mode] ? req.body.mode : 'practice';
-  if (mode !== 'practice' && !hasPremium(req.user, await getSettings())) {
-    return res.status(402).json({ error: 'Kailangan ng Premium para sa mock exam.', code: 'premium' });
+  const st = await getSettings();
+  const premium = hasPremium(req.user, st);
+  const free = freeLimits(st);
+  const opts = { ...req.body };
+  if (!premium && mode === 'practice') {
+    if ((await practiceToday(req.user.id)) >= free.practice_daily) {
+      return res.status(402).json({ error: `Naubos mo na ang ${free.practice_daily} libreng practice ngayong araw. Bumalik bukas o kumuha ng Premium para walang limit.`, code: 'premium' });
+    }
+    opts.count = Math.min(Number(opts.count) || 20, free.practice_items);
+  }
+  if (!premium && mode !== 'practice') {
+    const set = req.body.set_id ? await db.get('SELECT number FROM exam_sets WHERE id = ? AND mode = ?', Number(req.body.set_id), mode) : null;
+    if (!set || set.number > free.sets) return res.status(402).json({ error: 'Kailangan ng Premium para sa exam set na ito.', code: 'premium' });
   }
   let ex, setId = null;
   if (mode !== 'practice' && req.body.set_id) {
@@ -265,7 +289,7 @@ app.post('/api/attempts', auth, verified, wrap(async (req, res) => {
     ex = { title: set.title, items: JSON.parse(set.items), timeLimitSec: EXAMS[mode].minutes * 60 };
     setId = set.id;
   } else {
-    ex = await buildExam(mode, req.body);
+    ex = await buildExam(mode, opts);
   }
   if (!ex.items.length) return res.status(400).json({ error: 'Wala pang tanong para dito.' });
   const r = await db.run(`INSERT INTO attempts (user_id, mode, title, items, time_limit_sec, started_at, total, set_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -279,7 +303,9 @@ app.get('/api/sets', auth, verified, wrap(async (req, res) => {
       (SELECT COUNT(*) FROM attempts a WHERE a.set_id = s.id AND a.user_id = ? AND a.finished_at IS NOT NULL) AS taken,
       (SELECT MAX(score * 100.0 / total) FROM attempts a WHERE a.set_id = s.id AND a.user_id = ? AND a.finished_at IS NOT NULL) AS best
     FROM exam_sets s WHERE s.mode = ? ORDER BY s.number DESC`, req.user.id, req.user.id, mode);
-  res.json(rows.map((r) => ({ ...r, best: r.best == null ? null : Math.round(r.best * 10) / 10 })));
+  const st = await getSettings();
+  const premium = hasPremium(req.user, st), free = freeLimits(st);
+  res.json(rows.map((r) => ({ ...r, best: r.best == null ? null : Math.round(r.best * 10) / 10, locked: !premium && r.number > free.sets })));
 }));
 
 app.get('/api/attempts', auth, wrap(async (req, res) => {
@@ -348,35 +374,43 @@ app.get('/api/stats', auth, verified, wrap(async (req, res) => res.json(await st
 
 /* ------------------------------ offline use ------------------------------ */
 // Questions the app keeps on the device so it works without internet.
-const OFFLINE_PRACTICE = Number(process.env.OFFLINE_PRACTICE ?? 150); // per subject
-const OFFLINE_SETS = Number(process.env.OFFLINE_SETS ?? 3); // newest sets per level
+const OFFLINE_PRACTICE = Number(process.env.OFFLINE_PRACTICE ?? 200); // per subject
+const OFFLINE_SETS = Number(process.env.OFFLINE_SETS ?? 5); // newest sets per level
+const OFFLINE_DAYS = 30; // the app must go online at least this often
 const fullItems = (items) => items.map((it) => ({
   subject: it.subject, topic: it.topic, question: it.question, passage: it.passage || '', choices: it.choices,
   answer: it.answer, explanation: it.explanation || '',
 }));
 
-app.get('/api/offline/pack', auth, verified, wrap(async (req, res) => {
+// Offline use is a Premium feature.
+const premiumOnly = wrap(async (req, res, next) => {
+  if (hasPremium(req.user, await getSettings())) return next();
+  res.status(402).json({ error: 'Para sa Premium lang ang offline na paggamit.', code: 'premium' });
+});
+
+app.get('/api/offline/pack', auth, verified, premiumOnly, wrap(async (req, res) => {
   const st = await getSettings();
-  const premium = hasPremium(req.user, st);
   const practice = {};
-  for (const subject of Object.keys(SUBJECTS)) {
-    const ex = await buildExam('practice', { subject, count: 100, level: subject === 'clerical' ? 'subpro' : 'pro' });
-    const more = OFFLINE_PRACTICE > 100 ? await buildExam('practice', { subject, count: OFFLINE_PRACTICE - 100, level: subject === 'clerical' ? 'subpro' : 'pro' }) : { items: [] };
-    practice[subject] = fullItems([...ex.items, ...more.items]);
-  }
+  await Promise.all(Object.keys(SUBJECTS).map(async (subject) => {
+    const level = subject === 'clerical' ? 'subpro' : 'pro';
+    const parts = await Promise.all([100, OFFLINE_PRACTICE - 100].filter((n) => n > 0).map((count) => buildExam('practice', { subject, count, level })));
+    practice[subject] = fullItems(parts.flatMap((p) => p.items));
+  }));
   const setsOut = [];
-  if (premium) {
-    for (const mode of Object.keys(EXAMS)) {
-      const rows = await db.all('SELECT * FROM exam_sets WHERE mode = ? ORDER BY number DESC LIMIT ?', mode, OFFLINE_SETS);
-      rows.forEach((r) => setsOut.push({ id: r.id, mode, number: r.number, title: r.title, created_at: r.created_at, items: fullItems(JSON.parse(r.items)) }));
-    }
+  for (const mode of Object.keys(EXAMS)) {
+    const rows = await db.all('SELECT * FROM exam_sets WHERE mode = ? ORDER BY number DESC LIMIT ?', mode, OFFLINE_SETS);
+    rows.forEach((r) => setsOut.push({ id: r.id, mode, number: r.number, title: r.title, created_at: r.created_at, items: fullItems(JSON.parse(r.items)) }));
   }
-  res.json({ user_id: req.user.id, created_at: Date.now(), premium, practice, sets: setsOut });
+  // How long the app may stay offline: until Premium ends, at most OFFLINE_DAYS.
+  const limit = Date.now() + OFFLINE_DAYS * 864e5;
+  const paidOnly = req.user.role !== 'admin' && st.premium_required === '1';
+  const valid_until = paidOnly ? Math.min(limit, req.user.premium_until || 0) : limit;
+  res.json({ user_id: req.user.id, created_at: Date.now(), premium: true, valid_until, practice, sets: setsOut });
 }));
 
 // Save exams that were taken offline. Each one has a client_id so it is saved only once.
-function offlineItems(items) {
-  if (!Array.isArray(items) || !items.length || items.length > 200) return null;
+function offlineItems(items, max = 100) {
+  if (!Array.isArray(items) || !items.length || items.length > max) return null;
   const out = [];
   for (const it of items) {
     if (!it || !SUBJECTS[it.subject] || typeof it.question !== 'string' || !Array.isArray(it.choices) || it.choices.length !== 4) return null;
@@ -388,7 +422,7 @@ function offlineItems(items) {
   return out;
 }
 
-app.post('/api/offline/sync', auth, verified, wrap(async (req, res) => {
+app.post('/api/offline/sync', auth, verified, premiumOnly, wrap(async (req, res) => {
   const list = Array.isArray(req.body.attempts) ? req.body.attempts.slice(0, 50) : [];
   const st = await getSettings();
   const saved = {}, rejected = {};
@@ -403,9 +437,18 @@ app.post('/api/offline/sync', auth, verified, wrap(async (req, res) => {
     if (mode !== 'practice') {
       // Mock exams count only if the user had Premium when they took it.
       const allowed = hasPremium(req.user, st) || (req.user.premium_until || 0) >= started;
-      const set = await db.get('SELECT * FROM exam_sets WHERE id = ? AND mode = ?', Number(x.set_id), mode);
-      if (!allowed || !set) { rejected[cid] = allowed ? 'set' : 'premium'; continue; }
-      items = JSON.parse(set.items); title = set.title; setId = set.id; limit = EXAMS[mode].minutes * 60;
+      if (!allowed) { rejected[cid] = 'premium'; continue; }
+      limit = EXAMS[mode].minutes * 60;
+      if (x.set_id) {
+        const set = await db.get('SELECT * FROM exam_sets WHERE id = ? AND mode = ?', Number(x.set_id), mode);
+        if (!set) { rejected[cid] = 'set'; continue; }
+        items = JSON.parse(set.items); title = set.title; setId = set.id;
+      } else {
+        // "Bagong halo" mock exam made on the device from the saved questions.
+        items = offlineItems(x.items, EXAMS[mode].items);
+        if (!items) { rejected[cid] = 'items'; continue; }
+        title = EXAMS[mode].title;
+      }
     } else {
       items = offlineItems(x.items);
       if (!items) { rejected[cid] = 'items'; continue; }
@@ -651,6 +694,12 @@ app.ready = (async () => {
   await createAdminFromEnv();
   await sets.ensureSets();
 })();
+// Render's free plan puts the server to sleep after 15 minutes without visitors, and the next visit
+// then waits about a minute. Visiting our own public address every 10 minutes keeps it awake
+// (one always-on service fits in Render's 750 free hours a month). Turn off with KEEP_AWAKE=0.
+if (process.env.RENDER_EXTERNAL_URL && process.env.KEEP_AWAKE !== '0') {
+  setInterval(() => fetch(process.env.RENDER_EXTERNAL_URL + '/api/meta').catch(() => {}), 10 * 60e3).unref();
+}
 // Publish a new exam set automatically when the latest one is older than SET_INTERVAL_DAYS.
 setInterval(() => sets.ensureSets().catch((e) => console.error('Exam set error:', e)), 3600e3).unref();
 
