@@ -1,6 +1,7 @@
-// Service worker: keeps the app's files on the device so CSE Reviewer opens without internet.
+// Service worker: keeps the app's files on the device so CSE Reviewer opens instantly, even without internet.
+// Files come from the device first (no waiting) and are updated in the background for the next visit.
 // Questions for offline use are saved by app.js. Server data (/api) is never cached here.
-const CACHE = 'cse-reviewer-v3';
+const CACHE = 'cse-reviewer-v4';
 const FILES = ['/', '/index.html', '/app.js', '/config.js', '/styles.css', '/manifest.webmanifest',
   '/icons/icon.svg', '/icons/icon-192.png', '/icons/icon-512.png'];
 
@@ -13,10 +14,11 @@ self.addEventListener('activate', (e) => {
 self.addEventListener('fetch', (e) => {
   const url = new URL(e.request.url);
   if (e.request.method !== 'GET' || url.origin !== location.origin || url.pathname.startsWith('/api/')) return;
-  // Use the newest files when online, the saved copy when offline.
-  e.respondWith(fetch(e.request).then((res) => {
-    if (res.ok) { const copy = res.clone(); caches.open(CACHE).then((c) => c.put(e.request.mode === 'navigate' ? '/index.html' : e.request, copy)); }
-    return res;
-  }).catch(() => caches.match(e.request.mode === 'navigate' ? '/index.html' : e.request, { ignoreSearch: true })
-    .then((r) => r || caches.match('/index.html'))));
+  const key = e.request.mode === 'navigate' ? '/index.html' : url.pathname;
+  e.respondWith(caches.open(CACHE).then(async (c) => {
+    const saved = await c.match(key);
+    const fresh = fetch(e.request).then((res) => { if (res.ok) c.put(key, res.clone()); return res; });
+    if (saved) { e.waitUntil(fresh.catch(() => {})); return saved; }
+    return fresh.catch(() => c.match('/index.html'));
+  }));
 });

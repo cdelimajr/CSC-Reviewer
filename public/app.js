@@ -52,18 +52,41 @@
     }
   }
 
+  // Show the saved copy right away, then update the screen when the server answers ("no waiting").
+  // urls: one URL or a list; paint gets the data (or a list of data) in the same order.
+  async function swr(urls, paint, fallback) {
+    const many = Array.isArray(urls), list = many ? urls : [urls];
+    const keys = list.map((u) => uk('cse-c') + u), hash = location.hash;
+    const old = keys.map((k) => store.get(k));
+    const have = old.every((x) => x != null);
+    const call = (d, again) => { S.keepScroll = again; try { paint(many ? d : d[0]); } finally { S.keepScroll = false; } };
+    if (have) call(old, false);
+    else if (!S.offline) shell(null, '<div class="empty">Naglo-load…</div>');
+    try {
+      const fresh = await Promise.all(list.map((u) => api('GET', u)));
+      fresh.forEach((d, i) => store.set(keys[i], d));
+      if (location.hash === hash && !S.exam && JSON.stringify(fresh) !== JSON.stringify(old)) call(fresh, have);
+    } catch (e) {
+      if (have) return;
+      if (e.offline && fallback) return call(list.map((_, i) => old[i] ?? fallback(i)), false);
+      throw e;
+    }
+  }
+
   /* Offline: a small banner on top. Practice and downloaded exam sets keep working. */
   function setOffline(on) {
     if (!!S.offline === on) return;
     S.offline = on;
     let el = document.getElementById('offline');
-    if (!on) { if (el) el.remove(); syncSoon(); return; }
+    if (!on) { if (el) el.remove(); syncSoon(); if (S.locked) route(); return; }
     if (el) return;
     el = document.createElement('div');
     el.id = 'offline';
     el.className = 'offline-bar';
-    el.innerHTML = '📡 <b>Offline ka.</b> Gumagana pa rin ang practice at ang mga na-download na exam set. Ise-save online ang mga resulta mo kapag may internet na.';
+    el.innerHTML = canOffline() ? '📡 <b>Offline ka.</b> Gumagana pa rin ang lahat ng practice at mock exam. Ise-save online ang mga resulta mo kapag may internet na.'
+      : '📡 <b>Walang internet.</b> Para sa Premium lang ang offline na paggamit.';
     document.body.prepend(el);
+    if (S.user && S.meta && !canOffline() && !S.exam) setTimeout(route);
   }
   window.addEventListener('offline', () => setOffline(true));
   window.addEventListener('online', () => { syncSoon(); if (!S.meta) init(); });
@@ -76,12 +99,16 @@
     del(id) { store.set(uk('cse-local'), local.all().filter((x) => x.id !== id)); },
   };
   const isLocal = (id) => String(id).startsWith('L');
-  const pack = () => { const p = store.get(uk('cse-pack')); return p && S.user && p.user_id === S.user.id ? p : null; };
+  // Saved questions for offline use (Premium only), valid until Premium ends (max 30 days without going online).
+  const pack = () => { const p = store.get(uk('cse-pack')); return p && S.user && p.user_id === S.user.id && (p.valid_until || 0) > Date.now() ? p : null; };
+  const canOffline = () => !!(S.premium && pack());
+  const isFree = () => !!(S.config && S.config.premium_required && !S.premium);
 
   async function refreshPack(force) {
     if (!S.user || (S.config.verify && !S.user.email_verified)) return;
+    if (!S.premium) { store.del(uk('cse-pack')); return; }
     const p = pack();
-    if (!force && p && Date.now() - p.created_at < 6 * 3600e3 && p.premium === !!S.premium) return;
+    if (!force && p && Date.now() - p.created_at < 6 * 3600e3) return;
     try {
       const fresh = await api('GET', '/api/offline/pack');
       if (!store.set(uk('cse-pack'), fresh)) {
@@ -195,7 +222,7 @@
       </header>
       <main class="wrap">${body}</main>
       <nav class="bottomnav">${links.map(([k, h, l, ic]) => `<a class="${active === k ? 'active' : ''}" href="${h}"><span class="ic">${ic}</span>${l}</a>`).join('')}</nav>`;
-    window.scrollTo(0, 0);
+    if (!S.keepScroll) window.scrollTo(0, 0);
   }
 
   /* ---------------- auth screens ---------------- */
@@ -290,32 +317,30 @@
   async function viewSets(mode) {
     const e = S.meta.exams[mode];
     if (!e) return go('#/');
-    shell('home', '<div class="empty">Naglo-load…</div>');
     const saved = (pack()?.sets || []).filter((x) => x.mode === mode);
-    let sets;
-    try { sets = await api('GET', '/api/sets?mode=' + mode); } catch (err) {
-      if (!err.offline) throw err;
-      sets = saved.map((x) => ({ id: x.id, number: x.number, created_at: x.created_at, taken: 0 }));
-    }
-    const offline = S.offline;
-    if (offline) sets = sets.filter((x) => saved.some((y) => y.id === x.id));
-    const locked = S.config.premium_required && !S.premium;
-    shell('home', `
+    const local = canOffline();
+    const paint = (sets) => {
+      if (!sets) sets = saved.map((x) => ({ id: x.id, number: x.number, created_at: x.created_at, taken: 0 }));
+      if (S.offline) sets = sets.filter((x) => saved.some((y) => y.id === x.id));
+      const free = isFree();
+      shell('home', `
       <p class="small" style="margin:0"><a href="#/">‹ Home</a></p>
       <h1>${esc(e.title.replace(' Mock Exam', ''))}</h1>
       <p class="muted" style="margin-top:0">${e.items} tanong · ${fmtDur(e.minutes)} · Passing ${e.passing}%. Pumili ng exam set, mula pinakabago hanggang pinakaluma.</p>
-      ${locked ? `<div class="notice" style="margin:12px 0">🔒 Kailangan ng <b>Premium</b> para sa mock exams. <a href="#/premium">Kumuha ng Premium →</a></div>` : ''}
-      ${offline ? `<div class="notice" style="margin-bottom:12px">Offline ka, kaya ang mga exam set lang na na-download sa device na ito ang makikita.${saved.length ? '' : ' Wala pang na-download. Buksan ang app habang may internet para ma-download ang pinakabagong mga set.'}</div>`
-        : `<div class="card" style="margin-bottom:12px"><div class="row between"><div><h3>Bagong halo ng tanong</h3><p class="muted small" style="margin:0">Bagong random na ${e.items} tanong na hindi pa lumalabas sa mga set.</p></div>
-        <button class="btn secondary" data-random>Simulan</button></div></div>`}
+      ${free ? `<div class="notice" style="margin:12px 0">🔓 Libre ang <b>Set ${S.config.free.sets > 1 ? '1 hanggang ' + S.config.free.sets : '1'}</b> para masubukan mo. Para sa lahat ng set, Bagong halo, at offline na paggamit, <a href="#/premium">kumuha ng Premium →</a></div>` : ''}
+      ${S.offline && !local ? '<div class="notice" style="margin-bottom:12px">Walang internet. Para sa Premium lang ang offline na paggamit.</div>' : `
+      <div class="card" style="margin-bottom:12px"><div class="row between"><div><h3>Bagong halo ng tanong</h3><p class="muted small" style="margin:0">Bagong random na ${e.items} tanong.</p></div>
+        <button class="btn secondary" data-random>${free ? '🔒 ' : ''}Simulan</button></div></div>`}
       <div class="list">${sets.map((x, i) => `
         <div class="list-item">
-          <div class="grow"><div class="row" style="gap:6px"><b>Set ${x.number}</b>${i === 0 ? '<span class="pill ok">Pinakabago</span>' : ''}</div>
-          <div class="muted small">Inilabas ${new Date(x.created_at).toLocaleDateString('en-PH', { year: 'numeric', month: 'short', day: 'numeric' })}${x.taken ? ` · Nasubukan ${x.taken}x · Best ${x.best}%` : ''}${saved.some((y) => y.id === x.id) ? ' · ⬇ Pwede offline' : ''}</div></div>
-          <button class="btn small" data-set="${x.id}">${x.taken ? 'Ulitin' : 'Simulan'}</button>
+          <div class="grow"><div class="row" style="gap:6px"><b>Set ${x.number}</b>${i === 0 ? '<span class="pill ok">Pinakabago</span>' : ''}${free && !x.locked ? '<span class="pill">Libre</span>' : ''}</div>
+          <div class="muted small">Inilabas ${new Date(x.created_at).toLocaleDateString('en-PH', { year: 'numeric', month: 'short', day: 'numeric' })}${x.taken ? ` · Nasubukan ${x.taken}x · Best ${x.best}%` : ''}${local && saved.some((y) => y.id === x.id) ? ' · ⚡ Naka-save sa device' : ''}</div></div>
+          <button class="btn small ${x.locked ? 'secondary' : ''}" data-set="${x.id}" data-locked="${x.locked ? 1 : ''}">${x.locked ? '🔒 Premium' : x.taken ? 'Ulitin' : 'Simulan'}</button>
         </div>`).join('') || '<div class="card empty">Wala pang exam set.</div>'}</div>`);
-    if ($('[data-random]')) $('[data-random]').onclick = () => startExam(mode);
-    $$('[data-set]').forEach((b) => (b.onclick = () => startExam(mode, { set_id: +b.dataset.set })));
+      if ($('[data-random]')) $('[data-random]').onclick = () => (free ? go('#/premium') : startExam(mode));
+      $$('[data-set]').forEach((b) => (b.onclick = () => (b.dataset.locked ? go('#/premium') : startExam(mode, { set_id: +b.dataset.set }))));
+    };
+    await swr('/api/sets?mode=' + mode, paint, () => null);
   }
 
   async function viewPremium() {
@@ -330,7 +355,12 @@
         ${S.user.role === 'admin' ? '<p class="muted" style="margin:0">Admin ka, kaya bukas sa iyo ang lahat ng mock exam.</p>'
           : p.active && until ? `<h3 style="color:var(--ok)">✅ Aktibo ang Premium mo</h3><p class="muted" style="margin:0">Hanggang <b>${esc(until)}</b>. Pwede mo itong i-extend anumang oras.</p>`
           : !p.required ? '<p class="muted" style="margin:0">Libre pa ang lahat ng mock exam sa ngayon.</p>'
-          : '<h3>🔒 Wala ka pang Premium</h3><p class="muted" style="margin:0">Libre ang practice kada subject. Kailangan ng Premium para sa Professional at Subprofessional mock exams at mga exam set.</p>'}
+          : `<h3>🔒 Wala ka pang Premium</h3>
+            <table class="small" style="width:100%;margin-top:8px"><tr><th></th><th>Libre</th><th>Premium</th></tr>
+            <tr><td>Practice kada subject</td><td>${S.config.free.practice_daily}x kada araw, hanggang ${S.config.free.practice_items} tanong</td><td>Walang limit</td></tr>
+            <tr><td>Mock exam (Pro at Subpro)</td><td>Set 1 lang</td><td>Lahat ng set + Bagong halo</td></tr>
+            <tr><td>Offline (walang internet)</td><td>Hindi</td><td>Oo, buong app</td></tr>
+            <tr><td>Bilis</td><td>Hinihintay ang server</td><td>Agad-agad (naka-save sa device)</td></tr></table>`}
       </div>
       ${S.user.role === 'admin' ? '' : `<div class="card" style="margin-top:12px">
         <h3>Paano magbayad</h3>
@@ -356,9 +386,9 @@
 
   /* ---------------- home ---------------- */
   async function viewHome() {
-    shell('home', '<div class="empty">Naglo-load…</div>');
-    refreshMe().catch(() => {});
-    const [l0, s0] = await Promise.all([cachedGet('/api/attempts').catch(() => []), cachedGet('/api/stats').catch(() => null)]);
+    await swr(['/api/attempts', '/api/stats'], ([l0, s0]) => paintHome(l0, s0), (i) => (i ? null : []));
+  }
+  function paintHome(l0, s0) {
     const { list, stats } = withLocal(l0, s0);
     const open = list.filter((a) => !a.finished_at);
     const done = list.filter((a) => a.finished_at);
@@ -371,11 +401,11 @@
         <div class="meta"><span class="pill warn">${e.items} items</span><span class="pill warn">${fmtDur(e.minutes)}</span><span class="pill warn">Passing ${e.passing}%</span></div>
         <p class="muted small" style="margin:4px 0 8px">${desc}</p>
         <p class="small" style="margin:0 0 10px">${e.sections.map((s) => `${esc(subjName(s.subject))} (${s.count})`).join(' · ')}</p>
-        <a class="btn" href="#/sets/${e.key}">${S.config.premium_required && !S.premium ? '🔒 ' : ''}Pumili ng exam set</a>
+        <a class="btn" href="#/sets/${e.key}">Pumili ng exam set</a>
       </div>`;
     shell('home', `
       <h1>Kumusta, ${esc(S.user.name.split(' ')[0])}! 👋</h1>
-      ${S.config.premium_required && !S.premium ? '<div class="notice" style="margin:8px 0">Libre ang practice. Para sa mock exams, <a href="#/premium">kumuha ng Premium →</a></div>' : ''}
+      ${isFree() ? `<a class="notice" href="#/premium" style="display:block;margin:8px 0">🆓 <b>Libreng plan:</b> ${S.config.free.practice_daily} practice kada araw (hanggang ${S.config.free.practice_items} tanong), at Set 1 ng bawat mock exam. Kailangan ng internet.<br>⭐ <b>Premium:</b> walang limit, lahat ng exam set, gumagana offline, at mas mabilis. Kumuha ng Premium →</a>` : ''}
       <p class="muted" style="margin-top:0">Pumili ng mock exam o mag-practice kada subject.</p>
       ${open.length ? `<div class="notice" style="margin:12px 0">May hindi ka pa natatapos na exam: <b>${esc(open[0].title)}</b>. <a href="#/exam/${open[0].id}">Ituloy ito →</a></div>` : ''}
       ${list.some((a) => a.pending && a.finished_at) ? '<p class="muted small">⏳ May mga resulta kang ginawa offline. Ise-save ang mga ito online kapag may internet na.</p>' : ''}
@@ -422,37 +452,54 @@
       const ok = await confirmBox(`Simulan ang ${e.title}?`, `Mayroon itong <b>${e.items} tanong</b> at <b>${fmtDur(e.minutes)}</b> na oras, tulad ng totoong CSE. Tuloy-tuloy ang timer kahit isara mo ang app, pero naka-save ang mga sagot mo. Kailangan ng ${e.passing}% para pumasa.`, 'Simulan na');
       if (!ok) return;
     }
-    if (S.offline || !navigator.onLine) return startLocal(mode, opts);
+    // Premium: the exam is made on the device, so it starts instantly (online or offline).
+    if (canOffline() && startLocal(mode, opts)) return;
+    if (S.offline || !navigator.onLine) return toast('Walang internet. Para sa Premium lang ang offline na paggamit.');
     try {
       const a = await api('POST', '/api/attempts', { mode, ...opts });
+      if (mode === 'practice') S.practiceToday = (S.practiceToday || 0) + 1;
       go('#/exam/' + a.id);
     } catch (e) {
       if (e.code === 'premium') { toast(e.message); return go('#/premium'); }
-      if (e.offline) return startLocal(mode, opts);
       toast(e.message);
     }
   }
   // Start an exam from the questions saved on the device.
+  // Returns false when the saved questions can't make this exam (then the server makes it).
   function startLocal(mode, opts = {}) {
     const p = pack();
-    if (!p) return toast('Wala pang na-download na tanong. Buksan muna ang app habang may internet.');
+    if (!p) return false;
     let items, title, limit = 0, setId = null;
     if (mode === 'practice') {
       const pool = p.practice[opts.subject] || [];
-      if (!pool.length) return toast('Walang na-download na tanong para sa subject na ito.');
+      if (!pool.length) return false;
       items = shuffle(pool).slice(0, Math.min(opts.count || 20, pool.length));
       const topics = shuffle([...new Set(items.map((x) => x.topic))]);
       items.sort((a, b) => topics.indexOf(a.topic) - topics.indexOf(b.topic));
       title = `Practice: ${subjName(opts.subject)} (${items.length} items)`;
       limit = (Number(opts.minutes) || 0) * 60;
-    } else {
-      const set = opts.set_id ? p.sets.find((x) => x.id === opts.set_id) : null;
-      if (!set) return toast('Offline ka. Pumili ng exam set na may "⬇ Pwede offline".');
+    } else if (opts.set_id) {
+      const set = p.sets.find((x) => x.id === opts.set_id);
+      if (!set) return false;
       items = set.items; title = set.title; setId = set.id; limit = S.meta.exams[mode].minutes * 60;
+    } else {
+      // "Bagong halo": a new random mock exam from the saved questions, section by section like the real exam.
+      const e = S.meta.exams[mode];
+      items = [];
+      for (const sec of e.sections) {
+        const pool = p.practice[sec.subject] || [];
+        if (pool.length < sec.count) return false;
+        const pick = shuffle(pool).slice(0, sec.count);
+        const topics = shuffle([...new Set(pick.map((x) => x.topic))]);
+        pick.sort((a, b) => topics.indexOf(a.topic) - topics.indexOf(b.topic));
+        items.push(...pick);
+      }
+      title = e.title; limit = e.minutes * 60;
     }
     const id = 'L' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
     local.save({ id, client_id: id, mode, set_id: setId, subject: opts.subject, title, items, answers: {}, time_limit_sec: limit, started_at: Date.now(), finished_at: null, total: items.length });
     go('#/exam/' + id);
+    return true;
   }
 
   /* ---------------- practice setup ---------------- */
@@ -462,11 +509,12 @@
     shell('practice', `
       <h1>Practice kada subject</h1>
       <p class="muted" style="margin-top:0">Makikita agad kung tama o mali ang sagot mo, kasama ang paliwanag.</p>
+      ${isFree() ? `<a class="notice" href="#/premium" style="display:block;margin-bottom:12px">🆓 Libreng plan: <b>${Math.max(0, S.config.free.practice_daily - (S.practiceToday || 0))} sa ${S.config.free.practice_daily}</b> practice na lang ang natitira ngayong araw, hanggang ${S.config.free.practice_items} tanong bawat isa. Walang limit sa Premium →</a>` : ''}
       <div class="card">
         <h3>1. Pumili ng subject</h3>
         <div class="subject-grid" id="subs">${Object.entries(subs).map(([k, v]) => `<button class="subject-btn" data-s="${k}"><b>${esc(v.name)}</b><span>${esc(v.desc)}</span></button>`).join('')}</div>
         <h3 style="margin-top:18px">2. Ilang tanong?</h3>
-        <div class="seg" id="cnt">${[10, 20, 30, 50].map((n) => `<button data-n="${n}">${n}</button>`).join('')}</div>
+        <div class="seg" id="cnt">${[10, 20, 30, 50].map((n) => `<button data-n="${n}" ${isFree() && n > S.config.free.practice_items ? 'disabled title="Premium"' : ''}>${isFree() && n > S.config.free.practice_items ? '🔒 ' : ''}${n}</button>`).join('')}</div>
         <h3 style="margin-top:18px">3. May timer?</h3>
         <div class="seg" id="tm">${[[0, 'Wala'], [10, '10 min'], [20, '20 min'], [30, '30 min']].map(([n, l]) => `<button data-m="${n}">${l}</button>`).join('')}</div>
         <button class="btn block" id="go" style="margin-top:20px">Simulan ang practice</button>
@@ -477,7 +525,7 @@
       $$('#tm [data-m]').forEach((b) => b.classList.toggle('active', +b.dataset.m === st.minutes));
     };
     $$('#subs [data-s]').forEach((b) => (b.onclick = () => { st.subject = b.dataset.s; paint(); }));
-    $$('#cnt [data-n]').forEach((b) => (b.onclick = () => { st.count = +b.dataset.n; paint(); }));
+    $$('#cnt [data-n]').forEach((b) => (b.onclick = () => { if (!b.disabled) { st.count = +b.dataset.n; paint(); } }));
     $$('#tm [data-m]').forEach((b) => (b.onclick = () => { st.minutes = +b.dataset.m; paint(); }));
     $('#go').onclick = (e) => { e.target.disabled = true; startExam('practice', { ...st, level: st.subject === 'clerical' ? 'subpro' : 'pro' }).finally(() => (e.target.disabled = false)); };
     paint();
@@ -712,15 +760,15 @@
       if (practice) {
         const subject = a.items[0]?.subject || 'verbal';
         startExam('practice', { subject, count: a.total, minutes: Math.round(a.time_limit_sec / 60), level: subject === 'clerical' ? 'subpro' : 'pro' });
-      } else if (S.offline) go('#/sets/' + a.mode);
-      else startExam(a.mode);
+      } else startExam(a.mode);
     };
   }
 
   /* ---------------- history ---------------- */
   async function viewHistory() {
-    shell('history', '<div class="empty">Naglo-load…</div>');
-    const [l0, s0] = await Promise.all([cachedGet('/api/attempts').catch(() => []), cachedGet('/api/stats').catch(() => null)]);
+    await swr(['/api/attempts', '/api/stats'], ([l0, s0]) => paintHistory(l0, s0), (i) => (i ? null : []));
+  }
+  function paintHistory(l0, s0) {
     const { list, stats } = withLocal(l0, s0);
     const trend = stats.mocks.slice(-10);
     shell('history', `
@@ -758,7 +806,7 @@
       </div>
       <div class="card" style="margin-top:12px">
         <h3>I-install sa phone</h3>
-        <p class="muted small" style="margin:0 0 10px"><b>Android (Chrome):</b> pindutin ang ⋮ menu → "Add to Home screen" o "Install app".<br><b>iPhone (Safari):</b> pindutin ang Share (□↑) → "Add to Home Screen".<br>Gumagana ito kahit offline: ang practice at ang mga na-download na exam set. Kailangan ng internet para mag-login, magbayad, at makatanggap ng email.</p>
+        <p class="muted small" style="margin:0 0 10px"><b>Android (Chrome):</b> pindutin ang ⋮ menu → "Add to Home screen" o "Install app".<br><b>iPhone (Safari):</b> pindutin ang Share (□↑) → "Add to Home Screen".<br>Sa Premium, gumagana ito kahit offline. Kailangan ng internet para mag-login, magbayad, at makatanggap ng email.</p>
         <button class="btn secondary" id="install" hidden>I-install ang app</button>
       </div>
       <div class="card" style="margin-top:12px">
@@ -985,18 +1033,22 @@
     el.innerHTML = `<form class="card" id="stf">
       <h3>Premium (bayad para sa mock exams)</h3>
       <label style="display:flex;gap:10px;align-items:center;font-weight:600"><input type="checkbox" id="preq" ${st.premium_required === '1' ? 'checked' : ''} style="width:22px;height:22px"> Kailangan ng Premium para sa mock exams</label>
-      <p class="muted small" style="margin:4px 0 0">Kapag naka-off, libre ang lahat. Laging libre ang practice kada subject.</p>
+      <p class="muted small" style="margin:4px 0 0">Kapag naka-off, libre ang lahat at gumagana offline para sa lahat. Kapag naka-on, online lang ang libreng plan at may limit (sa ibaba).</p>
       <div class="row"><div style="flex:1;min-width:120px"><label>Presyo (₱)</label><input type="number" id="price" value="${esc(st.price)}"></div>
       <div style="flex:1;min-width:120px"><label>Ilang araw</label><input type="number" id="days" value="${esc(st.plan_days)}"></div></div>
       <label>Paraan ng bayad</label><input type="text" id="meth" value="${esc(st.pay_method)}">
       <label>Account name</label><input type="text" id="pname" value="${esc(st.pay_name)}" placeholder="hal. Juan D.">
       <label>GCash number</label><input type="text" id="pnum" value="${esc(st.pay_number)}" placeholder="09XX XXX XXXX">
       <label>Paalala sa user</label><textarea id="pnote">${esc(st.pay_note)}</textarea>
+      <h3 style="margin-top:18px">Libreng plan (kapag naka-on ang Premium)</h3>
+      <div class="row"><div style="flex:1;min-width:100px"><label>Practice kada araw</label><input type="number" min="0" id="fdaily" value="${esc(st.free_practice_daily)}"></div>
+      <div style="flex:1;min-width:100px"><label>Tanong bawat practice</label><input type="number" min="5" id="fitems" value="${esc(st.free_practice_items)}"></div>
+      <div style="flex:1;min-width:100px"><label>Libreng exam set (Set 1 hanggang…)</label><input type="number" min="0" id="fsets" value="${esc(st.free_sets)}"></div></div>
       <button class="btn" type="submit" style="margin-top:12px">I-save</button></form>`;
     $('#stf').onsubmit = async (e) => {
       e.preventDefault();
       try {
-        await api('PUT', '/api/admin/settings', { premium_required: $('#preq').checked ? '1' : '0', price: $('#price').value, plan_days: $('#days').value, pay_method: $('#meth').value, pay_name: $('#pname').value, pay_number: $('#pnum').value, pay_note: $('#pnote').value });
+        await api('PUT', '/api/admin/settings', { premium_required: $('#preq').checked ? '1' : '0', price: $('#price').value, plan_days: $('#days').value, pay_method: $('#meth').value, pay_name: $('#pname').value, pay_number: $('#pnum').value, pay_note: $('#pnote').value, free_practice_daily: $('#fdaily').value, free_practice_items: $('#fitems').value, free_sets: $('#fsets').value });
         S.config.premium_required = $('#preq').checked;
         toast('Na-save ang settings.');
       } catch (err) { toast(err.message); }
@@ -1019,6 +1071,8 @@
     const [p0, p1] = parts;
     if (!S.user) { if (p0 === 'register') return viewAuth('register'); if (p0 === 'forgot') return viewForgot(); return viewAuth('login'); }
     if (S.config.verify && !S.user.email_verified) return viewVerify();
+    S.locked = false;
+    if (S.offline && !canOffline() && !(p0 === 'exam' && isLocal(p1))) return viewOfflineLocked();
     try {
       if (p0 === 'sets') return await viewSets(p1);
       if (p0 === 'premium') return await viewPremium();
@@ -1037,33 +1091,48 @@
       shell('', `<div class="card empty"><p>${esc(e.message)}</p><a class="btn" href="#/">Bumalik sa Home</a></div>`);
     }
   }
+  // Free plan (or Premium that needs a refresh) without internet.
+  function viewOfflineLocked() {
+    S.locked = true;
+    const expired = S.premium && store.get(uk('cse-pack'));
+    shell(null, `<div class="card empty" style="text-align:center"><div style="font-size:44px">📡</div><h2 style="margin:6px 0">Walang internet</h2>
+      <p class="muted">${expired ? 'Kailangang kumonekta sa internet para ma-update ang Premium at mga tanong mo (kahit isang beses bawat 30 araw).'
+        : 'Kailangan ng internet sa libreng plan. Sa <b>Premium</b>, gumagana ang app kahit offline: lahat ng practice, mock exam, at exam set, nang walang hinihintay.'}</p>
+      <button class="btn" id="retry">Subukan ulit</button></div>`);
+    $('#retry').onclick = async () => { try { await refreshMe(); route(); } catch { toast('Wala pa ring internet.'); } };
+  }
   window.addEventListener('hashchange', route);
   document.addEventListener('visibilitychange', () => { if (document.hidden) saveAnswers(); });
   window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); window._installPrompt = e; });
 
+  function applyMe(me) { S.user = me.user; S.config = me.config; S.premium = me.premium; S.practiceToday = me.practice_today || 0; }
   async function refreshMe() {
     const me = await api('GET', '/api/me');
-    S.user = me.user; S.config = me.config; S.premium = me.premium;
+    applyMe(me);
     if (me.user) { store.set('cse-boot', me); syncSoon(); } else { store.del('cse-boot'); if (IS_APP) store.del('cse-token'); }
   }
+  const stateKey = () => JSON.stringify([S.user && S.user.id, S.user && S.user.email_verified, S.premium, S.config && S.config.premium_required]);
   async function init() {
-    try {
-      const [, meta] = await Promise.all([refreshMe(), api('GET', '/api/meta')]);
-      S.meta = meta; store.set('cse-meta', meta);
-    } catch (e) {
-      // No internet: open with the account and questions saved on this device.
-      const boot = store.get('cse-boot'), meta = store.get('cse-meta');
-      if (e.offline && boot && meta) {
-        S.user = boot.user; S.config = boot.config; S.premium = boot.premium; S.meta = meta;
-        setOffline(true);
-      } else {
-        $app.innerHTML = e.offline
-          ? '<main class="wrap"><div class="card empty" style="margin-top:18vh;text-align:center"><div style="font-size:44px">📡</div><h2 style="margin:6px 0">Walang internet</h2><p class="muted">Kailangan ng internet sa unang pagbukas para mag-login at ma-download ang mga tanong. Pagkatapos noon, gagana na ito kahit offline.</p><button class="btn" onclick="location.reload()">Subukan ulit</button></div></main>'
-          : '<div class="boot">Hindi makakonekta sa server. I-refresh ang page.</div>';
-        return;
-      }
+    // Open instantly with the account saved on this device, then check with the server in the background.
+    const boot = store.get('cse-boot'), meta = store.get('cse-meta');
+    let shown = false;
+    if (boot && boot.user && meta && !S.meta) {
+      applyMe(boot); S.meta = meta;
+      if (!navigator.onLine) setOffline(true);
+      route(); shown = true;
     }
-    route();
+    const before = stateKey();
+    try {
+      const [, m] = await Promise.all([refreshMe(), api('GET', '/api/meta')]);
+      S.meta = m; store.set('cse-meta', m);
+      if (!shown || (stateKey() !== before && !S.exam)) route();
+    } catch (e) {
+      if (shown) { if (S.offline && !canOffline() && !S.exam) route(); return; }
+      $app.innerHTML = e.offline
+        ? '<main class="wrap"><div class="card empty" style="margin-top:18vh;text-align:center"><div style="font-size:44px">📡</div><h2 style="margin:6px 0">Walang internet</h2><p class="muted">Kumonekta sa internet para mag-login. Sa Premium, gumagana na ang app kahit offline pagkatapos noon.</p><button class="btn" onclick="location.reload()">Subukan ulit</button></div></main>'
+        : '<div class="boot">Hindi makakonekta sa server. I-refresh ang page.</div>';
+      return;
+    }
     if (!S.offline) syncNow();
   }
   init();

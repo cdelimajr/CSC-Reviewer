@@ -71,6 +71,17 @@ const lastCode = (to) => {
   await A('PUT', '/api/admin/settings', { premium_required: '1', price: '99', plan_days: '30', pay_number: '09171234567' });
   assert.equal((await U('POST', '/api/attempts', { mode: 'pro' })).status, 402, 'premium required');
   assert.equal((await U('POST', '/api/attempts', { mode: 'practice', subject: 'verbal' })).status, 200, 'practice stays free');
+  // Free plan limits: 3 practice a day (up to 20 items), Set 1 only, no offline
+  r = await U('POST', '/api/attempts', { mode: 'practice', subject: 'numerical', count: 50 });
+  assert.equal(r.data.items.length, 20, 'free practice capped at 20 items');
+  assert.equal((await U('POST', '/api/attempts', { mode: 'practice', subject: 'verbal' })).status, 402, 'daily practice limit');
+  assert.equal((await U('GET', '/api/me')).data.practice_today, 3);
+  r = await U('GET', '/api/sets?mode=pro');
+  const s1 = r.data.find((x) => x.number === 1), s3 = r.data.find((x) => x.number === 3);
+  assert.equal(s1.locked, false); assert.equal(s3.locked, true);
+  assert.equal((await U('POST', '/api/attempts', { mode: 'pro', set_id: s1.id })).status, 200, 'Set 1 is free');
+  assert.equal((await U('POST', '/api/attempts', { mode: 'pro', set_id: s3.id })).status, 402, 'other sets need Premium');
+  assert.equal((await U('GET', '/api/offline/pack')).status, 402, 'offline is Premium only');
   assert.equal((await U('POST', '/api/payments', { reference: 'GC123456' })).status, 200);
   assert.ok(mail.outbox.some((m) => m.to === 'admin@test.ph' && m.subject.startsWith('Bagong bayad')), 'admin notified');
   r = await A('GET', '/api/admin/payments');
@@ -83,15 +94,18 @@ const lastCode = (to) => {
   // Offline: question pack, then sync results taken without internet (saved once only)
   r = await U('GET', '/api/offline/pack');
   assert.equal(r.data.sets.length, 6, 'premium user gets newest sets'); assert.ok(r.data.sets[0].items[0].answer !== undefined);
-  assert.ok(r.data.practice.verbal.length >= 100, 'practice pool');
+  assert.ok(r.data.practice.verbal.length >= 150, 'practice pool'); assert.ok(r.data.valid_until > Date.now() + 29 * 864e5, 'offline valid ~30 days');
   const ps = r.data.practice.numerical.slice(0, 10);
   const set = r.data.sets.find((x) => x.mode === 'pro');
   const offline = [
     { client_id: 'Ltest1', mode: 'practice', title: 'Practice: Numerical (10 items)', items: ps, answers: Object.fromEntries(ps.map((it, i) => [i, it.answer])), started_at: Date.now() - 6e5, finished_at: Date.now() },
     { client_id: 'Ltest2', mode: 'pro', set_id: set.id, items: [], answers: { 0: set.items[0].answer }, started_at: Date.now() - 6e5, finished_at: Date.now() },
   ];
+  const mix = (await U('GET', '/api/meta')).data.exams.subpro.sections.flatMap((sec) => (r.data.practice[sec.subject] || []).slice(0, sec.count));
+  offline.push({ client_id: 'Ltest3', mode: 'subpro', items: mix, answers: {}, started_at: Date.now() - 6e5, finished_at: Date.now() });
   r = await U('POST', '/api/offline/sync', { attempts: offline });
-  assert.ok(r.data.saved.Ltest1 && r.data.saved.Ltest2, 'offline results saved');
+  assert.ok(r.data.saved.Ltest1 && r.data.saved.Ltest2 && r.data.saved.Ltest3, 'offline results saved (incl. Bagong halo made on the device)');
+  assert.equal((await U('GET', `/api/attempts/${r.data.saved.Ltest3}`)).data.total, 165);
   assert.equal((await U('GET', `/api/attempts/${r.data.saved.Ltest1}`)).data.score, 10);
   assert.equal((await U('GET', `/api/attempts/${r.data.saved.Ltest2}`)).data.total, 170);
   const count = (await U('GET', '/api/attempts')).data.length;
