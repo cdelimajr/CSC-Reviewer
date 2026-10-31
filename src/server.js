@@ -37,25 +37,62 @@ const publicUser = (u) => u && {
 /* settings (stored in the meta table, edited by the admin) */
 const SETTING_DEFAULTS = {
   premium_required: '0', price: '149', plan_days: '30', pay_method: 'GCash', pay_name: '', pay_number: '',
-  pay_note: 'Ipadala ang bayad sa GCash number sa itaas, tapos ilagay ang reference number dito.',
+  pay_note: 'Ipadala ang bayad sa napiling account sa itaas, tapos ilagay ang reference number dito.',
   // Free plan (only when Premium is turned on): online only, with these limits.
-  free_practice_daily: '3', free_practice_items: '20', free_sets: '1',
+  free_practice_daily: '3', free_practice_items: '20', free_sets: '1', free_mock_daily: '1',
+  // Exam screen: the RA 10173 watermark and the warning line on top (on by default).
+  exam_watermark: '1', exam_privacy_strip: '1',
+  // Payments: turn online (PayMongo) and manual payments on or off. pay_methods holds the manual
+  // payment accounts (GCash, Maya, PayPal, bank...) as JSON; empty means the defaults below.
+  pay_online_on: '1', pay_manual_on: '1', pay_methods: '',
+  // Ads for the free plan only (never for Premium, never during an exam).
+  ads_on: '1', adsense_client: '', adsense_slot: '', admob_banner: '',
 };
+const LONG_SETTINGS = { pay_methods: 20000 };
 async function getSettings() {
   const rows = await db.all(`SELECT key, value FROM meta WHERE key LIKE 'set:%'`);
   const out = { ...SETTING_DEFAULTS };
   rows.forEach((r) => { out[r.key.slice(4)] = r.value; });
   return out;
 }
+const PAY_TYPES = { gcash: 'GCash', maya: 'Maya', paypal: 'PayPal', bank: 'Bank transfer', gotyme: 'GoTyme', shopeepay: 'ShopeePay', other: 'Iba pa' };
+// The manual payment accounts. Before this setting existed there was one GCash account (pay_method, pay_name, pay_number).
+function payMethods(st) {
+  let list = null;
+  try { list = st.pay_methods ? JSON.parse(st.pay_methods) : null; } catch { list = null; }
+  if (!Array.isArray(list)) {
+    list = [
+      { id: 'gcash', type: 'gcash', name: st.pay_method || 'GCash', account_name: st.pay_name, account: st.pay_number, note: '', on: !!st.pay_number || !paymongo.enabled },
+      { id: 'maya', type: 'maya', name: 'Maya', on: false },
+      { id: 'paypal', type: 'paypal', name: 'PayPal', on: false },
+      { id: 'bank', type: 'bank', name: 'Bank transfer', on: false },
+    ];
+  }
+  return list.filter((m) => m && m.id).map((m) => ({
+    id: String(m.id).replace(/[^a-z0-9_-]/gi, '').slice(0, 30), type: PAY_TYPES[m.type] ? m.type : 'other',
+    name: String(m.name || PAY_TYPES[m.type] || 'Bayad').slice(0, 40), account_name: String(m.account_name || '').slice(0, 80),
+    account: String(m.account || '').slice(0, 120), bank: String(m.bank || '').slice(0, 60), note: String(m.note || '').slice(0, 400),
+    on: !!m.on, has_qr: !!m.has_qr,
+  })).filter((m) => m.id).slice(0, 12);
+}
+const onlinePayOn = (st) => paymongo.enabled && st.pay_online_on !== '0';
+const manualPayOn = (st) => st.pay_manual_on !== '0' && payMethods(st).some((m) => m.on);
 const hasPremium = (u, st) => u.role === 'admin' || st.premium_required !== '1' || (u.premium_until || 0) > Date.now();
 const freeLimits = (st) => ({
   practice_daily: Math.max(0, Number(st.free_practice_daily) || 0),
   practice_items: Math.max(5, Number(st.free_practice_items) || 20),
   sets: Math.max(0, Number(st.free_sets) || 0),
+  mock_daily: Math.max(0, Number(st.free_mock_daily ?? 1) || 0),
 });
 // Start of today in the Philippines (UTC+8), for the daily practice limit.
 const phDayStart = () => { const n = Date.now() + 8 * 3600e3; return n - (n % 864e5) - 8 * 3600e3; };
 const practiceToday = async (userId) => (await db.get(`SELECT COUNT(*) AS n FROM attempts WHERE user_id = ? AND mode = 'practice' AND started_at >= ?`, userId, phDayStart())).n;
+const mockToday = async (userId) => (await db.get(`SELECT COUNT(*) AS n FROM attempts WHERE user_id = ? AND mode != 'practice' AND started_at >= ?`, userId, phDayStart())).n;
+// What the app needs to know about the settings (also kept on the device for offline use).
+const clientConfig = (st) => ({
+  watermark: st.exam_watermark !== '0', privacy_strip: st.exam_privacy_strip !== '0',
+  ads: { on: st.ads_on === '1', adsense_client: st.adsense_client, adsense_slot: st.adsense_slot, admob_banner: st.admob_banner },
+});
 
 /* one-time email codes */
 async function sendCode(user, purpose) {
@@ -289,9 +326,10 @@ app.get('/api/me', wrap(async (req, res) => {
   const st = await getSettings();
   res.json({
     user: publicUser(req.user) || null,
-    config: { verify: REQUIRE_VERIFY, mail: mail.enabled, premium_required: st.premium_required === '1', free: freeLimits(st), online_pay: paymongo.enabled },
+    config: { verify: REQUIRE_VERIFY, mail: mail.enabled, premium_required: st.premium_required === '1', free: freeLimits(st), online_pay: onlinePayOn(st), ...clientConfig(st) },
     premium: req.user ? hasPremium(req.user, st) : false,
     practice_today: req.user ? await practiceToday(req.user.id) : 0,
+    mock_today: req.user ? await mockToday(req.user.id) : 0,
   });
 }));
 
@@ -314,7 +352,9 @@ function clientItems(items, reveal) {
     ...(reveal ? { answer: it.answer, explanation: it.explanation } : {}),
   }));
 }
-function attemptView(a, full = true) {
+// lite: free plan review of a finished mock exam. Only the letter of the correct answer, no question,
+// choices or explanation (Premium gets the full review, PDF, email and print).
+function attemptView(a, full = true, lite = false) {
   const items = JSON.parse(a.items);
   const done = !!a.finished_at;
   const practice = a.mode === 'practice';
@@ -323,9 +363,15 @@ function attemptView(a, full = true) {
     started_at: a.started_at, finished_at: a.finished_at, breakdown: a.breakdown ? JSON.parse(a.breakdown) : null,
     passing: EXAMS[a.mode]?.passing || 80, now: Date.now(),
   };
-  if (full) { out.items = clientItems(items, done || practice); out.answers = JSON.parse(a.answers || '{}'); }
+  if (full) {
+    out.answers = JSON.parse(a.answers || '{}');
+    if (lite && done && !practice) { out.lite = true; out.items = items.map((it) => ({ subject: it.subject, answer: it.answer })); }
+    else out.items = clientItems(items, done || practice);
+  }
   return out;
 }
+// Free users see the short review of their finished mock exams.
+const liteFor = async (req, a) => a.mode !== 'practice' && !hasPremium(req.user, await getSettings());
 const getOwnAttempt = (req) => db.get('SELECT * FROM attempts WHERE id = ? AND (user_id = ? OR ? = 1)', Number(req.params.id), req.user.id, req.user.role === 'admin' ? 1 : 0);
 
 app.post('/api/attempts', auth, verified, wrap(async (req, res) => {
@@ -343,6 +389,10 @@ app.post('/api/attempts', auth, verified, wrap(async (req, res) => {
   if (!premium && mode !== 'practice') {
     const set = req.body.set_id ? await db.get('SELECT number FROM exam_sets WHERE id = ? AND mode = ?', Number(req.body.set_id), mode) : null;
     if (!set || set.number > free.sets) return res.status(402).json({ error: 'Kailangan ng Premium para sa exam set na ito.', code: 'premium' });
+    // One mock exam a day on the free plan, counted on the server for the account (not the device).
+    if ((await mockToday(req.user.id)) >= free.mock_daily) {
+      return res.status(402).json({ error: 'Isang mock exam lang kada araw sa libreng plan. Bumalik bukas o kumuha ng Premium para walang limit.', code: 'mock_daily' });
+    }
   }
   let ex, setId = null;
   if (mode !== 'practice' && req.body.set_id) {
@@ -378,7 +428,23 @@ app.get('/api/attempts', auth, wrap(async (req, res) => {
 app.get('/api/attempts/:id', auth, verified, wrap(async (req, res) => {
   const a = await getOwnAttempt(req);
   if (!a) return res.status(404).json({ error: 'Hindi makita ang exam.' });
-  res.json(attemptView(a));
+  res.json(attemptView(a, true, await liteFor(req, a)));
+}));
+
+/* Premium: email the result with every question and answer, with the PDF attached (same PDF as "Save as PDF"). */
+const PDF = require('../public/pdf');
+app.post('/api/attempts/:id/email', auth, verified, wrap(async (req, res) => {
+  if (!hasPremium(req.user, await getSettings())) return res.status(402).json({ error: 'Para sa Premium ang pag-email ng resulta.', code: 'premium' });
+  const a = await getOwnAttempt(req);
+  if (!a || a.user_id !== req.user.id || !a.finished_at) return res.status(404).json({ error: 'Hindi makita ang exam.' });
+  if (limited('mailres:' + req.user.id, 10, 60 * 60 * 1000)) return res.status(429).json({ error: 'Masyadong marami nang naipadala. Subukan ulit mamaya.' });
+  const v = attemptView(a);
+  v.items = JSON.parse(a.items); // with answers and explanations
+  const lang = req.body.lang === 'en' ? 'en' : 'tl';
+  const pdf = Buffer.from(PDF.report(v, { lang, subjects: SUBJECTS, who: `${req.user.name} <${req.user.email}>` }));
+  const r = await mail.review(req.user.email, req.user.name, v, SUBJECTS, pdf);
+  if (!r.ok) return res.status(502).json({ error: 'Hindi naipadala ang email. Subukan ulit mamaya.' });
+  res.json({ ok: true, to: req.user.email });
 }));
 
 function cleanAnswers(raw, total) {
@@ -412,7 +478,7 @@ app.post('/api/attempts/:id/submit', auth, verified, wrap(async (req, res) => {
       mail.result(req.user.email, req.user.name, { title: a.title, score, total: a.total }, breakdown, SUBJECTS);
     }
   }
-  res.json(attemptView(await db.get('SELECT * FROM attempts WHERE id = ?', a.id)));
+  res.json(attemptView(await db.get('SELECT * FROM attempts WHERE id = ?', a.id), true, await liteFor(req, a)));
 }));
 
 app.delete('/api/attempts/:id', auth, wrap(async (req, res) => {
@@ -461,6 +527,8 @@ app.get('/api/offline/pack', auth, verified, premiumOnly, wrap(async (req, res) 
   const setsOut = [];
   for (const mode of Object.keys(EXAMS)) {
     const rows = await db.all('SELECT * FROM exam_sets WHERE mode = ? ORDER BY number DESC LIMIT ?', mode, OFFLINE_SETS);
+    // Set 1 is always on the device too, next to the newest sets.
+    if (!rows.some((r) => r.number === 1)) rows.push(...(await db.all('SELECT * FROM exam_sets WHERE mode = ? AND number = 1', mode)));
     rows.forEach((r) => setsOut.push({ id: r.id, mode, number: r.number, title: r.title, created_at: r.created_at, items: fullItems(JSON.parse(r.items)) }));
   }
   // How long the app may stay offline: until Premium ends, at most OFFLINE_DAYS.
@@ -540,13 +608,22 @@ app.get('/api/premium', auth, wrap(async (req, res) => {
     for (const p of open) await syncCheckout(p).catch((e) => console.error('PayMongo check failed:', e.message));
     if (open.length) user = await db.get('SELECT * FROM users WHERE id = ?', user.id);
   }
-  const payments = await db.all(`SELECT id, amount, method, reference, status, note, created_at, decided_at, provider,
+  const payments = await db.all(`SELECT id, amount, method, reference, status, note, created_at, decided_at, provider, (proof IS NOT NULL) AS has_proof,
     CASE WHEN status = 'checkout' THEN checkout_url END AS checkout_url FROM payments
     WHERE user_id = ? AND NOT (provider = 'xendit' AND status = 'checkout') ORDER BY created_at DESC LIMIT 20`, user.id);
   res.json({
-    required: st.premium_required === '1', active: hasPremium(user, st), until: user.premium_until || 0, online: paymongo.enabled,
-    price: st.price, plan_days: Number(st.plan_days) || 30, method: st.pay_method, pay_name: st.pay_name, pay_number: st.pay_number, note: st.pay_note, payments,
+    required: st.premium_required === '1', active: hasPremium(user, st), until: user.premium_until || 0, online: onlinePayOn(st),
+    manual: manualPayOn(st), methods: manualPayOn(st) ? payMethods(st).filter((m) => m.on) : [],
+    price: st.price, plan_days: Number(st.plan_days) || 30, note: st.pay_note, payments,
   });
+}));
+
+// QR code of a manual payment account (for scanning in GCash, Maya, a bank app...). Not secret, so no login needed.
+app.get('/api/pay/qr/:id', wrap(async (req, res) => {
+  const row = await db.get('SELECT value FROM meta WHERE key = ?', 'qr:' + String(req.params.id).replace(/[^a-z0-9_-]/gi, ''));
+  const m = row && /^data:(image\/(?:png|jpeg|webp));base64,(.+)$/.exec(row.value);
+  if (!m) return res.status(404).json({ error: 'Not found' });
+  res.set('Cache-Control', 'no-cache').type(m[1]).send(Buffer.from(m[2], 'base64'));
 }));
 
 /* Online payments (PayMongo): checkout page, then the webhook turns on Premium. */
@@ -583,8 +660,8 @@ async function syncCheckout(p) {
 }
 
 app.post('/api/payments/checkout', auth, verified, wrap(async (req, res) => {
-  if (!paymongo.enabled) return res.status(404).json({ error: 'Hindi pa naka-set up ang online na bayad.' });
   const st = await getSettings();
+  if (!onlinePayOn(st)) return res.status(404).json({ error: 'Hindi pa naka-set up ang online na bayad.' });
   const amount = Number(st.price);
   // PayMongo's smallest payment is ₱20.
   if (!(amount >= 20)) return res.status(400).json({ error: 'Kailangang ₱20 o higit pa ang presyo ng Premium. Makipag-ugnayan sa admin.' });
@@ -625,16 +702,25 @@ app.post('/api/payments/paymongo/webhook', wrap(async (req, res) => {
   res.json({ ok: true });
 }));
 
+// Manual payment: the user sends money to one of the admin's accounts, then sends the reference number
+// and (optional) a screenshot of the receipt. The admin checks it and approves it.
+const proofOk = (s) => typeof s === 'string' && s.length <= 1500000 && /^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/.test(s);
 app.post('/api/payments', auth, verified, wrap(async (req, res) => {
+  const st = await getSettings();
+  if (st.pay_manual_on === '0') return res.status(403).json({ error: 'Naka-off ang manual na bayad. Gamitin ang online na bayad.' });
+  const methods = payMethods(st).filter((m) => m.on);
+  const m = methods.find((x) => x.id === req.body.method_id) || (!req.body.method_id && methods[0]);
+  if (!m) return res.status(400).json({ error: 'Piliin ang paraan ng bayad.' });
   const reference = String(req.body.reference || '').trim().slice(0, 60);
   if (reference.length < 4) return res.status(400).json({ error: 'Ilagay ang reference number ng bayad.' });
+  const proof = req.body.proof ? String(req.body.proof) : null;
+  if (proof && !proofOk(proof)) return res.status(400).json({ error: 'Hindi mabasa ang larawan ng resibo. Subukan ang ibang larawan.' });
   if (limited('pay:' + req.user.id, 5, 60 * 60 * 1000)) return res.status(429).json({ error: 'Masyadong marami nang naipadala. Hintayin ang sagot ng admin.' });
   if (await db.get(`SELECT 1 FROM payments WHERE user_id = ? AND status = 'pending'`, req.user.id)) {
     return res.status(409).json({ error: 'May nakabinbin ka pang bayad na hinihintay ma-check.' });
   }
-  const st = await getSettings();
-  const p = { amount: String(req.body.amount || st.price).slice(0, 20), method: st.pay_method || 'GCash', reference };
-  await db.run('INSERT INTO payments (user_id, amount, method, reference, created_at) VALUES (?, ?, ?, ?, ?)', req.user.id, p.amount, p.method, p.reference, Date.now());
+  const p = { amount: String(req.body.amount || st.price).slice(0, 20), method: m.name, reference };
+  await db.run('INSERT INTO payments (user_id, amount, method, reference, created_at, proof) VALUES (?, ?, ?, ?, ?, ?)', req.user.id, p.amount, p.method, p.reference, Date.now(), proof);
   const admins = await db.all(`SELECT email FROM users WHERE role = 'admin' AND disabled = 0`);
   admins.forEach((a) => mail.newPayment(a.email, req.user, p));
   res.json({ ok: true });
@@ -710,8 +796,15 @@ app.post('/api/admin/users/:id/report', admin, wrap(async (req, res) => {
 
 app.get('/api/admin/payments', admin, wrap(async (req, res) => {
   const status = ['pending', 'approved', 'rejected'].includes(req.query.status) ? req.query.status : 'pending';
-  res.json(await db.all(`SELECT p.*, u.name, u.email, u.premium_until FROM payments p JOIN users u ON u.id = p.user_id
+  res.json(await db.all(`SELECT p.id, p.user_id, p.amount, p.method, p.reference, p.status, p.note, p.created_at, p.decided_at, p.provider,
+      (p.proof IS NOT NULL) AS has_proof, u.name, u.email, u.premium_until FROM payments p JOIN users u ON u.id = p.user_id
     WHERE p.status = ? ORDER BY p.created_at DESC LIMIT 200`, status));
+}));
+
+app.get('/api/admin/payments/:id/proof', admin, wrap(async (req, res) => {
+  const p = await db.get('SELECT proof FROM payments WHERE id = ?', Number(req.params.id));
+  if (!p || !p.proof) return res.status(404).json({ error: 'Walang larawan ng resibo.' });
+  res.json({ proof: p.proof });
 }));
 
 app.post('/api/admin/payments/:id', admin, wrap(async (req, res) => {
@@ -733,12 +826,31 @@ app.post('/api/admin/payments/:id', admin, wrap(async (req, res) => {
   res.json({ ok: true, until });
 }));
 
-app.get('/api/admin/settings', admin, wrap(async (req, res) => res.json(await getSettings())));
+const adminSettings = async () => { const st = await getSettings(); return { ...st, pay_methods: payMethods(st), online_ready: paymongo.enabled }; };
+app.get('/api/admin/settings', admin, wrap(async (req, res) => res.json(await adminSettings())));
 app.put('/api/admin/settings', admin, wrap(async (req, res) => {
-  const stmts = Object.keys(SETTING_DEFAULTS).filter((k) => req.body[k] !== undefined)
-    .map((k) => [`INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`, ['set:' + k, String(req.body[k]).slice(0, 500)]]);
+  const body = { ...req.body };
+  if (body.pay_methods !== undefined) {
+    const qr = new Set((await db.all(`SELECT key FROM meta WHERE key LIKE 'qr:%'`)).map((r) => r.key.slice(3)));
+    const list = payMethods({ pay_methods: JSON.stringify(Array.isArray(body.pay_methods) ? body.pay_methods : []) }).map((m) => ({ ...m, has_qr: qr.has(m.id) }));
+    body.pay_methods = JSON.stringify(list);
+  }
+  const stmts = Object.keys(SETTING_DEFAULTS).filter((k) => body[k] !== undefined)
+    .map((k) => [`INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`, ['set:' + k, String(body[k]).slice(0, LONG_SETTINGS[k] || 500)]]);
   if (stmts.length) await db.batch(stmts);
-  res.json(await getSettings());
+  res.json(await adminSettings());
+}));
+// Upload (data URL) or remove (empty) the QR code of a manual payment account.
+app.put('/api/admin/pay-qr/:id', admin, wrap(async (req, res) => {
+  const id = String(req.params.id).replace(/[^a-z0-9_-]/gi, '').slice(0, 30);
+  const data = req.body.data ? String(req.body.data) : '';
+  if (data && !proofOk(data)) return res.status(400).json({ error: 'Hindi mabasa ang larawan. Gumamit ng PNG o JPG.' });
+  if (data) await db.run(`INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`, 'qr:' + id, data);
+  else await db.run('DELETE FROM meta WHERE key = ?', 'qr:' + id);
+  const st = await getSettings();
+  const list = payMethods(st).map((m) => (m.id === id ? { ...m, has_qr: !!data } : m));
+  await db.run(`INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`, 'set:pay_methods', JSON.stringify(list));
+  res.json({ ok: true, has_qr: !!data });
 }));
 
 app.get('/api/admin/sets', admin, wrap(async (req, res) => {
@@ -843,6 +955,13 @@ app.get('/api/app/bundle/:file', (req, res) => {
   if (!bundles.has(api)) bundles.set(api, web.zip(api));
   res.set('Cache-Control', 'public, max-age=31536000, immutable').type('application/zip').send(bundles.get(api));
 });
+
+/* ------------------------------ ads ------------------------------ */
+// Google AdSense checks this file on the website. It is made from the AdSense ID in Admin → Settings → Ads.
+app.get('/ads.txt', wrap(async (req, res) => {
+  const pub = /pub-\d{10,20}/.exec((await getSettings()).adsense_client || '');
+  res.type('text/plain').send(pub ? `google.com, ${pub[0]}, DIRECT, f08c47fec0942fa0\n` : '');
+}));
 
 /* ------------------------------ static ------------------------------ */
 app.use(express.static(path.join(__dirname, '..', 'public'), { extensions: ['html'], maxAge: '10m' }));

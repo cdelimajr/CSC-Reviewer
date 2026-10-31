@@ -103,8 +103,25 @@ const lastCode = (to) => {
   r = await U('GET', '/api/sets?mode=pro');
   const s1 = r.data.find((x) => x.number === 1), s3 = r.data.find((x) => x.number === 3);
   assert.equal(s1.locked, false); assert.equal(s3.locked, true);
-  assert.equal((await U('POST', '/api/attempts', { mode: 'pro', set_id: s1.id })).status, 200, 'Set 1 is free');
   assert.equal((await U('POST', '/api/attempts', { mode: 'pro', set_id: s3.id })).status, 402, 'other sets need Premium');
+  r = await U('POST', '/api/attempts', { mode: 'pro', set_id: s1.id });
+  assert.equal(r.status, 402, 'free plan: one mock exam a day (Juan already took some today)'); assert.equal(r.data.code, 'mock_daily');
+  // A new free user: Set 1 once a day, short review (letters only), no email of the full review
+  const F = client();
+  await F('POST', '/api/auth/register', { name: 'Free', email: 'free@test.ph', password: 'password123' });
+  await F('POST', '/api/auth/verify', { code: lastCode('free@test.ph') });
+  r = await F('POST', '/api/attempts', { mode: 'subpro', set_id: (await F('GET', '/api/sets?mode=subpro')).data.find((x) => x.number === 1).id });
+  assert.equal(r.status, 200, 'Set 1 is free');
+  const fid = r.data.id;
+  assert.equal((await F('GET', '/api/me')).data.mock_today, 1);
+  assert.equal((await F('POST', '/api/attempts', { mode: 'pro', set_id: s1.id })).status, 402, 'second mock exam today is blocked (server, per account)');
+  r = await F('POST', `/api/attempts/${fid}/submit`, { answers: { 0: 1, 1: 2 } });
+  assert.equal(r.data.lite, true, 'free review is short');
+  assert.ok(r.data.items.every((it) => Object.keys(it).sort().join() === 'answer,subject'), 'only the letter of the answer: no question, choices or explanation');
+  assert.ok(r.data.breakdown && typeof r.data.score === 'number', 'score per subject');
+  assert.equal((await F('GET', `/api/attempts/${fid}`)).data.lite, true);
+  assert.equal((await F('POST', `/api/attempts/${fid}/email`, {})).status, 402, 'email of the full review is Premium');
+  assert.equal((await A('GET', `/api/attempts/${fid}`)).data.lite, undefined, 'admin sees the full review');
   assert.equal((await U('GET', '/api/offline/pack')).status, 402, 'offline is Premium only');
   assert.equal((await U('POST', '/api/payments', { reference: 'GC123456' })).status, 200);
   assert.ok(mail.outbox.some((m) => m.to === 'admin@test.ph' && m.subject.startsWith('Bagong bayad')), 'admin notified');
@@ -184,6 +201,47 @@ const lastCode = (to) => {
   await U('POST', '/api/offline/sync', { attempts: offline });
   assert.equal((await U('GET', '/api/attempts')).data.length, count, 'no duplicates');
 
+  // Premium: email the full review with the PDF attached
+  const mocks = (await U('GET', '/api/attempts')).data.filter((x) => x.mode !== 'practice' && x.finished_at);
+  r = await U('POST', `/api/attempts/${mocks[0].id}/email`, { lang: 'en' });
+  assert.equal(r.status, 200); assert.equal(r.data.to, 'juan@test.ph');
+  const rev = [...mail.outbox].reverse().find((m) => m.subject.startsWith('Mga tanong at sagot'));
+  assert.ok(rev && rev.attachments.length === 1 && rev.attachments[0].endsWith('.pdf'), 'review email has the PDF');
+  const pdfBytes = require('../public/pdf').report({ ...(await U('GET', `/api/attempts/${mocks[0].id}`)).data }, { subjects: {} });
+  assert.equal(Buffer.from(pdfBytes.slice(0, 8)).toString(), '%PDF-1.4');
+
+  // Admin settings: exam watermark, payment switches, manual accounts (Maya, PayPal, bank), ads
+  r = await U('GET', '/api/me');
+  assert.equal(r.data.config.watermark, true, 'watermark on by default'); assert.equal(r.data.config.ads.on, true);
+  r = await A('GET', '/api/admin/settings');
+  assert.deepEqual(r.data.pay_methods.map((m) => m.id), ['gcash', 'maya', 'paypal', 'bank'], 'default manual accounts');
+  const methods = r.data.pay_methods.map((m) => (m.id === 'maya' ? { ...m, on: true, account: '09181112222', account_name: 'Juan D.' } : m));
+  methods.push({ id: 'bdo', type: 'bank', name: 'BDO', bank: 'BDO', account: '0012 3456 7890', on: true });
+  r = await A('PUT', '/api/admin/settings', { pay_methods: methods, exam_watermark: '0', pay_online_on: '0', adsense_client: 'ca-pub-1234567890123456' });
+  assert.equal(r.data.pay_methods.length, 5);
+  assert.equal((await U('GET', '/api/me')).data.config.watermark, false, 'watermark can be turned off');
+  r = await U('GET', '/api/premium');
+  assert.equal(r.data.online, false, 'online payment turned off'); assert.equal(r.data.manual, true);
+  assert.deepEqual(r.data.methods.map((m) => m.id), ['gcash', 'maya', 'bdo']);
+  assert.equal((await U('POST', '/api/payments/checkout', {})).status, 404, 'checkout off');
+  const png = 'data:image/png;base64,' + Buffer.from('89504e470d0a1a0a', 'hex').toString('base64');
+  assert.equal((await A('PUT', '/api/admin/pay-qr/maya', { data: png })).status, 200);
+  assert.equal((await fetch(base + '/api/pay/qr/maya')).headers.get('content-type'), 'image/png', 'QR code served');
+  assert.equal((await U('GET', '/api/premium')).data.methods.find((m) => m.id === 'maya').has_qr, true);
+  assert.equal((await U('POST', '/api/payments', { method_id: 'paypal', reference: 'PP123456' })).status, 400, 'turned-off account refused');
+  assert.equal((await U('POST', '/api/payments', { method_id: 'maya', reference: 'MY123456', proof: 'data:text/html;base64,AAAA' })).status, 400, 'proof must be an image');
+  assert.equal((await U('POST', '/api/payments', { method_id: 'maya', reference: 'MY123456', proof: png })).status, 200);
+  r = await A('GET', '/api/admin/payments');
+  const mp = r.data.find((x) => x.reference === 'MY123456');
+  assert.equal(mp.method, 'Maya'); assert.equal(mp.has_proof, 1); assert.equal(mp.proof, undefined, 'list does not carry the image');
+  assert.equal((await A('GET', `/api/admin/payments/${mp.id}/proof`)).data.proof, png);
+  await A('POST', `/api/admin/payments/${mp.id}`, { action: 'reject', note: 'test' });
+  await A('PUT', '/api/admin/settings', { pay_manual_on: '0' });
+  assert.equal((await U('POST', '/api/payments', { method_id: 'maya', reference: 'MY999999' })).status, 403, 'manual payment off');
+  assert.equal((await U('GET', '/api/premium')).data.manual, false);
+  await A('PUT', '/api/admin/settings', { pay_manual_on: '1', pay_online_on: '1', exam_watermark: '1' });
+  assert.equal(await (await fetch(base + '/ads.txt')).text(), 'google.com, pub-1234567890123456, DIRECT, f08c47fec0942fa0\n', 'ads.txt from the AdSense ID');
+
   // Apps: token login + CORS
   const pre = await fetch(base + '/api/me', { method: 'OPTIONS', headers: { Origin: 'https://localhost' } });
   assert.equal(pre.status, 204); assert.equal(pre.headers.get('access-control-allow-origin'), '*');
@@ -195,7 +253,7 @@ const lastCode = (to) => {
 
   // Admin
   assert.equal((await U('GET', '/api/admin/users')).status, 403, 'user blocked from admin');
-  r = await A('GET', '/api/admin/overview'); assert.equal(r.data.users, 2); assert.equal(r.data.premiumUsers, 1);
+  r = await A('GET', '/api/admin/overview'); assert.equal(r.data.users, 3); assert.equal(r.data.premiumUsers, 1);
   r = await A('POST', '/api/admin/sets', { mode: 'subpro' }); assert.equal(r.data.number, 4);
   r = await A('POST', '/api/admin/questions', { subject: 'general', topic: 'Test', question: 'Q?', choices: ['a', 'b', 'c', 'd'], answer: 2 });
   assert.ok(r.data.id);

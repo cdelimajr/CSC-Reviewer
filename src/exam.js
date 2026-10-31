@@ -77,7 +77,8 @@ async function buildExam(mode, opts = {}) {
   const count = Math.max(5, Math.min(100, Number(opts.count) || 20));
   const minutes = Number(opts.minutes) || 0;
   const items = await buildSection(subject, count, opts.level === 'subpro' ? 'subpro' : 'pro');
-  return { title: `Practice: ${SUBJECTS[subject].name} (${items.length} items)`, items, timeLimitSec: minutes * 60 };
+  const level = opts.level === 'subpro' ? 'Subpro' : 'Pro';
+  return { title: `Practice (${level}): ${SUBJECTS[subject].name} (${items.length} items)`, items, timeLimitSec: minutes * 60 };
 }
 
 function grade(items, answers) {

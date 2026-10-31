@@ -5,7 +5,7 @@
 // Questions for offline use are saved by app.js. Server data (/api) is never cached here.
 const VERSION = '__VERSION__';
 const CACHE = 'cse-reviewer-' + VERSION;
-const FILES = ['/index.html', '/app.js', '/config.js', '/styles.css', '/manifest.webmanifest',
+const FILES = ['/index.html', '/app.js', '/pdf.js', '/config.js', '/styles.css', '/manifest.webmanifest',
   '/icons/icon.svg', '/icons/icon-192.png', '/icons/icon-512.png', '/icons/icon-maskable-512.png'];
 
 self.addEventListener('install', (e) => {
