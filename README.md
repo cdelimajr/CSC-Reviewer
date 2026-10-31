@@ -8,7 +8,7 @@ Reviewer at mock exam para sa Philippine Civil Service Exam (Career Service Exam
 - **Libu-libong iba-ibang tanong:** 222 nakasulat na tanong at 43 uri ng generator (math, series, logic, analogy, grammar, Filipino, clerical, mga batas at Konstitusyon), kaya halos hindi umuulit ang exam.
 - **Practice kada subject** na may agarang tama/mali at paliwanag (laging libre).
 - **Account na may aktibong email:** may verification code sa email, forgot password, email ng resulta pagkatapos ng mock exam, at progress report.
-- **Premium (bayad) para sa mock exams:** online na bayad sa Xendit (GCash, Maya, card, bank transfer, at iba pa). Awtomatikong bubukas o mae-extend ang Premium pagkabayad, at may email sa user. Pwede pa rin ang manual na GCash (reference number, admin ang nag-a-approve) kapag may GCash number sa Admin → Settings. Naka-off ang Premium hangga't hindi binubuksan sa Admin → Settings.
+- **Premium (bayad) para sa mock exams:** online na bayad sa PayMongo (GCash, Maya, card, GrabPay, QR Ph para sa bank apps, at iba pa). Awtomatikong bubukas o mae-extend ang Premium pagkabayad, at may email sa user. Pwede pa rin ang manual na GCash (reference number, admin ang nag-a-approve) kapag may GCash number sa Admin → Settings. Naka-off ang Premium hangga't hindi binubuksan sa Admin → Settings.
 - **Libre at Premium:** kapag naka-on ang Premium (Admin → Settings), online lang ang libreng plan at may limit: 3 practice kada araw (hanggang 20 tanong), at Set 1 lang ng bawat mock exam. Nababago ng admin ang mga limit na ito. Sa Premium: walang limit, lahat ng exam set at Bagong halo, at gumagana offline. Kapag naka-off ang Premium, lahat ay may Premium features.
 - **Mabilis at offline (Premium):** nase-save sa device ang app, 200 tanong kada subject, at ang 5 pinakabagong exam set kada level. Agad bumubukas ang app at ang mga exam (hindi na hinihintay ang server), online man o offline. Ise-save online ang mga resulta sa background, at kumukuha ito ng bagong tanong tuwing 6 na oras. Kailangang mag-online kahit isang beses bawat 30 araw. Kailangan pa rin ng internet para sa login, email, at bayad.
 - **Gising ang server:** sa Render, binibisita ng server ang sarili nito bawat 10 minuto para hindi ito matulog (`KEEP_AWAKE=0` para i-off).
@@ -36,9 +36,9 @@ Kapag walang `TURSO_DATABASE_URL`, gumagamit ito ng lokal na SQLite file sa `dat
 | `REQUIRE_EMAIL_VERIFICATION` | `1` o `0`; default ay `1` kapag may email provider |
 | `SET_INTERVAL_DAYS` | Ilang araw bago gumawa ng bagong exam set (default 7, `0` para i-off) |
 | `INITIAL_SETS` | Ilang set ang unang gagawin kada level (default 5) |
-| `XENDIT_SECRET_KEY` | Secret API key ng Xendit (Settings → API Keys, may "Money-in" write permission). Kapag may laman, naka-on ang online na bayad |
-| `XENDIT_CALLBACK_TOKEN` | Webhook verification token ng Xendit (Settings → Webhooks). Dito chine-check na totoo ang abiso ng bayad |
-| `XENDIT_PAYMENT_METHODS` | Opsyonal: limitahan ang mga paraan ng bayad, hal. `GCASH,PAYMAYA,CREDIT_CARD` (default: lahat ng naka-on sa Xendit) |
+| `PAYMONGO_SECRET_KEY` | Secret key ng PayMongo (`sk_test_…` o `sk_live_…`, sa Developers → API Keys). Kapag may laman, naka-on ang online na bayad |
+| `PAYMONGO_WEBHOOK_SECRET` | Secret key ng webhook (`whsk_…`) na ibinibigay ng PayMongo kapag gumawa ng webhook. Dito chine-check na totoo ang abiso ng bayad |
+| `PAYMONGO_PAYMENT_METHODS` | Opsyonal: mga paraan ng bayad (default `gcash,paymaya,card,grab_pay,qrph`). Pwedeng idagdag ang `dob`, `dob_ubp`, `brankas_bdo`, `brankas_landbank`, `brankas_metrobank`, `shopee_pay`, `billease` kapag activated na sa PayMongo account mo |
 | `APP_URL` | Opsyonal: public address na babalikan pagkatapos magbayad (default: ang Render address) |
 | `PORT`, `DB_PATH` | Port at lokal na database file |
 
@@ -47,7 +47,7 @@ Kapag walang `TURSO_DATABASE_URL`, gumagamit ito ng lokal na SQLite file sa `dat
 2. **Brevo (email):** mag-sign up sa brevo.com (libre, 300 email kada araw). Sa *Senders*, i-verify ang email na gagamitin mong sender. Sa *SMTP & API → API Keys*, gumawa ng API key.
 3. **Render (website):** New → Blueprint → piliin ang repo. Ilagay ang `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN`, `ADMIN_EMAIL`, `BREVO_API_KEY` at `MAIL_FROM`.
 4. Buksan ang link ng Render at mag-register gamit ang `ADMIN_EMAIL`. Sa Admin → Settings, ilagay ang presyo, at i-on ang Premium kapag handa na.
-5. **Xendit (online na bayad):** sa dashboard.xendit.co, kunin ang secret key sa *Settings → API Keys* at ang verification token sa *Settings → Webhooks*. Sa *Webhooks → Invoices → Invoice paid*, ilagay ang `https://<render-address>/api/payments/xendit/webhook`. Ilagay ang `XENDIT_SECRET_KEY` at `XENDIT_CALLBACK_TOKEN` sa Render. Subukan muna gamit ang Test mode keys, saka palitan ng Live keys.
+5. **PayMongo (online na bayad):** sa dashboard.paymongo.com, kunin ang secret key sa *Developers → API Keys*. Gumawa ng webhook papunta sa `https://<render-address>/api/payments/paymongo/webhook` na may event na `checkout_session.payment.paid`, at kopyahin ang secret key nito (`whsk_…`). Ilagay ang `PAYMONGO_SECRET_KEY` at `PAYMONGO_WEBHOOK_SECRET` sa Render. Subukan muna gamit ang test keys, saka palitan ng live keys (at gumawa ng hiwalay na live webhook).
 
 Sa libreng Render plan, natutulog ang server kapag 15 minutong walang gumagamit, kaya mga isang minuto ang unang bukas pagkatapos noon.
 

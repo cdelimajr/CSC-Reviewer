@@ -369,7 +369,7 @@
         <h3>${p.active && until ? 'I-extend ang Premium' : 'Kumuha ng Premium'}</h3>
         <p style="margin:6px 0"><span class="pill warn" style="font-size:15px">₱${esc(p.price)} para sa ${p.plan_days} araw</span></p>
         ${p.online ? `
-        <p class="small" style="margin:8px 0">Magbayad online gamit ang <b>GCash, Maya, card, bank transfer</b> at iba pa. Awtomatikong bubukas ang Premium pagkatapos magbayad.</p>
+        <p class="small" style="margin:8px 0">Magbayad online gamit ang <b>GCash, Maya, card, GrabPay, o QR Ph</b> (para sa bank apps) at iba pa. Awtomatikong bubukas ang Premium pagkatapos magbayad.</p>
         ${openPay ? `<div class="notice" style="margin-bottom:10px">May bukas kang bayaran. Kung nakapagbayad ka na, pindutin ang <b>I-check ang bayad</b>.</div>` : ''}
         <div class="err" id="perr"></div>
         <button class="btn block" id="paynow">💳 ${openPay ? 'Ituloy ang pagbayad' : 'Magbayad online'}</button>
@@ -385,9 +385,9 @@
         <form id="payf"><label>Reference number</label><input type="text" id="ref" placeholder="hal. 1012 345 678901" autocomplete="off">
           <div class="err" id="err"></div><button class="btn block ${p.online ? 'secondary' : ''}" type="submit">Ipadala</button></form>`}` : ''}
       </div>`}
-      ${p.payments.length ? `<h2>Mga bayad mo</h2><div class="list">${p.payments.map((x) => `<div class="list-item"><div class="grow"><b>₱${esc(x.amount)}</b> · ${esc(x.method)}${x.provider === 'xendit' ? '' : ' · ref ' + esc(x.reference)}
+      ${p.payments.length ? `<h2>Mga bayad mo</h2><div class="list">${p.payments.map((x) => `<div class="list-item"><div class="grow"><b>₱${esc(x.amount)}</b> · ${esc(x.method)}${x.provider && x.provider !== 'manual' ? '' : ' · ref ' + esc(x.reference)}
         <div class="muted small">${fmtDate(x.created_at)}${x.note ? ' · ' + esc(x.note) : ''}</div></div>${statusPill[x.status] || ''}</div>`).join('')}</div>` : ''}`);
-    // Xendit's checkout page. In the phone and desktop apps it opens in the browser.
+    // PayMongo's checkout page. In the phone and desktop apps it opens in the browser.
     if ($('#paynow')) $('#paynow').onclick = async (e) => {
       e.target.disabled = true;
       try { const r = await api('POST', '/api/payments/checkout', {}); location.href = r.url; } catch (err) { $('#perr').textContent = err.message; e.target.disabled = false; }
@@ -1052,7 +1052,7 @@
       <p class="muted small" style="margin:4px 0 0">Kapag naka-off, libre ang lahat at gumagana offline para sa lahat. Kapag naka-on, online lang ang libreng plan at may limit (sa ibaba).</p>
       <div class="row"><div style="flex:1;min-width:120px"><label>Presyo (₱)</label><input type="number" id="price" value="${esc(st.price)}"></div>
       <div style="flex:1;min-width:120px"><label>Ilang araw</label><input type="number" id="days" value="${esc(st.plan_days)}"></div></div>
-      <div class="notice" style="margin:12px 0">${S.config.online_pay ? '✅ <b>Online na bayad (Xendit): naka-on.</b> GCash, Maya, card, bank at iba pa. Awtomatikong bubukas ang Premium pagkabayad. Lalabas lang ang manual na GCash sa ibaba kapag may GCash number.' : '💳 <b>Online na bayad (Xendit): naka-off.</b> Ilagay ang <code>XENDIT_SECRET_KEY</code> at <code>XENDIT_CALLBACK_TOKEN</code> sa server para i-on.'}</div>
+      <div class="notice" style="margin:12px 0">${S.config.online_pay ? '✅ <b>Online na bayad (PayMongo): naka-on.</b> GCash, Maya, card, GrabPay, QR Ph (bank apps) at iba pa. Awtomatikong bubukas ang Premium pagkabayad. Lalabas lang ang manual na GCash sa ibaba kapag may GCash number.' : '💳 <b>Online na bayad (PayMongo): naka-off.</b> Ilagay ang <code>PAYMONGO_SECRET_KEY</code> at <code>PAYMONGO_WEBHOOK_SECRET</code> sa server para i-on.'}</div>
       <h3>Manual na bayad</h3>
       <label>Paraan ng bayad</label><input type="text" id="meth" value="${esc(st.pay_method)}">
       <label>Account name</label><input type="text" id="pname" value="${esc(st.pay_name)}" placeholder="hal. Juan D.">
