@@ -201,27 +201,6 @@ const lastCode = (to) => {
   assert.ok(r.data.id);
   r = await A('POST', '/api/admin/questions/import', [{ subject: 'numerical', question: 'Q2?', choices: ['1', '2', '3', '4'], answer: 0 }, { subject: 'bad' }]);
   assert.equal(r.data.added, 1); assert.equal(r.data.errors.length, 1);
-  // Translator: MyMemory (no key) is faked here, so the test needs no internet.
-  const realFetch = global.fetch;
-  const asked = [];
-  global.fetch = async (url, opt) => {
-    if (!String(url).includes('mymemory')) return realFetch(url, opt);
-    asked.push(String(url));
-    const q = decodeURIComponent(new URL(url).searchParams.get('q'));
-    return new Response(JSON.stringify({ responseStatus: 200, responseData: { translatedText: `[tl] ${q} &amp; &#39;ok&#39;` } }), { status: 200 });
-  };
-  try {
-    assert.equal((await client()('POST', '/api/translate', { text: 'Hi', from: 'en', to: 'fil' })).status, 401, 'login needed');
-    r = await A('POST', '/api/translate', { text: 'Good morning.', from: 'en', to: 'fil' });
-    assert.equal(r.status, 200); assert.equal(r.data.text, "[tl] Good morning. & 'ok'"); assert.equal(r.data.provider, 'MyMemory');
-    assert.ok(asked[0].includes('langpair=en|tl'), 'Filipino is "tl"');
-    await A('POST', '/api/translate', { text: 'Good morning.', from: 'en', to: 'fil' });
-    assert.equal(asked.length, 1, 'same text is not asked again');
-    assert.equal((await A('POST', '/api/translate', { text: 'Hola', from: 'es', to: 'fil' })).status, 400);
-    const long = ('This is a long sentence for the test. ').repeat(30);
-    await A('POST', '/api/translate', { text: long, from: 'en', to: 'fil' });
-    assert.ok(asked.length >= 4 && asked.slice(1).every((u) => decodeURIComponent(new URL(u).searchParams.get('q')).length <= 450), 'long text sent in pieces');
-  } finally { global.fetch = realFetch; }
 
   r = await A('GET', '/api/admin/users');
   const juan = r.data.find((u) => u.email === 'juan@test.ph');

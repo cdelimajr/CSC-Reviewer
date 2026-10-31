@@ -42,11 +42,11 @@ button, input, select, textarea { font: inherit; color: inherit; }
 /* layout */
 .topbar {
   position: sticky; top: 0; z-index: 20; background: var(--primary); color: #fff;
-  padding: calc(env(safe-area-inset-top) + 10px) 16px 10px; display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 12px;
+  padding: calc(env(safe-area-inset-top) + 10px) 16px 10px; display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 12px;
 }
-/* "CSE Reviewer" sits in the top center; the menu (computer only) is on the right. */
-.topbar .brand { grid-column: 2; justify-content: center; }
-.topbar .nav-desktop { grid-column: 3; justify-self: end; }
+/* "CSE Reviewer" sits at the top right, centered in its own column; the menu (computer only) is on the left. */
+.topbar .nav-desktop { grid-column: 1; justify-self: start; }
+.topbar .brand { grid-column: 2; justify-self: end; justify-content: center; text-align: center; }
 @media (prefers-color-scheme: dark) { .topbar { background: #18234a; } }
 .brand { font-weight: 800; font-size: 18px; display: flex; align-items: center; gap: 8px; color: #fff; text-decoration: none; }
 .brand img { width: 28px; height: 28px; border-radius: 7px; }
@@ -214,11 +214,12 @@ a.notice { color: inherit; text-decoration: none; }
 
 /* ---------- login / register (one screen, no scrolling on phones) ---------- */
 .auth-screen {
-  max-width: 400px; margin: 0 auto; min-height: calc(100vh / var(--z)); min-height: calc(100dvh / var(--z));
+  position: relative; max-width: 400px; margin: 0 auto; min-height: calc(100vh / var(--z)); min-height: calc(100dvh / var(--z));
   display: flex; flex-direction: column; justify-content: center;
   padding: calc(env(safe-area-inset-top) + 20px) 20px calc(env(safe-area-inset-bottom) + 20px);
 }
 .auth-head { text-align: center; margin-bottom: 22px; }
+.lang-btn { position: absolute; top: calc(env(safe-area-inset-top) + 10px); right: 12px; }
 .auth-head .logo { width: 60px; height: 60px; border-radius: 16px; box-shadow: var(--shadow); }
 .auth-head h1 { font-size: 26px; margin: 10px 0 0; letter-spacing: -.01em; }
 .auth-form { display: flex; flex-direction: column; gap: 10px; }
@@ -281,7 +282,8 @@ body.guard #wm { display: block; position: fixed; inset: 0; z-index: 40; pointer
 body.guard #qwrap { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
 body.guard.away #shield { display: grid; place-items: center; text-align: center; position: fixed; inset: 0; z-index: 70; background: var(--bg); padding: 24px; }
 body.guard.away #app { visibility: hidden; }
-@media print { body.guard #app, body.guard #wm { display: none !important; } body.guard::before { content: "Protektado ng Data Privacy Act of 2012 (RA 10173). Bawal kopyahin o i-print ang exam."; display: block; padding: 40px; font-size: 20px; } }
+@media print { body.guard #app, body.guard #wm { display: none !important; } body.guard::before { content: "Protektado ng Data Privacy Act of 2012 (RA 10173). Bawal kopyahin o i-print ang exam."; display: block; padding: 40px; font-size: 20px; }
+  html[lang=en] body.guard::before { content: "Protected by the Data Privacy Act of 2012 (RA 10173). Do not copy or print the exam."; } }
 
 /* ---------- collapsible sections (drop down / up), see fold() in app.js ---------- */
 .fold > summary { list-style: none; display: flex; align-items: center; gap: 10px; cursor: pointer; user-select: none; -webkit-user-select: none; min-height: 28px; }
@@ -302,18 +304,18 @@ body.guard.away #app { visibility: hidden; }
 .exam-card .btn { margin-top: 4px; }
 .stack { display: flex; flex-direction: column; gap: 12px; margin-top: 12px; }
 
+/* ---------- Account: title with Log out on its right, language switch ---------- */
+.page-head { flex-wrap: nowrap; margin: 8px 0 4px; }
+.page-head h1 { margin: 0; }
+.page-head .btn { flex: 0 0 auto; }
+.lang-row { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line); flex-wrap: nowrap; }
+.lang-row > span { white-space: nowrap; }
+.lang-row .seg { flex: 0 1 240px; }
+.lang-row .seg button { padding: 8px 10px; }
+
 /* ---------- show / hide password ---------- */
 .pw-wrap { position: relative; display: block; }
 .pw-wrap input { padding-right: 52px; }
 .pw-eye { position: absolute; right: 4px; top: 50%; transform: translateY(-50%); width: 44px; height: 40px; border: 0; background: transparent; border-radius: 8px; cursor: pointer; font-size: 18px; line-height: 1; }
 .pw-eye:hover, .pw-eye:focus-visible { background: var(--primary-soft); }
 .pw-eye:focus-visible { outline: 2px solid var(--primary); }
-
-/* ---------- translator ---------- */
-.tr-dir { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 8px; margin-bottom: 10px; text-align: center; }
-.tr-dir .btn { min-width: 46px; }
-#src { min-height: 120px; font-size: 17px; }
-.tr-out { margin-top: 14px; padding: 14px; border-radius: 12px; background: var(--primary-soft); }
-.tr-text { font-size: 18px; white-space: pre-wrap; word-break: break-word; }
-button.list-item { width: 100%; font: inherit; cursor: pointer; }
-input[type=range] { accent-color: var(--primary); }
