@@ -23,7 +23,3 @@ services:
         sync: false
       - key: PAYMONGO_WEBHOOK_SECRET
         sync: false
-      - key: GOOGLE_TRANSLATE_API_KEY
-        sync: false
-      - key: MYMEMORY_EMAIL
-        sync: false
