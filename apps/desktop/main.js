@@ -10,6 +10,8 @@ function createWindow() {
     icon: path.join(__dirname, 'build', 'icon.png'),
     webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true, preload: path.join(__dirname, 'preload.js') },
   });
+  // Screenshots and screen recording of the app show a black window (protects the exam questions).
+  win.setContentProtection(true);
   win.loadFile(path.join(__dirname, 'www', 'index.html'));
   // Links to other websites open in the normal browser.
   win.webContents.setWindowOpenHandler(({ url }) => { shell.openExternal(url); return { action: 'deny' }; });
