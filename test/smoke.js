@@ -7,6 +7,8 @@ process.env.DB_PATH = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'cse-')), 
 process.env.NODE_ENV = 'test';
 process.env.REQUIRE_EMAIL_VERIFICATION = '1';
 process.env.INITIAL_SETS = '3';
+process.env.XENDIT_SECRET_KEY = 'xnd_test_key';
+process.env.XENDIT_CALLBACK_TOKEN = 'cb_test_token';
 const app = require('../src/server');
 const mail = require('../src/mail');
 
@@ -90,6 +92,46 @@ const lastCode = (to) => {
   assert.ok(r.data.until > Date.now() + 29 * 864e5);
   r = await U('GET', '/api/premium'); assert.equal(r.data.active, true);
   assert.equal((await U('POST', '/api/attempts', { mode: 'subpro' })).status, 200, 'premium unlocks mocks');
+
+  // Online payment (Xendit, faked here): checkout, webhook, Premium extended once only
+  const invoices = {};
+  const fake = require('express')().use(require('express').json())
+    .post('/v2/invoices', (q, s) => {
+      assert.equal(q.get('authorization'), 'Basic ' + Buffer.from('xnd_test_key:').toString('base64'));
+      const inv = { id: 'inv_' + (Object.keys(invoices).length + 1), external_id: q.body.external_id, amount: q.body.amount, status: 'PENDING', invoice_url: 'https://checkout.xendit.test/' + q.body.external_id };
+      invoices[inv.id] = inv; s.json(inv);
+    })
+    .get('/v2/invoices/:id', (q, s) => (invoices[q.params.id] ? s.json(invoices[q.params.id]) : s.status(404).json({ message: 'not found' })))
+    .listen(0);
+  process.env.XENDIT_API_URL = `http://127.0.0.1:${fake.address().port}`;
+  assert.equal((await U('GET', '/api/me')).data.config.online_pay, true);
+  const before = (await U('GET', '/api/premium')).data.until;
+  r = await U('POST', '/api/payments/checkout', {});
+  assert.ok(r.data.url.startsWith('https://checkout.xendit.test/'), 'checkout link');
+  assert.equal((await U('POST', '/api/payments/checkout', {})).data.url, r.data.url, 'unpaid checkout reused');
+  const inv = Object.values(invoices)[0];
+  assert.equal(inv.amount, 99);
+  const hook = (body, token) => fetch(base + '/api/payments/xendit/webhook', { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-callback-token': token }, body: JSON.stringify(body) });
+  assert.equal((await hook({ id: inv.id, external_id: inv.external_id, status: 'PAID' }, 'wrong')).status, 401, 'bad callback token');
+  // Webhook says PAID but Xendit says it is not: nothing changes
+  assert.equal((await hook({ id: inv.id, external_id: inv.external_id, status: 'PAID' }, 'cb_test_token')).status, 200);
+  assert.equal((await U('GET', '/api/premium')).data.until, before, 'body alone does not activate');
+  Object.assign(invoices[inv.id], { status: 'PAID', paid_amount: 99, payment_channel: 'GCASH' });
+  assert.equal((await hook({ id: inv.id, external_id: inv.external_id, status: 'PAID' }, 'cb_test_token')).status, 200);
+  await hook({ id: inv.id, external_id: inv.external_id, status: 'PAID' }, 'cb_test_token'); // Xendit may send it twice
+  r = await U('GET', '/api/premium');
+  assert.ok(Math.abs(r.data.until - (before + 30 * 864e5)) < 5000, 'premium extended by 30 days, once');
+  const paid = r.data.payments.find((x) => x.provider === 'xendit');
+  assert.equal(paid.status, 'approved'); assert.equal(paid.method, 'GCASH'); assert.equal(paid.checkout_url, null);
+  assert.ok(mail.outbox.some((m) => m.to === 'juan@test.ph' && m.subject.startsWith('Aktibo na')), 'user emailed');
+  assert.equal((await hook({ id: 'inv_unknown', external_id: 'x', status: 'PAID' }, 'cb_test_token')).status, 200, 'test callbacks ignored');
+  // Paid while the webhook was late: opening the Premium page checks it
+  r = await U('POST', '/api/payments/checkout', {});
+  const inv2 = Object.values(invoices)[1];
+  Object.assign(inv2, { status: 'PAID', paid_amount: 99, payment_channel: 'PAYMAYA' });
+  r = await U('GET', '/api/premium');
+  assert.ok(Math.abs(r.data.until - (before + 60 * 864e5)) < 5000, 'premium page picks up the payment');
+  fake.close();
 
   // Offline: question pack, then sync results taken without internet (saved once only)
   r = await U('GET', '/api/offline/pack');
