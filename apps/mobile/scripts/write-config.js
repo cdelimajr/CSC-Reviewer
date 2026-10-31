@@ -8,6 +8,11 @@ const config = {
   webDir: 'www',
   android: { backgroundColor: '#1e40af' },
   ios: { backgroundColor: '#1e40af', contentInset: 'automatic' },
+  plugins: {
+    // Automatic updates of the screens. app.js checks our own server and picks a safe moment to switch.
+    // No Capgo cloud: the plugin's own update checks and usage reports are turned off.
+    CapacitorUpdater: { autoUpdate: false, updateUrl: '', channelUrl: '', statsUrl: '', resetWhenUpdate: true },
+  },
 };
 fs.writeFileSync(path.join(__dirname, '..', 'capacitor.config.json'), JSON.stringify(config, null, 2));
 console.log('capacitor.config.json written');

@@ -17,8 +17,24 @@ function createWindow() {
   });
 }
 
+// Automatic updates from GitHub Releases: a new version downloads quietly in the background and is
+// installed when the user closes the app, so it never interrupts an exam. The next start is the new version.
+// Only the installed app (Setup.exe) can update itself; the portable .exe cannot.
+function autoUpdate() {
+  if (!app.isPackaged || process.env.PORTABLE_EXECUTABLE_DIR) return;
+  let updater;
+  try { ({ autoUpdater: updater } = require('electron-updater')); } catch { return; }
+  updater.autoDownload = true;
+  updater.autoInstallOnAppQuit = true;
+  updater.on('error', () => {}); // offline or no release yet: try again later
+  const check = () => updater.checkForUpdates().catch(() => {});
+  check();
+  setInterval(check, 4 * 3600e3);
+}
+
 app.whenReady().then(() => {
   createWindow();
+  autoUpdate();
   app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
 });
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });

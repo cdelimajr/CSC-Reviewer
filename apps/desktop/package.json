@@ -36,6 +36,17 @@
     },
     "portable": {
       "artifactName": "CSE-Reviewer-${version}-portable.exe"
-    }
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "cdelimajr",
+        "repo": "CSC-Reviewer",
+        "releaseType": "release"
+      }
+    ]
+  },
+  "dependencies": {
+    "electron-updater": "^6.8.11"
   }
 }

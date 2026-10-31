@@ -2,24 +2,37 @@
 # The screens are built into each app, so they open without internet. They use the online
 # CSE Reviewer at APP_URL to log in, get new questions and save results (set it under
 # Settings → Secrets and variables → Actions → Variables → APP_URL).
-# Download the files from the run's "Artifacts", or from Releases when run manually.
+# Every change on main that passes the tests is published on Releases, and the installed apps update
+# themselves from there (Windows) or from the online server (Android/iPhone screens, see public/app.js).
+# Download the files from the run's "Artifacts" or from Releases.
 name: Build apps
 
 on:
   workflow_dispatch:
   push:
     branches: [main]
-    paths: ['apps/**', 'public/**', '.github/workflows/apps.yml']
+    paths: ['apps/**', 'public/**', 'src/webbuild.js', '.github/workflows/apps.yml']
   pull_request:
-    paths: ['apps/**', 'public/**', '.github/workflows/apps.yml']
+    paths: ['apps/**', 'public/**', 'src/webbuild.js', '.github/workflows/apps.yml']
 
 permissions:
   contents: write
 
 env:
   APP_URL: ${{ vars.APP_URL || 'https://cse-reviewer-7lmg.onrender.com' }}
+  # Each build gets a higher version number, so the apps know it is newer.
+  APP_VERSION: 1.0.${{ github.run_number }}
 
 jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - run: npm ci
+      - run: npm test
+
   android:
     runs-on: ubuntu-latest
     defaults: { run: { working-directory: apps/mobile } }
@@ -29,8 +42,16 @@ jobs:
         with: { node-version: 22, cache: npm, cache-dependency-path: apps/mobile/package-lock.json }
       - uses: actions/setup-java@v4
         with: { distribution: temurin, java-version: 21 }
+      - name: Same signing key for every build (optional)
+        # Android only installs an update over the old app when both are signed with the same key.
+        # Without this secret each build has a new key, and installing a new APK means uninstalling first.
+        env: { KEYSTORE: '${{ secrets.ANDROID_DEBUG_KEYSTORE }}' }
+        if: env.KEYSTORE != ''
+        run: mkdir -p ~/.android && echo "$KEYSTORE" | base64 -d > ~/.android/debug.keystore
       - run: npm ci
       - run: npm run android
+      - name: Version number
+        run: sed -i -E "s/versionCode [0-9]+/versionCode ${{ github.run_number }}/; s/versionName \"[^\"]*\"/versionName \"$APP_VERSION\"/" android/app/build.gradle
       - name: App icons and splash screen
         run: npx @capacitor/assets generate --android --iconBackgroundColor '#1e40af' --iconBackgroundColorDark '#1e40af' --splashBackgroundColor '#1e40af' --splashBackgroundColorDark '#1e40af'
       - name: Build APK
@@ -48,9 +69,16 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: 22, cache: npm, cache-dependency-path: apps/desktop/package-lock.json }
       - run: npm ci
+      - run: npm pkg set version=$env:APP_VERSION
       - run: npm run dist:win
+      # latest.yml and .blockmap let the installed app find and download updates (only the changed parts).
       - uses: actions/upload-artifact@v4
-        with: { name: CSE-Reviewer-Windows, path: apps/desktop/dist/*.exe }
+        with:
+          name: CSE-Reviewer-Windows
+          path: |
+            apps/desktop/dist/*.exe
+            apps/desktop/dist/*.blockmap
+            apps/desktop/dist/latest.yml
 
   ios:
     # Unsigned build. To install on an iPhone it must be signed: with a paid Apple Developer
@@ -76,18 +104,19 @@ jobs:
         with: { name: CSE-Reviewer-iPhone-unsigned, path: apps/mobile/CSE-Reviewer-unsigned.ipa }
 
   release:
-    # Publish the files on the Releases page when the workflow is started by hand.
-    if: github.event_name == 'workflow_dispatch'
-    needs: [android, windows]
+    # Publish on the Releases page (not for pull requests). The Windows app updates itself from here.
+    if: github.event_name != 'pull_request'
+    needs: [test, android, windows]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
         with: { path: files }
       - uses: softprops/action-gh-release@v2
         with:
-          tag_name: apps-${{ github.run_number }}
-          name: CSE Reviewer apps (build ${{ github.run_number }})
+          tag_name: v${{ env.APP_VERSION }}
+          name: CSE Reviewer apps ${{ env.APP_VERSION }}
           body: |
             Android: CSE-Reviewer.apk · Windows: Setup at portable .exe · iPhone: unsigned .ipa (kailangang i-sign bago ma-install).
             Gumagana ang mga app kahit offline. Kumokonekta sila sa ${{ env.APP_URL }} para mag-login, kumuha ng bagong tanong, at mag-save ng resulta.
+            Kusa nang nag-a-update ang naka-install na Windows app (Setup.exe) at ang Android app mula sa bersyong ito pataas.
           files: files/**/*

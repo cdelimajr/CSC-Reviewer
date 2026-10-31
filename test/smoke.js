@@ -184,6 +184,28 @@ const lastCode = (to) => {
   assert.equal((await A('POST', `/api/admin/users/${juan.id}/report`)).status, 200);
   await A('PATCH', `/api/admin/users/${juan.id}`, { disabled: true });
   assert.equal((await U('GET', '/api/attempts')).status, 401, 'disabled user logged out');
+
+  // Automatic updates: the service worker and the phone app get the screens' version and a zip of them.
+  const web = require('../src/webbuild');
+  const sw = await (await fetch(base + '/sw.js')).text();
+  assert.ok(sw.includes(`'${web.versionOf()}'`) && !sw.includes('__VERSION__'), 'service worker has the version');
+  r = await client()('GET', '/api/app/update');
+  assert.equal(r.data.version, web.versionOf());
+  const zr = await fetch(base + r.data.url);
+  assert.equal(zr.status, 200);
+  const zip = Buffer.from(await zr.arrayBuffer());
+  assert.equal(zip.readUInt32LE(0), 0x04034b50, 'zip file');
+  const zlib = require('node:zlib');
+  const files = {};
+  for (let o = 0; zip.readUInt32LE(o) === 0x04034b50;) {
+    const size = zip.readUInt32LE(o + 18), n = zip.readUInt16LE(o + 26), name = zip.toString('utf8', o + 30, o + 30 + n);
+    const data = zlib.inflateRawSync(zip.subarray(o + 30 + n, o + 30 + n + size));
+    assert.equal(web.crc32(data), zip.readUInt32LE(o + 14), name + ' checksum');
+    files[name] = data; o += 30 + n + size;
+  }
+  assert.ok(files['index.html'] && files['app.js'] && files['icons/icon-192.png'] && !files['sw.js'], 'zip has the screens');
+  assert.ok(files['config.js'].toString().includes(`window.CSE_API = "${base}"`) && files['config.js'].toString().includes(web.versionOf()));
+  assert.equal((await fetch(base + '/api/app/bundle/old.zip')).status, 404);
   console.log('All smoke tests passed.');
   srv.close(); process.exit(0);
 })().catch((e) => { console.error(e); process.exit(1); });

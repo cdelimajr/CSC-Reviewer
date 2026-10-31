@@ -1,3 +1,4 @@
+const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const express = require('express');
@@ -9,6 +10,7 @@ const { buildExam, grade } = require('./exam');
 const mail = require('./mail');
 const sets = require('./sets');
 const paymongo = require('./paymongo');
+const web = require('./webbuild');
 
 const PORT = Number(process.env.PORT) || 3000;
 const ADMIN_EMAIL = (process.env.ADMIN_EMAIL || '').trim().toLowerCase();
@@ -764,6 +766,25 @@ app.get('/api/admin/attempts', admin, wrap(async (req, res) => {
     FROM attempts a JOIN users u ON u.id = a.user_id WHERE a.finished_at IS NOT NULL ORDER BY a.finished_at DESC LIMIT 200`);
   res.json(rows);
 }));
+
+/* --------------------------- app updates --------------------------- */
+// The screens' version changes whenever public/ changes (a new deploy). The website's service worker
+// and the phone app use it to download the new screens in the background and switch at a safe time.
+const WEB_VERSION = web.versionOf();
+const SW_JS = fs.readFileSync(path.join(web.DIR, 'sw.js'), 'utf8').replaceAll('__VERSION__', WEB_VERSION);
+const bundles = new Map(); // server address -> zip
+app.get('/sw.js', (req, res) => {
+  res.set('Cache-Control', 'no-cache').type('application/javascript').send(SW_JS);
+});
+app.get('/api/app/update', (req, res) => {
+  res.set('Cache-Control', 'no-cache').json({ version: WEB_VERSION, url: `/api/app/bundle/${WEB_VERSION}.zip` });
+});
+app.get('/api/app/bundle/:file', (req, res) => {
+  if (req.params.file !== `${WEB_VERSION}.zip`) return res.status(404).json({ error: 'Not found' });
+  const api = `${req.protocol}://${req.get('host')}`;
+  if (!bundles.has(api)) bundles.set(api, web.zip(api));
+  res.set('Cache-Control', 'public, max-age=31536000, immutable').type('application/zip').send(bundles.get(api));
+});
 
 /* ------------------------------ static ------------------------------ */
 app.use(express.static(path.join(__dirname, '..', 'public'), { extensions: ['html'], maxAge: '10m' }));
