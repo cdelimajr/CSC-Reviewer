@@ -31,7 +31,7 @@ function checkPassword(password, user) {
 }
 const publicUser = (u) => u && {
   id: u.id, name: u.name, email: u.email, role: u.role, created_at: u.created_at,
-  email_verified: !!u.email_verified || !REQUIRE_VERIFY, premium_until: u.premium_until || 0,
+  email_verified: !!u.email_verified || !REQUIRE_VERIFY, premium_until: u.premium_until || 0, tour_done: !!u.tour_done,
 };
 
 /* settings (stored in the meta table, edited by the admin) */
@@ -39,7 +39,7 @@ const SETTING_DEFAULTS = {
   premium_required: '0', price: '149', plan_days: '30', pay_method: 'GCash', pay_name: '', pay_number: '',
   pay_note: 'Ipadala ang bayad sa napiling account sa itaas, tapos ilagay ang reference number dito.',
   // Free plan (only when Premium is turned on): online only, with these limits.
-  free_practice_daily: '3', free_practice_items: '20', free_sets: '1', free_mock_daily: '1',
+  free_practice_daily: '3', free_practice_items: '20', free_sets: '1', free_mock_daily: '1', // Set 1 is always free
   // Exam screen: the RA 10173 watermark and the warning line on top (on by default).
   exam_watermark: '1', exam_privacy_strip: '1',
   // Payments: turn online (PayMongo) and manual payments on or off. pay_methods holds the manual
@@ -56,24 +56,31 @@ async function getSettings() {
   return out;
 }
 const PAY_TYPES = { gcash: 'GCash', maya: 'Maya', paypal: 'PayPal', bank: 'Bank transfer', gotyme: 'GoTyme', shopeepay: 'ShopeePay', other: 'Iba pa' };
-// The manual payment accounts. Before this setting existed there was one GCash account (pay_method, pay_name, pay_number).
+// The manual payment accounts, added by the admin with "+ Add an account" (Admin → Settings → Manual payment).
+// The name shown to users comes from the type (GCash, Maya...); for a bank it is the bank's name, and for
+// "Other" the name of the service. There is no separate "name in the app".
+// Before this setting existed there was one GCash account (pay_method, pay_name, pay_number).
+const PRESETS = new Set(['gcash', 'maya', 'paypal', 'bank']);
+const payName = (type, bank) => (type === 'bank' ? bank || 'Bank transfer' : type === 'other' ? bank || 'Iba pa' : PAY_TYPES[type]);
 function payMethods(st) {
   let list = null;
   try { list = st.pay_methods ? JSON.parse(st.pay_methods) : null; } catch { list = null; }
   if (!Array.isArray(list)) {
-    list = [
-      { id: 'gcash', type: 'gcash', name: st.pay_method || 'GCash', account_name: st.pay_name, account: st.pay_number, note: '', on: !!st.pay_number || !paymongo.enabled },
-      { id: 'maya', type: 'maya', name: 'Maya', on: false },
-      { id: 'paypal', type: 'paypal', name: 'PayPal', on: false },
-      { id: 'bank', type: 'bank', name: 'Bank transfer', on: false },
-    ];
+    list = st.pay_number ? [{ id: 'gcash', type: 'gcash', account_name: st.pay_name, account: st.pay_number, note: '', on: true }] : [];
   }
-  return list.filter((m) => m && m.id).map((m) => ({
-    id: String(m.id).replace(/[^a-z0-9_-]/gi, '').slice(0, 30), type: PAY_TYPES[m.type] ? m.type : 'other',
-    name: String(m.name || PAY_TYPES[m.type] || 'Bayad').slice(0, 40), account_name: String(m.account_name || '').slice(0, 80),
-    account: String(m.account || '').slice(0, 120), bank: String(m.bank || '').slice(0, 60), note: String(m.note || '').slice(0, 400),
-    on: !!m.on, has_qr: !!m.has_qr,
-  })).filter((m) => m.id).slice(0, 12);
+  return list.filter((m) => m && m.id)
+    // The old built-in GCash, Maya, PayPal and bank entries that were never filled in are gone.
+    .filter((m) => !(PRESETS.has(String(m.id)) && !m.account && !m.account_name && !m.has_qr))
+    .map((m) => {
+      const type = PAY_TYPES[m.type] ? m.type : 'other';
+      // "Other" used to keep its name in "name"; it is now the service name (kept in "bank").
+      const bank = String(m.bank || (type === 'other' && m.name && m.name !== PAY_TYPES.other ? m.name : '') || '').slice(0, 60);
+      return {
+        id: String(m.id).replace(/[^a-z0-9_-]/gi, '').slice(0, 30), type, name: payName(type, bank).slice(0, 60),
+        account_name: String(m.account_name || '').slice(0, 80), account: String(m.account || '').slice(0, 120), bank,
+        note: String(m.note || '').slice(0, 400), on: !!m.on, has_qr: !!m.has_qr,
+      };
+    }).filter((m) => m.id).slice(0, 12);
 }
 const onlinePayOn = (st) => paymongo.enabled && st.pay_online_on !== '0';
 const manualPayOn = (st) => st.pay_manual_on !== '0' && payMethods(st).some((m) => m.on);
@@ -81,7 +88,7 @@ const hasPremium = (u, st) => u.role === 'admin' || st.premium_required !== '1' 
 const freeLimits = (st) => ({
   practice_daily: Math.max(0, Number(st.free_practice_daily) || 0),
   practice_items: Math.max(5, Number(st.free_practice_items) || 20),
-  sets: Math.max(0, Number(st.free_sets) || 0),
+  sets: Math.max(1, Number(st.free_sets) || 1), // Set 1 is always open to everyone
   mock_daily: Math.max(0, Number(st.free_mock_daily ?? 1) || 0),
 });
 // Start of today in the Philippines (UTC+8), for the daily practice limit.
@@ -127,9 +134,16 @@ async function createAdminFromEnv() {
   }
 }
 
+// One login at a time: a new login ends the account's other sessions (phone, computer, app).
+// Those sessions are marked replaced (not deleted), so the other device is told why it was logged out.
 async function newSession(res, userId) {
   const token = crypto.randomBytes(32).toString('hex');
-  await db.run('INSERT INTO sessions (token, user_id, expires_at) VALUES (?, ?, ?)', sha(token), userId, Date.now() + SESSION_DAYS * 864e5);
+  const now = Date.now();
+  const [ended] = await db.batch([
+    ['UPDATE sessions SET replaced_at = ? WHERE user_id = ? AND replaced_at IS NULL AND expires_at > ?', [now, userId, now]],
+    ['INSERT INTO sessions (token, user_id, expires_at) VALUES (?, ?, ?)', [sha(token), userId, now + SESSION_DAYS * 864e5]],
+  ]);
+  res.locals.others = ended.rowsAffected || 0;
   res.cookie('sid', token, { httpOnly: true, sameSite: 'lax', secure: res.req.secure, maxAge: SESSION_DAYS * 864e5, path: '/' });
   // The phone and desktop apps can't use the cookie, so they get the token and send it as "Authorization: Bearer".
   if (res.req.get('X-App')) res.locals.token = token;
@@ -139,7 +153,7 @@ function sessionToken(req) {
   const h = req.get('authorization') || '';
   return h.startsWith('Bearer ') ? h.slice(7).trim() : readCookie(req, 'sid');
 }
-const withToken = (res, body) => (res.locals.token ? { ...body, token: res.locals.token } : body);
+const withToken = (res, body) => ({ ...body, ...(res.locals.token ? { token: res.locals.token } : {}), others: res.locals.others || 0 });
 function readCookie(req, name) {
   const m = (req.headers.cookie || '').split(';').map((s) => s.trim()).find((s) => s.startsWith(name + '='));
   return m ? decodeURIComponent(m.slice(name.length + 1)) : null;
@@ -177,14 +191,16 @@ app.use(async (req, res, next) => {
   const token = sessionToken(req);
   if (token && req.path.startsWith('/api/')) {
     try {
-      const row = await db.get(`SELECT u.*, s.expires_at FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token = ?`, sha(token));
-      if (row && row.expires_at > Date.now() && !row.disabled) req.user = row;
+      const row = await db.get(`SELECT u.*, s.expires_at, s.replaced_at FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token = ?`, sha(token));
+      if (row && row.replaced_at) req.replaced = true; // logged in on another device
+      else if (row && row.expires_at > Date.now() && !row.disabled) req.user = row;
     } catch (e) { console.error(e); }
   }
   next();
 });
-const auth = (req, res, next) => (req.user ? next() : res.status(401).json({ error: 'Kailangan mong mag-login.' }));
-const admin = (req, res, next) => (req.user && req.user.role === 'admin' ? next() : res.status(403).json({ error: 'Para sa admin lamang.' }));
+const REPLACED = 'Na-logout ka dahil nag-login ang account mo sa ibang device. Isang device lang ang pwedeng naka-login.';
+const auth = (req, res, next) => (req.user ? next() : res.status(401).json(req.replaced ? { error: REPLACED, code: 'replaced' } : { error: 'Kailangan mong mag-login.' }));
+const admin = (req, res, next) => (req.user && req.user.role === 'admin' ? next() : req.replaced ? auth(req, res, next) : res.status(403).json({ error: 'Para sa admin lamang.' }));
 const verified = (req, res, next) => (!REQUIRE_VERIFY || req.user.email_verified ? next()
   : res.status(403).json({ error: 'I-verify muna ang iyong email.', code: 'unverified' }));
 const wrap = (fn) => async (req, res, next) => { try { await fn(req, res, next); } catch (e) { console.error(e); if (!res.headersSent) res.status(500).json({ error: 'May nangyaring error. Subukan ulit.' }); } };
@@ -326,11 +342,18 @@ app.get('/api/me', wrap(async (req, res) => {
   const st = await getSettings();
   res.json({
     user: publicUser(req.user) || null,
+    ...(req.replaced ? { ended: 'replaced' } : {}),
     config: { verify: REQUIRE_VERIFY, mail: mail.enabled, premium_required: st.premium_required === '1', free: freeLimits(st), online_pay: onlinePayOn(st), ...clientConfig(st) },
     premium: req.user ? hasPremium(req.user, st) : false,
     practice_today: req.user ? await practiceToday(req.user.id) : 0,
     mock_today: req.user ? await mockToday(req.user.id) : 0,
   });
+}));
+
+// The guided tour (new Premium users) was finished or skipped, so it does not show again on other devices.
+app.post('/api/me/tour', auth, wrap(async (req, res) => {
+  await db.run('UPDATE users SET tour_done = ? WHERE id = ?', req.body.done === false ? 0 : 1, req.user.id);
+  res.json({ ok: true });
 }));
 
 app.post('/api/me/password', auth, wrap(async (req, res) => {
@@ -863,6 +886,8 @@ app.post('/api/admin/sets', admin, wrap(async (req, res) => {
   res.json(await sets.createSet(req.body.mode));
 }));
 app.delete('/api/admin/sets/:id', admin, wrap(async (req, res) => {
+  const set = await db.get('SELECT number FROM exam_sets WHERE id = ?', Number(req.params.id));
+  if (set && set.number === 1) return res.status(400).json({ error: 'Hindi mabubura ang Set 1. Ito ang libreng set na nasa Home ng lahat.' });
   await db.run('DELETE FROM exam_sets WHERE id = ?', Number(req.params.id));
   res.json({ ok: true });
 }));

@@ -105,6 +105,8 @@
     'Hindi mabasa ang larawan ng resibo. Subukan ang ibang larawan.': 'The receipt picture cannot be read. Try another picture.',
     'Walang larawan ng resibo.': 'No receipt picture.',
     'Hindi mabasa ang larawan. Gumamit ng PNG o JPG.': 'The picture cannot be read. Use PNG or JPG.',
+    'Na-logout ka dahil nag-login ang account mo sa ibang device. Isang device lang ang pwedeng naka-login.': 'You were logged out because your account logged in on another device. Only one device can be logged in at a time.',
+    'Hindi mabubura ang Set 1. Ito ang libreng set na nasa Home ng lahat.': 'Set 1 cannot be deleted. It is the free set on everyone\'s Home.',
   };
   const serverText = (m) => {
     if (lang !== 'en' || !m) return m;
@@ -132,8 +134,25 @@
     let data = null;
     try { data = await res.json(); } catch { /* empty */ }
     if (data && data.token) store.set('cse-token', data.token);
-    if (!res.ok) { const e = new Error(serverText(data && data.error) || L('May problema sa koneksyon.', 'There is a connection problem.')); e.status = res.status; e.code = data && data.code; throw e; }
+    if (!res.ok) {
+      const e = new Error(serverText(data && data.error) || L('May problema sa koneksyon.', 'There is a connection problem.')); e.status = res.status; e.code = data && data.code;
+      if (e.code === 'replaced') endedElsewhere();
+      throw e;
+    }
     return data;
+  }
+  /* One login at a time: when the account logs in on another device, this device is logged out
+     (the server ends the old session) and the login screen says why. */
+  const ELSEWHERE = () => L('Na-logout ka dahil nag-login ang account mo sa ibang device. Isang device lang ang pwedeng naka-login sa isang account.',
+    'You were logged out because your account logged in on another device. Only one device can be logged in to an account.');
+  function endedElsewhere() {
+    if (!S.user) return;
+    clearTimeout(S.saveT); stopTimer();
+    S.exam = null; document.onkeydown = null;
+    store.del('cse-token'); store.del('cse-boot');
+    S.user = null; S.authNote = ELSEWHERE();
+    Tour.stop();
+    setTimeout(() => go('#/login'));
   }
   // GET that remembers the last answer, so the screen still works offline.
   async function cachedGet(url) {
@@ -296,11 +315,13 @@
     if (el && !el.disabled) Sound.play('tap');
   }, true);
 
-  /* ---------------- level: Professional or Subprofessional (Premium shows it everywhere) ---------------- */
+  /* ---------------- level: Professional or Subprofessional (shown everywhere, for every user) ----------------
+     Free and Premium users have the same screens. What differs is what is open (all exam sets, full review,
+     PDF/email/print, offline, quick login), not how the app looks. */
   const LEVELS = { pro: ['PRO', 'Professional'], subpro: ['SUBPRO', 'Subprofessional'] };
   const myLevel = () => (store.get(uk('cse-level')) === 'subpro' ? 'subpro' : 'pro');
   const setLevel = (lv) => store.set(uk('cse-level'), lv === 'subpro' ? 'subpro' : 'pro');
-  const showLevel = () => !!(S.user && S.premium);
+  const showLevel = () => !!S.user;
   // The level of an exam: from the mock exam itself, or from the practice title "Practice (Subpro): ...".
   const levelOf = (a) => (a && LEVELS[a.mode] ? a.mode : /^Practice \((Pro|Subpro)\)/.exec((a && a.title) || '')?.[1] === 'Subpro' ? 'subpro'
     : /^Practice \(Pro\)/.test((a && a.title) || '') ? 'pro' : null);
@@ -458,14 +479,14 @@
     });
   }
 
-  /* ---------------- look: comfortable colors and pinch zoom (Premium) ----------------
-     Premium users get soft, easy-on-the-eyes colors (or sepia / dark) and can zoom the screens
+  /* ---------------- look: comfortable colors and pinch zoom (every user) ----------------
+     Soft, easy-on-the-eyes colors (or sepia / dark), and the screens zoom
      with two fingers (or Ctrl + scroll / touchpad pinch on a computer). No zoom buttons.
      The choice is saved on the device, so the login screen keeps the same look. */
   const THEMES = () => [['auto', 'Auto'], ['comfort', L('Malambot', 'Soft')], ['sepia', 'Sepia'], ['dark', L('Madilim', 'Dark')]];
   const ZMIN = 0.8, ZMAX = 1.6;
   const look = () => store.get('cse-look');
-  const lookOn = () => (S.user ? !!S.premium : !!look());
+  const lookOn = () => !!S.user || !!look();
   const darkMQ = window.matchMedia ? matchMedia('(prefers-color-scheme: dark)') : null;
   let zoomNow = 1;
   function setZoom(z) {
@@ -625,8 +646,9 @@
   const FOLD_MS = 10000;
   const F = { key: null, el: null, t: 0 }; // the open section; its key survives a refresh of the same screen
   store.del('cse-fold'); // older versions remembered open sections
-  function fold(key, title, body, { card = true, id = '' } = {}) {
-    return `<details class="fold${card ? ' card' : ' plain'}" data-fold="${key}"${id ? ` id="${id}"` : ''}${F.key === key ? ' open' : ''}>
+  // stay: the section does not close by itself after 10 seconds (Admin → Settings, where the admin fills in forms).
+  function fold(key, title, body, { card = true, id = '', stay = false } = {}) {
+    return `<details class="fold${card ? ' card' : ' plain'}" data-fold="${key}"${id ? ` id="${id}"` : ''}${stay ? ' data-stay="1"' : ''}${F.key === key ? ' open' : ''}>
       <summary><span class="fold-title">${title}</span><span class="chev" aria-hidden="true"></span></summary><div class="fold-body">${body}</div></details>`;
   }
   const topGap = () => { const bar = $('.topbar'); return (bar ? bar.getBoundingClientRect().bottom : 0) + 8; };
@@ -638,7 +660,7 @@
   function foldTimer() {
     clearTimeout(F.t);
     const d = F.el;
-    if (!d || !d.open || !d.isConnected) return;
+    if (!d || !d.open || !d.isConnected || d.dataset.stay) return;
     F.t = setTimeout(() => {
       if (!d.open || !d.isConnected) return;
       const a = document.activeElement;
@@ -708,7 +730,7 @@
       <header class="topbar">
         <a class="brand" href="#/"><img src="icons/icon.svg" alt="">CSE Reviewer</a>
         <nav class="nav-desktop">${links.map(([k, h, l]) => `<a class="link ${active === k ? 'active' : ''}" href="${h}">${l}</a>`).join('')}</nav>
-        <div class="top-right">${showLevel() ? `<button type="button" class="lvl-chip ${lv} top" id="topLvl" title="${L('Level mo: ', 'Your level: ')}${LEVELS[lv][1]} (${L('pindutin para palitan', 'tap to change')})">${LEVELS[lv][0]}</button>` : ''}${flagBtn()}</div>
+        <div class="top-right">${showLevel() ? `<button type="button" class="lvl-chip ${lv} top" id="topLvl" title="${L('Level mo: ', 'Your level: ')}${LEVELS[lv][1]} (${L('pindutin para palitan', 'tap to change')})">${LEVELS[lv][0]}</button>` : ''}<a class="help-btn" id="helpBtn" href="#/help" title="${L('Tulong at gabay', 'Help and guide')}" aria-label="${L('Tulong at gabay', 'Help and guide')}">?</a>${flagBtn()}</div>
       </header>
       <main class="wrap">${body}${Ads.slot(active)}</main>
       <nav class="bottomnav">${links.map(([k, h, l, ic]) => `<a class="${active === k ? 'active' : ''}" href="${h}"><span class="ic">${ic}</span>${l}</a>`).join('')}</nav>`;
@@ -740,14 +762,16 @@
   const lastEmail = () => (Bio.saved() && Bio.saved().email) || store.get('cse-last-email') || '';
   async function afterLogin(r, msg) {
     if (r && r.user) store.set('cse-last-email', r.user.email);
+    S.authNote = null;
     await refreshMe();
-    toast(msg);
+    // One login at a time: say so when this login logged out another device.
+    toast(r && r.others ? `${msg} ${L('Na-logout ang account mo sa ibang device.', 'Your account was logged out on the other device.')}` : msg);
     go('#/');
     setTimeout(offerBio, 700);
   }
   // After a password or code login: offer fingerprint/face login once (Premium, on devices that have it).
   async function offerBio() {
-    if (!S.user || !S.premium || S.exam || Bio.saved() || store.get('cse-bio-asked') || (S.config.verify && !S.user.email_verified)) return;
+    if (!S.user || !S.premium || S.exam || Tour.active() || Tour.due() || Bio.saved() || store.get('cse-bio-asked') || (S.config.verify && !S.user.email_verified)) return;
     const ms = await Bio.methods();
     if (!ms.length) return;
     store.set('cse-bio-asked', 1);
@@ -760,7 +784,7 @@
   function viewAuth(mode) {
     const reg = mode === 'register';
     const bio = !reg && Bio.saved();
-    authShell(`
+    authShell(`${S.authNote ? `<div class="notice auth-kicked" role="alert">🔒 ${esc(S.authNote)}</div>` : ''}
       <form id="authForm" class="auth-form" novalidate>
         ${reg ? `<input id="name" type="text" autocomplete="name" required placeholder="${L('Pangalan', 'Name')}" aria-label="${L('Pangalan', 'Name')}">` : ''}
         <input id="email" type="email" autocomplete="${reg ? 'email' : 'username'}" required placeholder="Email" aria-label="Email" value="${reg ? '' : esc(lastEmail())}">
@@ -885,6 +909,15 @@
       if (S.offline) sets = sets.filter((x) => saved.some((y) => y.id === x.id));
       const free = isFree();
       const usedUp = free && (S.mockToday || 0) >= S.config.free.mock_daily;
+      // Set 1 is pinned on top (it is the free set and the one on Home), then the others from newest to oldest.
+      const one = sets.find((x) => x.number === 1), rest = sets.filter((x) => x.number !== 1);
+      const newest = Math.max(0, ...sets.map((x) => x.number));
+      const row = (x) => `
+        <div class="list-item${x.number === 1 ? ' set-one' : ''}">
+          <div class="grow"><div class="row" style="gap:6px"><b>Set ${x.number}</b>${x.number === newest ? `<span class="pill ok">${L('Pinakabago', 'Newest')}</span>` : ''}${x.number === 1 ? `<span class="pill">${L('Simulan dito', 'Start here')}</span>` : ''}${free && !x.locked ? `<span class="pill">${L('Libre', 'Free')}</span>` : ''}</div>
+          <div class="muted small">${L('Inilabas', 'Released')} ${new Date(x.created_at).toLocaleDateString('en-PH', { year: 'numeric', month: 'short', day: 'numeric' })}${x.taken ? L(` · Nasubukan ${x.taken}x · Best ${x.best}%`, ` · Taken ${x.taken}x · Best ${x.best}%`) : ''}${local && saved.some((y) => y.id === x.id) ? L(' · ⚡ Naka-save sa device', ' · ⚡ Saved on device') : ''}</div></div>
+          <button class="btn small ${x.locked ? 'secondary' : ''}" data-set="${x.id}" data-locked="${x.locked ? 1 : ''}" ${usedUp && !x.locked ? 'disabled' : ''}>${x.locked ? '🔒 Premium' : x.taken ? L('Ulitin', 'Retake') : L('Simulan', 'Start')}</button>
+        </div>`;
       shell('home', `
       <p class="small" style="margin:0"><a href="#/">‹ Home</a></p>
       <div class="row" style="gap:10px;flex-wrap:nowrap"><h1 style="margin:8px 0 4px">${esc(e.title.replace(' Mock Exam', ''))}</h1>${showLevel() ? levelChip(mode, 'big') : ''}</div>
@@ -892,15 +925,12 @@
       ${free ? `<div class="notice" style="margin:12px 0">${L(`🔓 Libre ang <b>Set ${S.config.free.sets > 1 ? '1 hanggang ' + S.config.free.sets : '1'}</b> para masubukan mo. Para sa lahat ng set, Bagong halo, at offline na paggamit, <a href="#/premium">kumuha ng Premium →</a>`,
         `🔓 <b>Set ${S.config.free.sets > 1 ? '1 to ' + S.config.free.sets : '1'}</b> is free so you can try it. For all sets, New mix, and offline use, <a href="#/premium">get Premium →</a>`)}
         ${usedUp ? `<br><b>${L('Nagamit mo na ang libreng mock exam ngayong araw.', 'You have used today\'s free mock exam.')}</b> ${L('Bumalik bukas.', 'Come back tomorrow.')}` : ''}</div>` : ''}
+      ${one ? `<div class="list" style="margin-bottom:12px">${row(one)}</div>` : ''}
       ${S.offline && !local ? `<div class="notice" style="margin-bottom:12px">${L('Walang internet. Para sa Premium lang ang offline na paggamit.', 'No internet. Offline use is for Premium only.')}</div>` : `
       <div class="card" style="margin-bottom:12px"><div class="row between"><div><h3>${L('Bagong halo ng tanong', 'New mix of questions')}</h3><p class="muted small" style="margin:0">${L(`Bagong random na ${e.items} tanong.`, `${e.items} new random questions.`)}</p></div>
         <button class="btn secondary" data-random>${free ? '🔒 ' : ''}${L('Simulan', 'Start')}</button></div></div>`}
-      <div class="list">${sets.map((x, i) => `
-        <div class="list-item">
-          <div class="grow"><div class="row" style="gap:6px"><b>Set ${x.number}</b>${i === 0 ? `<span class="pill ok">${L('Pinakabago', 'Newest')}</span>` : ''}${free && !x.locked ? `<span class="pill">${L('Libre', 'Free')}</span>` : ''}</div>
-          <div class="muted small">${L('Inilabas', 'Released')} ${new Date(x.created_at).toLocaleDateString('en-PH', { year: 'numeric', month: 'short', day: 'numeric' })}${x.taken ? L(` · Nasubukan ${x.taken}x · Best ${x.best}%`, ` · Taken ${x.taken}x · Best ${x.best}%`) : ''}${local && saved.some((y) => y.id === x.id) ? L(' · ⚡ Naka-save sa device', ' · ⚡ Saved on device') : ''}</div></div>
-          <button class="btn small ${x.locked ? 'secondary' : ''}" data-set="${x.id}" data-locked="${x.locked ? 1 : ''}" ${usedUp && !x.locked ? 'disabled' : ''}>${x.locked ? '🔒 Premium' : x.taken ? L('Ulitin', 'Retake') : L('Simulan', 'Start')}</button>
-        </div>`).join('') || `<div class="card empty">${L('Wala pang exam set.', 'No exam sets yet.')}</div>`}</div>`);
+      ${rest.length ? `<h3 style="margin:4px 0 8px">${L('Iba pang exam set (pinakabago muna)', 'Other exam sets (newest first)')}</h3>` : ''}
+      <div class="list">${rest.map(row).join('') || (one ? '' : `<div class="card empty">${L('Wala pang exam set.', 'No exam sets yet.')}</div>`)}</div>`);
       if ($('[data-random]')) $('[data-random]').onclick = () => (free ? go('#/premium') : startExam(mode));
       $$('[data-set]').forEach((b) => (b.onclick = () => (b.dataset.locked ? go('#/premium') : startExam(mode, { set_id: +b.dataset.set }))));
     };
@@ -927,11 +957,9 @@
             <tr><td>${L('Practice kada subject', 'Practice by subject')}</td><td>${L(`${S.config.free.practice_daily}x kada araw, hanggang ${S.config.free.practice_items} tanong`, `${S.config.free.practice_daily}x a day, up to ${S.config.free.practice_items} questions`)}</td><td>${L('Walang limit', 'No limit')}</td></tr>
             <tr><td>${L('Mock exam (Pro at Subpro)', 'Mock exam (Pro and Subpro)')}</td><td>${L(`Set 1 lang, ${S.config.free.mock_daily ?? 1}x kada araw`, `Set 1 only, ${S.config.free.mock_daily ?? 1}x a day`)}</td><td>${L('Lahat ng set + Bagong halo, walang limit', 'All sets + New mix, no limit')}</td></tr>
             <tr><td>${L('Review ng mock exam', 'Mock exam review')}</td><td>${L('Score kada subject + letra ng tamang sagot', 'Score by subject + letter of the correct answer')}</td><td>${L('Buong tanong, paliwanag, score kada topic, PDF / email / print', 'Full questions, explanations, score by topic, PDF / email / print')}</td></tr>
-            <tr><td>Level</td><td>–</td><td>${L('Malaking PRO / SUBPRO sa bawat screen', 'Big PRO / SUBPRO on every screen')}</td></tr>
             <tr><td>Ads</td><td>${L('Mayroon', 'Yes')}</td><td>${L('Wala', 'None')}</td></tr>
             <tr><td>${L('Offline (walang internet)', 'Offline (no internet)')}</td><td>${L('Hindi', 'No')}</td><td>${L('Oo, buong app', 'Yes, the whole app')}</td></tr>
             <tr><td>${L('Bilis', 'Speed')}</td><td>${L('Hinihintay ang server', 'Waits for the server')}</td><td>${L('Agad-agad (naka-save sa device)', 'Instant (saved on the device)')}</td></tr>
-            <tr><td>${L('Itsura', 'Look')}</td><td>${L('Karaniwan', 'Standard')}</td><td>${L('Malambot sa mata (o Sepia / Madilim) + pinch zoom', 'Easy on the eyes (or Sepia / Dark) + pinch zoom')}</td></tr>
             <tr><td>Login</td><td>${L('Password o code sa email', 'Password or email code')}</td><td>${L('Pati fingerprint / face / Windows Hello', 'Also fingerprint / face / Windows Hello')}</td></tr></table>`}
       </div>
       ${S.user.role === 'admin' ? '' : `<div class="card" style="margin-top:12px">
@@ -945,7 +973,7 @@
         ${openPay ? `<button class="btn block secondary" id="paycheck" style="margin-top:8px">${L('I-check ang bayad', 'Check payment')}</button>` : ''}` : ''}
         ${manual ? `${p.online ? `<h3 style="margin-top:18px">${L('O magbayad nang manual', 'Or pay manually')}</h3>` : ''}
         <p class="small" style="margin:6px 0">${L('Pumili kung saan magbabayad:', 'Choose where to pay:')}</p>
-        <div class="seg" id="pmSel">${p.methods.map((m, i) => `<button type="button" data-pm="${esc(m.id)}" class="${i ? '' : 'active'}">${esc(m.name)}</button>`).join('')}</div>
+        <div class="seg" id="pmSel">${p.methods.map((m, i) => `<button type="button" data-pm="${esc(m.id)}" class="${i ? '' : 'active'}">${esc(m.name)}${p.methods.filter((x) => x.name === m.name).length > 1 && m.account ? ` <span class="small muted">…${esc(m.account.replace(/\s/g, '').slice(-4))}</span>` : ''}</button>`).join('')}</div>
         <div id="pmInfo"></div>
         ${p.note ? `<p class="muted small">${esc(p.note)}</p>` : ''}
         ${pending ? `<div class="notice">${L('Hinihintay pang ma-check ang bayad mo', 'Your payment is still waiting to be checked')} (${esc(pending.method)}, ref: <b>${esc(pending.reference)}</b>).</div>` : `
@@ -1001,14 +1029,7 @@
     const mocks = stats.mocks;
     const best = mocks.length ? Math.max(...mocks.map((m) => m.pct)) : null;
     const ex = S.meta.exams;
-    const examCard = (e, desc) => fold('home-' + e.key, `<h3>${esc(e.title.replace(' Mock Exam', ''))}</h3><span class="pill">Mock Exam</span>`, `
-        <div class="exam-card">
-        <div class="meta"><span class="pill warn">${e.items} items</span><span class="pill warn">${fmtDur(e.minutes)}</span><span class="pill warn">Passing ${e.passing}%</span></div>
-        <p class="muted small" style="margin:4px 0 8px">${desc}</p>
-        <p class="small" style="margin:0 0 10px">${e.sections.map((s) => `${esc(subjName(s.subject))} (${s.count})`).join(' · ')}</p>
-        <div class="row"><button class="btn" type="button" data-set1="${e.key}">▶ ${L('Simulan ang Set 1', 'Start Set 1')}</button><a class="btn secondary" href="#/sets/${e.key}">${L('Pumili ng exam set', 'Choose an exam set')}</a></div>
-        </div>`);
-    // Premium: the level is big and always on screen. Pick PRO or SUBPRO, and its mock exam is right below.
+    // The level is big and always on screen (every user). Pick PRO or SUBPRO, and its mock exam is right below.
     const lv = myLevel(), le = ex[lv];
     const levelHome = () => `
       <div class="level-switch" role="group" aria-label="Level">${Object.entries(LEVELS).map(([k, [c, n]]) => `
@@ -1031,22 +1052,21 @@
       <p class="muted" style="margin-top:0">${L('Pumili ng mock exam. Nasa <a href="#/practice">Practice</a> ang practice kada subject.', 'Choose a mock exam. Practice by subject is in <a href="#/practice">Practice</a>.')}</p>
       ${open.length ? `<div class="notice" style="margin:12px 0">${L('May hindi ka pa natatapos na exam:', 'You have an unfinished exam:')} <b>${esc(open[0].title)}</b>. <a href="#/exam/${open[0].id}">${L('Ituloy ito →', 'Continue →')}</a></div>` : ''}
       ${list.some((a) => a.pending && a.finished_at) ? `<p class="muted small">${L('⏳ May mga resulta kang ginawa offline. Ise-save ang mga ito online kapag may internet na.', '⏳ You have results made offline. They will be saved online when the internet is back.')}</p>` : ''}
-      ${showLevel() ? levelHome() : `<div class="grid two folds" style="margin-top:12px">
-        ${examCard(ex.pro, L('Para sa second-level positions sa gobyerno (hal. Admin Officer, Analyst).', 'For second-level government positions (e.g. Admin Officer, Analyst).'))}
-        ${examCard(ex.subpro, L('Para sa first-level positions (hal. clerk, aide, technician).', 'For first-level positions (e.g. clerk, aide, technician).'))}
-      </div>`}
+      ${levelHome()}
       ${fold('home-progress', `<h2>${L('Ang progress mo', 'Your progress')}</h2>`, `
       <div class="grid stats">
         <div class="card stat"><div class="v">${stats.attempts}</div><div class="l">${L('Natapos na exam/practice', 'Exams/practice finished')}</div></div>
         <div class="card stat"><div class="v">${mocks.length}</div><div class="l">${L('Mock exam na natapos', 'Mock exams finished')}</div></div>
         <div class="card stat"><div class="v">${best === null ? '–' : best + '%'}</div><div class="l">${L('Pinakamataas na mock score', 'Highest mock score')}</div></div>
         <div class="card stat"><div class="v">${mocks.filter((m) => m.pct >= 80).length}</div><div class="l">${L('Pasado (80% pataas)', 'Passed (80% and up)')}</div></div>
-      </div>`, { card: false })}
-      ${Object.keys(stats.subjects).length ? `<div style="margin-top:12px">${fold('home-subjects', `<h3>${L('Score kada subject', 'Score by subject')}</h3>`, subjectBars(stats.subjects))}</div>` : ''}
+      </div>
+      <div class="card" style="margin-top:12px"><h3>${L('Score kada subject', 'Score by subject')}</h3>${Object.keys(stats.subjects).length ? subjectBars(stats.subjects)
+        : `<p class="muted small" style="margin:6px 0 0">${L('Lalabas dito ang score mo kada subject pagkatapos ng unang exam o practice.', 'Your score by subject shows here after your first exam or practice.')}</p>`}</div>`, { card: false })}
       ${fold('home-recent', `<h2>${L('Mga huling exam', 'Recent exams')}</h2>`, done.length ? `<div class="list">${done.slice(0, 5).map(attemptRow).join('')}</div><p><a href="#/history">${L('Tingnan lahat →', 'See all →')}</a></p>` : `<div class="card empty">${L('Wala ka pang natatapos na exam. Subukan ang isang mock exam!', 'You have not finished an exam yet. Try a mock exam!')}</div>`, { card: false })}
     `);
     $$('.level-switch [data-level]').forEach((b) => (b.onclick = () => { if (b.dataset.level !== myLevel()) { setLevel(b.dataset.level); paintHome(l0, s0); } }));
     $$('[data-set1]').forEach((b) => (b.onclick = () => startSet1(b.dataset.set1)));
+    Tour.maybe();
   }
   // "Set 1" of a mock exam, straight from Home.
   async function startSet1(mode) {
@@ -1449,11 +1469,11 @@
         ${lite ? '' : `<p class="muted small">${L(`Tagal: ${mins} minuto · ${wrongCount} mali · ${blankCount} walang sagot`, `Time: ${mins} min · ${wrongCount} wrong · ${blankCount} unanswered`)}</p>`}
         ${isLocal(id) ? `<p class="muted small">${L('⏳ Ginawa offline. Ise-save ito online kapag may internet na.', '⏳ Made offline. It will be saved online when the internet is back.')}</p>` : ''}
         <div class="row" style="justify-content:center"><a class="btn secondary" href="#/">Home</a>${lite ? `<a class="btn" href="#/premium">⭐ ${L('Buong review sa Premium', 'Full review with Premium')}</a>` : `<button class="btn" id="again">${L('Ulitin (bagong set)', 'Retake (new set)')}</button>`}</div>
-        ${tools ? `<div class="result-tools" role="group" aria-label="${L('I-save o ibahagi ang resulta', 'Save or share the result')}">
-          <button class="btn secondary" id="rPdf" type="button">📄 ${L('I-save bilang PDF', 'Save as PDF')}</button>
-          <button class="btn secondary" id="rMail" type="button">✉️ ${L('Ipadala sa email', 'Send to email')}</button>
-          <button class="btn secondary" id="rPrint" type="button">🖨️ Print</button></div>
-          <p class="muted small" style="margin:6px 0 0">${L(`Kasama ang lahat ng tanong, sagot at paliwanag. Gumagana offline ang PDF at Print; ang email ay ipapadala sa ${esc(S.user.email)} (kapag offline, ipapadala ito pagbalik ng internet).`, `Includes every question, answer and explanation. PDF and Print work offline; the email goes to ${esc(S.user.email)} (when offline, it is sent once the internet is back).`)}</p>` : ''}
+        ${tools || isFree() ? `<div class="result-tools" role="group" aria-label="${L('I-save o ibahagi ang resulta', 'Save or share the result')}">
+          <button class="btn secondary" id="rPdf" type="button">${tools ? '📄' : '🔒'} ${L('I-save bilang PDF', 'Save as PDF')}</button>
+          <button class="btn secondary" id="rMail" type="button">${tools ? '✉️' : '🔒'} ${L('Ipadala sa email', 'Send to email')}</button>
+          <button class="btn secondary" id="rPrint" type="button">${tools ? '🖨️' : '🔒'} Print</button></div>
+          <p class="muted small" style="margin:6px 0 0">${!tools ? L('Para sa <a href="#/premium">Premium</a> ang PDF, email at print ng resulta na may lahat ng tanong, sagot at paliwanag.', 'Saving as PDF, email and print of the result with every question, answer and explanation are for <a href="#/premium">Premium</a>.') : L(`Kasama ang lahat ng tanong, sagot at paliwanag. Gumagana offline ang PDF at Print; ang email ay ipapadala sa ${esc(S.user.email)} (kapag offline, ipapadala ito pagbalik ng internet).`, `Includes every question, answer and explanation. PDF and Print work offline; the email goes to ${esc(S.user.email)} (when offline, it is sent once the internet is back).`)}</p>` : ''}
       </div>
       <div class="card" style="margin-top:12px"><h3>${lite ? L('Kabuuang score kada subject', 'Total score by subject') : L('Score kada subject', 'Score by subject')}</h3>${subjectBars(a.breakdown || {})}</div>
       ${lite ? answerKey(a) : `
@@ -1461,6 +1481,7 @@
       <h2>${L('Review ng mga sagot', 'Review answers')}</h2>
       <div class="tabs" id="rf"><button data-f="wrong" class="active">${L('Mali at walang sagot', 'Wrong and unanswered')}</button><button data-f="all">${L('Lahat', 'All')}</button></div>
       <div class="list" id="rlist"></div>`}`);
+    if (!tools && $('#rPdf')) ['#rPdf', '#rMail', '#rPrint'].forEach((k) => ($(k).onclick = () => go('#/premium')));
     if (lite) return;
     const paint = (f) => {
       $$('#rf button').forEach((b) => b.classList.toggle('active', b.dataset.f === f));
@@ -1605,12 +1626,15 @@
       <a class="list-item" href="#/premium" style="margin-top:12px"><div class="grow"><b>Premium</b><div class="muted small">${S.user.role === 'admin' ? L('Admin: bukas lahat', 'Admin: everything open')
         : S.premium && S.user.premium_until > Date.now() ? L('Aktibo hanggang ', 'Active until ') + new Date(S.user.premium_until).toLocaleDateString('en-PH')
         : S.config.premium_required ? L('Hindi pa aktibo', 'Not active yet') : L('Libre pa ang mock exams', 'Mock exams are free for now')}</div></div><span>›</span></a>
+      <a class="list-item" href="#/help" style="margin-top:8px"><div class="grow"><b>❓ ${L('Tulong at gabay', 'Help and guide')}</b><div class="muted small">${L('Paano gamitin ang app, mga madalas itanong, at ulitin ang gabay', 'How to use the app, common questions, and replay the guide')}</div></div><span>›</span></a>
       <div class="stack">
-      ${S.premium ? fold('acc-look', `<h3>${L('Itsura ng screen', 'Screen look')}</h3>`, `
+      ${fold('acc-look', `<h3>${L('Itsura ng screen', 'Screen look')}</h3>`, `
         <p class="muted small" style="margin:0 0 10px">${L('Malambot na kulay na hindi masakit sa mata. Para mag-zoom, i-pinch ang screen gamit ang dalawang daliri', 'Soft colors that are easy on the eyes. To zoom, pinch the screen with two fingers')}${IS_APP && !capNative ? L(' (o Ctrl + scroll / touchpad pinch)', ' (or Ctrl + scroll / touchpad pinch)') : ''}.</p>
         <div class="seg" id="themes">${THEMES().map(([k, l]) => `<button type="button" data-theme="${k}" class="${(look() || {}).theme === k ? 'active' : ''}">${l}</button>`).join('')}</div>
         ${zoomNow !== 1 ? `<p class="small" style="margin:10px 0 0">Zoom: <b>${Math.round(zoomNow * 100)}%</b> · <a href="#" id="zreset">${L('Ibalik sa 100%', 'Back to 100%')}</a></p>` : ''}`, { id: 'lookCard' })
-      + fold('acc-bio', `<h3>${L('Mabilis na login', 'Quick login')}</h3><span class="pill ok" id="bioPill" style="display:none"></span>`, `<div id="bioCard"><p class="muted small" style="margin:0">${L('Tinitingnan…', 'Checking…')}</p></div>`) : ''}
+      + fold('acc-bio', `<h3>${L('Mabilis na login', 'Quick login')}</h3><span class="pill ok" id="bioPill" style="display:none"></span>${S.premium ? '' : '<span class="pill">🔒 Premium</span>'}`, S.premium
+        ? `<div id="bioCard"><p class="muted small" style="margin:0">${L('Tinitingnan…', 'Checking…')}</p></div>`
+        : `<p class="muted small" style="margin:0 0 10px">${L('Mag-login gamit ang face, fingerprint o Windows Hello, walang password. Para sa Premium ito. Pwede ka pa ring mag-login gamit ang <b>code sa email</b>.', 'Log in with your face, fingerprint or Windows Hello, no password. This is for Premium. You can still log in with an <b>email code</b>.')}</p><a class="btn secondary" href="#/premium">⭐ ${L('Kumuha ng Premium', 'Get Premium')}</a>`)}
       ${fold('acc-sound', `<h3>🔊 ${L('Tunog', 'Sounds')}</h3><span class="pill" id="sndPill">${Sound.get().on ? L('Naka-on', 'On') : L('Naka-off', 'Off')}</span>`, `
         <p class="muted small" style="margin:0 0 10px">${L('Maiikling tunog kapag pumindot, tama o mali sa practice, natapos ang exam, at 5 minutong natitira. Gumagana offline.', 'Short sounds when you tap, for right or wrong in practice, when an exam ends, and at 5 minutes left. Works offline.')}</p>
         <label class="check"><input type="checkbox" id="sndOn" ${Sound.get().on ? 'checked' : ''}> ${L('Naka-on ang tunog', 'Sounds on')}</label>
@@ -1694,8 +1718,16 @@
   async function viewAdmin(tab = 'overview') {
     if (S.user.role !== 'admin') return go('#/');
     const tabs = [['overview', 'Overview'], ['payments', 'Payments'], ['users', 'Users'], ['sets', 'Exam sets'], ['questions', L('Mga tanong', 'Questions')], ['results', L('Resulta', 'Results')], ['settings', 'Settings']];
-    shell('admin', `<h1>Admin</h1><div class="tabs">${tabs.map(([k, l]) => `<button data-t="${k}" class="${k === tab ? 'active' : ''}">${l}</button>`).join('')}</div><div id="adm"><div class="empty">${L('Naglo-load…', 'Loading…')}</div></div>`);
-    $$('.tabs [data-t]').forEach((b) => (b.onclick = () => go('#/admin/' + b.dataset.t)));
+    /* The tab buttons never move. On a phone they wrap into rows (no sideways scrolling), and switching tabs
+       only changes the part below them: the tab bar is not drawn again and the screen does not jump. */
+    const bar = $('#admTabs');
+    if (bar && bar.dataset.lang === lang && $('#adm')) {
+      $$('[data-t]', bar).forEach((b) => b.classList.toggle('active', b.dataset.t === tab));
+      $('#adm').innerHTML = `<div class="empty">${L('Naglo-load…', 'Loading…')}</div>`;
+    } else {
+      shell('admin', `<h1>Admin</h1><div class="tabs adm-tabs" id="admTabs" data-lang="${lang}" role="tablist">${tabs.map(([k, l]) => `<button type="button" role="tab" data-t="${k}" class="${k === tab ? 'active' : ''}">${l}</button>`).join('')}</div><div id="adm"><div class="empty">${L('Naglo-load…', 'Loading…')}</div></div>`);
+      $$('#admTabs [data-t]').forEach((b) => (b.onclick = () => go('#/admin/' + b.dataset.t)));
+    }
     const el = $('#adm');
     try {
       if (tab === 'overview') await admOverview(el);
@@ -1887,9 +1919,9 @@
   async function admSets(el) {
     const rows = await api('GET', '/api/admin/sets');
     const by = (m) => rows.filter((r) => r.mode === m);
-    el.innerHTML = `<p class="muted small">${L('Awtomatikong may bagong set bawat linggo. Pwede ka ring gumawa ng bagong set ngayon.', 'A new set is made every week by itself. You can also make a new set now.')}</p>
+    el.innerHTML = `<p class="muted small">${L('Awtomatikong may bagong set bawat linggo. Pwede ka ring gumawa ng bagong set ngayon. Laging naka-on ang Set 1 (libre at nasa Home ng lahat).', 'A new set is made every week by itself. You can also make a new set now. Set 1 is always on (free and on everyone\'s Home).')}</p>
       ${['pro', 'subpro'].map((m) => `<div class="card" style="margin-bottom:12px"><div class="row between"><h3>${m === 'pro' ? 'Professional' : 'Subprofessional'} (${by(m).length} set)</h3><button class="btn small" data-new="${m}">+ ${L('Bagong set', 'New set')}</button></div>
-        <div class="list" style="margin-top:8px">${by(m).map((r) => `<div class="list-item"><div class="grow"><b>Set ${r.number}</b><div class="muted small">${fmtDate(r.created_at)} · ${L(`${r.taken} beses nasubukan`, `taken ${r.taken} time(s)`)}</div></div><button class="btn ghost small" data-del="${r.id}">${L('Burahin', 'Delete')}</button></div>`).join('')}</div></div>`).join('')}`;
+        <div class="list" style="margin-top:8px">${by(m).map((r) => `<div class="list-item"><div class="grow"><b>Set ${r.number}</b><div class="muted small">${fmtDate(r.created_at)} · ${L(`${r.taken} beses nasubukan`, `taken ${r.taken} time(s)`)}</div></div>${r.number === 1 ? `<span class="pill" title="${L('Libreng set na nasa Home ng lahat. Hindi ito nabubura.', 'The free set on everyone\'s Home. It cannot be deleted.')}">${L('Laging naka-on', 'Always on')}</span>` : `<button class="btn ghost small" data-del="${r.id}">${L('Burahin', 'Delete')}</button>`}</div>`).join('')}</div></div>`).join('')}`;
     $$('[data-new]').forEach((b) => (b.onclick = async () => { b.disabled = true; try { const r = await api('POST', '/api/admin/sets', { mode: b.dataset.new }); toast(L(`Nagawa ang Set ${r.number}.`, `Set ${r.number} made.`)); admSets(el); } catch (e) { toast(e.message); b.disabled = false; } }));
     $$('[data-del]').forEach((b) => (b.onclick = async () => {
       if (await confirmBox(L('Burahin ang set?', 'Delete the set?'), L('Hindi na ito makikita ng mga user. Mananatili ang mga resulta ng mga nakasubok na.', 'Users will no longer see it. Results of those who took it stay.'), L('Burahin', 'Delete'), true)) { await api('DELETE', '/api/admin/sets/' + b.dataset.del); toast(L('Nabura.', 'Deleted.')); admSets(el); }
@@ -1900,12 +1932,14 @@
     let methods = st.pay_methods;
     const check = (id, on, text) => `<label class="check"><input type="checkbox" id="${id}" ${on ? 'checked' : ''}> ${text}</label>`;
     const TYPES = [['gcash', 'GCash'], ['maya', 'Maya'], ['paypal', 'PayPal'], ['bank', L('Bangko', 'Bank')], ['gotyme', 'GoTyme'], ['shopeepay', 'ShopeePay'], ['other', L('Iba pa', 'Other')]];
+    // The name users see comes from the type (GCash, Maya…), the bank's name, or the service's name for "Other".
+    const typeName = (m) => (m.type === 'bank' ? m.bank || L('Bangko', 'Bank') : m.type === 'other' ? m.bank || L('Iba pa', 'Other') : (TYPES.find(([k]) => k === m.type) || [0, m.name])[1]);
     const pmCard = (m) => `<div class="pm-card" data-id="${esc(m.id)}" data-type="${esc(m.type)}" data-qr="${m.has_qr ? 1 : ''}">
-        <div class="row between">${`<label class="check" style="margin:0"><input type="checkbox" data-k="on" ${m.on ? 'checked' : ''}> <b>${esc(m.name)}</b></label>`}
-          ${['gcash', 'maya', 'paypal', 'bank'].includes(m.id) ? '' : `<button type="button" class="btn ghost small" data-pmdel>${L('Alisin', 'Remove')}</button>`}</div>
+        <div class="row between"><label class="check" style="margin:0"><input type="checkbox" data-k="on" ${m.on ? 'checked' : ''}> <b>${esc(typeName(m))}</b></label>
+          <button type="button" class="btn ghost small" data-pmdel>${L('Alisin', 'Remove')}</button></div>
         <div class="grid two">
-          <div><label>${L('Pangalan sa app', 'Name in the app')}</label><input type="text" data-k="name" value="${esc(m.name)}"></div>
           ${m.type === 'bank' ? `<div><label>${L('Bangko', 'Bank')}</label><input type="text" data-k="bank" value="${esc(m.bank)}" placeholder="BDO, BPI, Landbank…"></div>` : ''}
+          ${m.type === 'other' ? `<div><label>${L('Serbisyo', 'Service')}</label><input type="text" data-k="bank" value="${esc(m.bank)}" placeholder="${L('hal.', 'e.g.')} Coins.ph, Palawan"></div>` : ''}
           <div><label>Account name</label><input type="text" data-k="account_name" value="${esc(m.account_name)}" placeholder="${L('hal.', 'e.g.')} Juan D."></div>
           <div><label>${m.type === 'paypal' ? L('PayPal email o paypal.me link', 'PayPal email or paypal.me link') : m.type === 'bank' ? 'Account number' : L('Number / account', 'Number / account')}</label><input type="text" data-k="account" value="${esc(m.account)}"></div>
         </div>
@@ -1914,44 +1948,51 @@
           <label class="btn ghost small" style="margin:0">📷 ${m.has_qr ? L('Palitan ang QR', 'Change QR') : L('Mag-upload ng QR', 'Upload QR')}<input type="file" accept="image/*" data-qrup hidden></label>
           ${m.has_qr ? `<button type="button" class="btn ghost small" data-qrdel>${L('Alisin ang QR', 'Remove QR')}</button>` : ''}</div>
       </div>`;
-    el.innerHTML = `<form class="card" id="stf">
+    // Each part of the settings opens and closes (drop down / up). Only one is open at a time, and they stay
+    // open while the admin works in them. Everything is saved together with the Save button.
+    const sec = (key, title, body) => fold('adm-' + key, `<h3>${title}</h3>`, body, { stay: true });
+    el.innerHTML = `<form id="stf" class="stack adm-settings">
+      <div class="card">
       <h3>${L('Premium (bayad para sa mock exams)', 'Premium (paid mock exams)')}</h3>
       ${check('preq', st.premium_required === '1', L('Kailangan ng Premium para sa mock exams', 'Mock exams need Premium'))}
-      <p class="muted small" style="margin:4px 0 0">${L('Kapag naka-off, libre ang lahat at gumagana offline para sa lahat. Kapag naka-on, online lang ang libreng plan at may limit (sa ibaba).', 'When off, everything is free and works offline for everyone. When on, the free plan is online only and has limits (below).')}</p>
+      <p class="muted small" style="margin:4px 0 0">${L('Kapag naka-off, libre ang lahat at gumagana offline para sa lahat. Kapag naka-on, online lang ang libreng plan at may limit (Libreng plan sa ibaba).', 'When off, everything is free and works offline for everyone. When on, the free plan is online only and has limits (Free plan below).')}</p>
       <div class="row"><div style="flex:1;min-width:120px"><label>${L('Presyo (₱)', 'Price (₱)')}</label><input type="number" id="price" value="${esc(st.price)}"></div>
       <div style="flex:1;min-width:120px"><label>${L('Ilang araw', 'Number of days')}</label><input type="number" id="days" value="${esc(st.plan_days)}"></div></div>
+      </div>
 
-      <h3 class="set-head">💳 ${L('Online na bayad (PayMongo)', 'Online payment (PayMongo)')}</h3>
+      ${sec('online', `💳 ${L('Online na bayad (PayMongo)', 'Online payment (PayMongo)')}`, `
       ${check('payon', st.pay_online_on !== '0', L('Naka-on ang online na bayad', 'Online payment on'))}
       <p class="muted small" style="margin:4px 0 0">${st.online_ready ? L('GCash, Maya, card, GrabPay, QR Ph (bank apps) at iba pa. Awtomatikong bubukas ang Premium pagkabayad.', 'GCash, Maya, card, GrabPay, QR Ph (bank apps) and more. Premium opens by itself after payment.')
-        : L('⚠️ Hindi pa naka-set up: ilagay ang <code>PAYMONGO_SECRET_KEY</code> at <code>PAYMONGO_WEBHOOK_SECRET</code> sa server. Hangga\'t wala ang mga ito, hindi lalabas ang online na bayad kahit naka-on dito.', '⚠️ Not set up yet: set <code>PAYMONGO_SECRET_KEY</code> and <code>PAYMONGO_WEBHOOK_SECRET</code> on the server. Until then, online payment does not show even when on here.')}</p>
+        : L('⚠️ Hindi pa naka-set up: ilagay ang <code>PAYMONGO_SECRET_KEY</code> at <code>PAYMONGO_WEBHOOK_SECRET</code> sa server. Hangga\'t wala ang mga ito, hindi lalabas ang online na bayad kahit naka-on dito.', '⚠️ Not set up yet: set <code>PAYMONGO_SECRET_KEY</code> and <code>PAYMONGO_WEBHOOK_SECRET</code> on the server. Until then, online payment does not show even when on here.')}</p>`)}
 
-      <h3 class="set-head">🧾 ${L('Manual na bayad', 'Manual payment')}</h3>
+      ${sec('manual', `🧾 ${L('Manual na bayad', 'Manual payment')}`, `
       ${check('payman', st.pay_manual_on !== '0', L('Naka-on ang manual na bayad (nagpapadala ang user ng reference number at screenshot, ikaw ang mag-a-approve)', 'Manual payment on (the user sends the reference number and a screenshot, you approve it)'))}
-      <p class="muted small">${L('Lalabas lang sa user ang mga account na naka-check.', 'Users see only the checked accounts.')}</p>
-      <div id="pmList" class="stack">${methods.map(pmCard).join('')}</div>
-      <div class="row" style="margin-top:10px"><select id="pmType" style="flex:1;min-width:140px">${TYPES.map(([k, n]) => `<option value="${k}">${n}</option>`).join('')}</select><button type="button" class="btn ghost" id="pmAdd">+ ${L('Magdagdag ng account', 'Add an account')}</button></div>
-      <label>${L('Paalala sa lahat ng user', 'Note to all users')}</label><textarea id="pnote">${esc(st.pay_note)}</textarea>
+      <div class="row pm-add"><select id="pmType" aria-label="${L('Uri ng account', 'Account type')}">${TYPES.map(([k, n]) => `<option value="${k}">${n}</option>`).join('')}</select><button type="button" class="btn ghost" id="pmAdd">+ ${L('Magdagdag ng account', 'Add an account')}</button></div>
+      <p class="muted small">${L('Pumili ng uri sa itaas, tapos pindutin ang "Magdagdag ng account". Lalabas lang sa user ang mga account na naka-check.', 'Pick a type above, then tap "Add an account". Users see only the checked accounts.')}</p>
+      <div id="pmList" class="stack"></div>
+      <label>${L('Paalala sa lahat ng user', 'Note to all users')}</label><textarea id="pnote">${esc(st.pay_note)}</textarea>`)}
 
-      <h3 class="set-head">🆓 ${L('Libreng plan (kapag naka-on ang Premium)', 'Free plan (when Premium is on)')}</h3>
+      ${sec('free', `🆓 ${L('Libreng plan (kapag naka-on ang Premium)', 'Free plan (when Premium is on)')}`, `
       <div class="row"><div style="flex:1;min-width:100px"><label>${L('Practice kada araw', 'Practice per day')}</label><input type="number" min="0" id="fdaily" value="${esc(st.free_practice_daily)}"></div>
       <div style="flex:1;min-width:100px"><label>${L('Tanong bawat practice', 'Questions per practice')}</label><input type="number" min="5" id="fitems" value="${esc(st.free_practice_items)}"></div>
       <div style="flex:1;min-width:100px"><label>${L('Mock exam kada araw', 'Mock exams per day')}</label><input type="number" min="0" id="fmock" value="${esc(st.free_mock_daily)}"></div>
-      <div style="flex:1;min-width:100px"><label>${L('Libreng exam set (Set 1 hanggang…)', 'Free exam sets (Set 1 to…)')}</label><input type="number" min="0" id="fsets" value="${esc(st.free_sets)}"></div></div>
+      <div style="flex:1;min-width:100px"><label>${L('Libreng exam set (Set 1 hanggang…)', 'Free exam sets (Set 1 to…)')}</label><input type="number" min="1" id="fsets" value="${esc(st.free_sets)}"></div></div>
+      <p class="muted small" style="margin:4px 0 0">${L('Laging libre ang Set 1 para sa lahat.', 'Set 1 is always free for everyone.')}</p>`)}
 
-      <h3 class="set-head">📺 ${L('Ads (libreng plan lang)', 'Ads (free plan only)')}</h3>
+      ${sec('ads', `📺 ${L('Ads (libreng plan lang)', 'Ads (free plan only)')}`, `
       ${check('adson', st.ads_on === '1', L('Magpakita ng ads sa libreng plan', 'Show ads on the free plan'))}
       <p class="muted small" style="margin:4px 0 0">${L('Hindi kailanman lalabas sa Premium, habang nag-e-exam o nagpa-practice, sa Account, Premium o Admin. Kapag wala pang ID, isang "Premium" card ang lalabas sa puwesto ng ad.', 'Never for Premium, never during an exam or practice, never on Account, Premium or Admin. Without IDs, a "Premium" card shows in the ad spot.')}</p>
       <div class="row"><div style="flex:1;min-width:180px"><label>AdSense publisher ID (website)</label><input type="text" id="asc" value="${esc(st.adsense_client)}" placeholder="ca-pub-1234567890123456"></div>
       <div style="flex:1;min-width:140px"><label>AdSense ad unit ID</label><input type="text" id="ass" value="${esc(st.adsense_slot)}" placeholder="1234567890"></div></div>
       <label>AdMob banner ID (Android app)</label><input type="text" id="amb" value="${esc(st.admob_banner)}" placeholder="ca-app-pub-1234567890123456/1234567890">
-      <p class="muted small">${L('Para sa Android: ilagay din ang AdMob <b>App ID</b> sa GitHub (Settings → Secrets and variables → Actions → Variables → <code>ADMOB_APP_ID</code>) bago i-build ang APK.', 'For Android: also set the AdMob <b>App ID</b> in GitHub (Settings → Secrets and variables → Actions → Variables → <code>ADMOB_APP_ID</code>) before building the APK.')}</p>
+      <p class="muted small">${L('Para sa Android: ilagay din ang AdMob <b>App ID</b> sa GitHub (Settings → Secrets and variables → Actions → Variables → <code>ADMOB_APP_ID</code>) bago i-build ang APK.', 'For Android: also set the AdMob <b>App ID</b> in GitHub (Settings → Secrets and variables → Actions → Variables → <code>ADMOB_APP_ID</code>) before building the APK.')}</p>`)}
 
-      <h3 class="set-head">🔒 ${L('Screen habang nag-e-exam', 'Exam screen')}</h3>
+      ${sec('exam', `🔒 ${L('Screen habang nag-e-exam', 'Exam screen')}`, `
       ${check('wmon', st.exam_watermark !== '0', L('Watermark na "RA 10173" at email ng user sa buong screen', '"RA 10173" watermark with the user\'s email across the screen'))}
       ${check('stripon', st.exam_privacy_strip !== '0', L('Babala ng Data Privacy Act of 2012 (RA 10173) sa itaas ng exam', 'Data Privacy Act of 2012 (RA 10173) warning above the exam'))}
-      <p class="muted small" style="margin:4px 0 0">${L('Naka-block pa rin ang screenshot sa Android at Windows app kahit naka-off ang mga ito.', 'Screenshots stay blocked in the Android and Windows apps even when these are off.')}</p>
-      <button class="btn" type="submit" style="margin-top:16px">${L('I-save', 'Save')}</button></form>`;
+      <p class="muted small" style="margin:4px 0 0">${L('Naka-block pa rin ang screenshot sa Android at Windows app kahit naka-off ang mga ito.', 'Screenshots stay blocked in the Android and Windows apps even when these are off.')}</p>`)}
+      <button class="btn block" type="submit">${L('I-save ang settings', 'Save settings')}</button></form>`;
+    foldSync();
     const collect = () => $$('#pmList .pm-card').map((c) => ({
       id: c.dataset.id, type: c.dataset.type, has_qr: !!c.dataset.qr, on: $('[data-k=on]', c).checked,
       ...Object.fromEntries($$('input[type=text][data-k]', c).map((i) => [i.dataset.k, i.value.trim()])),
@@ -1970,11 +2011,17 @@
       }));
     };
     paintPm();
+    $('#pmList').addEventListener('input', (e) => {
+      const i = e.target;
+      if (i.dataset.k !== 'bank') return;
+      const c = i.closest('.pm-card');
+      $('.check b', c).textContent = i.value.trim() || (c.dataset.type === 'bank' ? L('Bangko', 'Bank') : L('Iba pa', 'Other'));
+    });
     $('#pmAdd').onclick = () => {
       const type = $('#pmType').value, name = TYPES.find(([k]) => k === type)[1];
       methods = [...collect(), { id: type + '-' + Date.now().toString(36), type, name: type === 'other' ? '' : name, account_name: '', account: '', bank: '', note: '', on: true }];
       paintPm();
-      const last = $$('#pmList .pm-card').pop(); last.scrollIntoView({ block: 'center' }); $('[data-k=name]', last).focus();
+      const last = $$('#pmList .pm-card').pop(); last.scrollIntoView({ block: 'center' }); $('input[type=text]', last).focus();
     };
     $('#stf').onsubmit = async (e) => {
       e.preventDefault();
@@ -2003,6 +2050,130 @@
       </tbody></table></div>`;
   }
 
+
+  /* ---------------- guide for new Premium users, and Help ----------------
+     The first time a Premium user opens Home, a short guide points at each part of the screen
+     (level, Set 1, all exam sets, Practice, Results, Account, Help, language) one at a time.
+     It shows once per account (saved on the server and on the device). It can be skipped, and
+     replayed any time from Help (the "?" at the top right, or Account → Help and guide). */
+  const Tour = (() => {
+    let box = null, i = 0, steps = [], tick = 0, wait = 0;
+    const visible = (sel) => $$(sel).find((el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0 && getComputedStyle(el).visibility !== 'hidden'; });
+    const STEPS = () => [
+      { sel: null, t: L('Maligayang pagdating sa Premium! ⭐', 'Welcome to Premium! ⭐'), x: L('Ipapakita namin kung saan makikita ang lahat. Mga 1 minuto lang ito. Pwede mo itong laktawan at ulitin anumang oras sa <b>?</b> (Tulong).', 'We will show you where everything is. It takes about a minute. You can skip it and replay it any time from <b>?</b> (Help).') },
+      { sel: '.level-switch', t: L('1. Piliin ang level mo', '1. Choose your level'), x: L('<b>PRO</b> para sa Professional, <b>SUBPRO</b> para sa Subprofessional. Nasa ibaba agad ang mock exam ng napili mo.', '<b>PRO</b> for Professional, <b>SUBPRO</b> for Subprofessional. Its mock exam is right below.') },
+      { sel: '[data-set1]', t: L('2. Simulan ang mock exam', '2. Start a mock exam'), x: L('Pindutin para simulan ang <b>Set 1</b>. Kapareho ng totoong CSE ang dami ng tanong at oras. Naka-save ang sagot mo kahit isara ang app.', 'Tap to start <b>Set 1</b>. Same number of questions and time as the real CSE. Your answers are saved even if you close the app.') },
+      { sel: '.level-card a[href^="#/sets/"]', t: L('3. Lahat ng exam set', '3. All exam sets'), x: L('Dito ang Set 1, 2, 3… (may bago bawat linggo) at ang <b>Bagong halo</b> na bagong random na exam.', 'Set 1, 2, 3… are here (a new one every week), plus <b>New mix</b>, a new random exam.') },
+      { sel: '.bottomnav a[href="#/practice"], .nav-desktop a[href="#/practice"]', t: L('4. Practice kada subject', '4. Practice by subject'), x: L('Pumili ng subject at ilang tanong. Agad makikita kung tama o mali, kasama ang paliwanag.', 'Pick a subject and how many questions. You see right away if you are right or wrong, with an explanation.') },
+      { sel: '.bottomnav a[href="#/history"], .nav-desktop a[href="#/history"]', t: L('5. Mga resulta', '5. Results'), x: L('Lahat ng exam mo, score kada subject, at buong review. Sa resulta ng exam: <b>PDF, email at print</b>.', 'All your exams, score by subject, and the full review. On an exam result: <b>PDF, email and print</b>.') },
+      { sel: '.bottomnav a[href="#/account"], .nav-desktop a[href="#/account"]', t: L('6. Account', '6. Account'), x: L('Itsura ng screen (Malambot, Sepia, Madilim), <b>mabilis na login</b> gamit ang face o fingerprint, tunog, password, at Premium.', 'Screen look (Soft, Sepia, Dark), <b>quick login</b> with face or fingerprint, sounds, password, and Premium.') },
+      { sel: '#topLvl', t: L('7. Mabilis na palit ng level', '7. Switch level quickly'), x: L('Pindutin ang PRO / SUBPRO dito sa itaas para magpalit ng level kahit nasaang screen ka.', 'Tap PRO / SUBPRO up here to switch level from any screen.') },
+      { sel: '#helpBtn', t: L('8. Tulong', '8. Help'), x: L('Nakalimutan kung saan o paano? Pindutin ang <b>?</b> para sa mga sagot sa madalas itanong at para ulitin ang gabay na ito.', 'Forgot where or how? Tap <b>?</b> for answers to common questions and to replay this guide.') },
+      { sel: '.topbar .lang-flag', t: L('9. Wika', '9. Language'), x: L('Pindutin ang flag para magpalit sa English o Tagalog.', 'Tap the flag to switch between English and Tagalog.') },
+      { sel: null, t: L('Handa ka na! 🎉', 'You are ready! 🎉'), x: L('Gumagana ang app kahit offline. Good luck sa exam mo!', 'The app works even offline. Good luck on your exam!') },
+    ];
+    function place() {
+      if (!box) return;
+      const st = steps[i], el = st.sel && visible(st.sel);
+      const hole = $('.tour-hole', box), tip = $('.tour-tip', box);
+      const W = innerWidth, H = innerHeight, tw = Math.min(360, W - 32);
+      tip.style.width = tw + 'px';
+      if (!el) {
+        Object.assign(hole.style, { left: W / 2 + 'px', top: H / 2 + 'px', width: '0px', height: '0px' });
+        Object.assign(tip.style, { left: (W - tw) / 2 + 'px', top: Math.max(16, (H - tip.offsetHeight) / 2) + 'px' });
+        return;
+      }
+      const r = el.getBoundingClientRect(), pad = 6;
+      Object.assign(hole.style, { left: r.left - pad + 'px', top: r.top - pad + 'px', width: r.width + pad * 2 + 'px', height: r.height + pad * 2 + 'px' });
+      const left = Math.min(Math.max(16, r.left + r.width / 2 - tw / 2), W - tw - 16);
+      const below = r.top + r.height / 2 < H / 2;
+      const top = below ? r.bottom + pad + 12 : r.top - pad - 12 - tip.offsetHeight;
+      Object.assign(tip.style, { left: left + 'px', top: Math.min(Math.max(12, top), H - tip.offsetHeight - 12) + 'px' });
+    }
+    function show() {
+      const st = steps[i];
+      $('.tour-tip', box).innerHTML = `<div class="tour-count">${i + 1} / ${steps.length}</div><h3>${st.t}</h3><p>${st.x}</p>
+        <div class="tour-btns">${i === steps.length - 1 ? '' : `<button type="button" class="btn ghost small" data-tskip>${L('Laktawan', 'Skip')}</button>`}
+        <span class="grow"></span>${i ? `<button type="button" class="btn ghost small" data-tback>‹</button>` : ''}
+        <button type="button" class="btn small" data-tnext>${i === steps.length - 1 ? L('Tapos na', 'Done') : L('Susunod ›', 'Next ›')}</button></div>`;
+      const el = st.sel && visible(st.sel);
+      // Things in the page scroll into view; the top bar and the menu are always on screen.
+      if (el && !el.closest('.topbar, .bottomnav')) el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      place(); setTimeout(place, 350);
+      $('[data-tnext]', box).focus({ preventScroll: true });
+    }
+    const go2 = (d) => { i = Math.min(Math.max(0, i + d), steps.length - 1); show(); };
+    function start() {
+      if (box || !S.user) return;
+      // Steps whose part is not on this screen are left out (e.g. no level button on a very small screen).
+      steps = STEPS().filter((st) => !st.sel || visible(st.sel));
+      i = 0;
+      box = document.createElement('div');
+      box.className = 'tour'; box.setAttribute('role', 'dialog'); box.setAttribute('aria-modal', 'true'); box.setAttribute('aria-label', L('Gabay', 'Guide'));
+      box.innerHTML = '<div class="tour-hole"></div><div class="tour-tip"></div>';
+      box.addEventListener('click', (e) => {
+        if (e.target.closest('[data-tnext]')) return i === steps.length - 1 ? finish() : go2(1);
+        if (e.target.closest('[data-tback]')) return go2(-1);
+        if (e.target.closest('[data-tskip]')) return finish();
+      });
+      document.body.appendChild(box);
+      document.body.classList.add('touring');
+      tick = setInterval(place, 300); // the screen may redraw under the guide (fresh data)
+      addEventListener('resize', place); addEventListener('scroll', place, { passive: true });
+      show();
+    }
+    function stop() {
+      clearTimeout(wait); wait = 0;
+      if (!box) return;
+      clearInterval(tick); removeEventListener('resize', place); removeEventListener('scroll', place);
+      box.remove(); box = null; document.body.classList.remove('touring');
+    }
+    function finish() {
+      stop();
+      store.set(uk('cse-tour'), 1);
+      if (S.user && !S.user.tour_done) { S.user.tour_done = true; api('POST', '/api/me/tour', { done: true }).catch(() => {}); }
+      setTimeout(offerBio, 500);
+    }
+    document.addEventListener('keydown', (e) => {
+      if (!box) return;
+      if (e.key === 'Escape') finish(); else if (e.key === 'ArrowRight') go2(1); else if (e.key === 'ArrowLeft') go2(-1);
+    });
+    // New Premium users: not admins (they can replay it from Help), and only once per account.
+    const due = () => !!(S.user && S.premium && S.user.role !== 'admin' && !S.user.tour_done && !store.get(uk('cse-tour')) && !(S.config.verify && !S.user.email_verified));
+    function maybe() {
+      if (box || wait || !$('.level-switch')) return;
+      const replay = S.tourNext; S.tourNext = false;
+      if (!replay && !due()) return;
+      wait = setTimeout(() => { wait = 0; if (!S.exam && !document.querySelector('.modal-bg') && $('.level-switch')) start(); }, replay ? 300 : 700);
+    }
+    return { maybe, stop, due, active: () => !!box, replay: () => { S.tourNext = true; go('#/'); } };
+  })();
+
+  function viewHelp() {
+    const Q = (k, q, a) => fold('help-' + k, `<h3>${q}</h3>`, `<div class="small help-a">${a}</div>`);
+    shell('account', `
+      <div class="row between page-head"><h1>❓ ${L('Tulong', 'Help')}</h1><a class="btn ghost small" href="#/account">‹ Account</a></div>
+      <div class="card help-hero">
+        <p style="margin:0 0 10px">${L('Hindi mo maalala kung saan o paano? Ipapakita ulit ng gabay ang bawat bahagi ng Home, isa-isa.', 'Can\'t remember where or how? The guide shows each part of Home again, one at a time.')}</p>
+        <button class="btn block" id="tourAgain" type="button">▶ ${L('Ipakita ulit ang gabay', 'Show the guide again')}</button>
+      </div>
+      <h2>${L('Mga madalas itanong', 'Common questions')}</h2>
+      <div class="stack">
+      ${Q('mock', L('Paano mag-mock exam?', 'How do I take a mock exam?'), L(`<ol><li>Sa <a href="#/">Home</a>, piliin ang <b>PRO</b> (Professional) o <b>SUBPRO</b> (Subprofessional).</li><li>Pindutin ang <b>▶ Simulan ang Set 1</b>, o <b>Lahat ng exam set</b> para pumili ng ibang set o <b>Bagong halo</b>.</li><li>Habang nag-e-exam: <b>☰ Lahat</b> para makita ang lahat ng tanong, <b>⚑</b> para markahan at balikan, at <b>Isumite ✓</b> sa dulo.</li></ol>Tuloy-tuloy ang timer kahit isara ang app, pero naka-save ang mga sagot mo. Ituloy ito mula sa Home.`,
+        `<ol><li>On <a href="#/">Home</a>, choose <b>PRO</b> (Professional) or <b>SUBPRO</b> (Subprofessional).</li><li>Tap <b>▶ Start Set 1</b>, or <b>All exam sets</b> to pick another set or <b>New mix</b>.</li><li>During the exam: <b>☰ All</b> shows every question, <b>⚑</b> marks one to come back to, and <b>Submit ✓</b> is at the end.</li></ol>The timer keeps running even if you close the app, but your answers are saved. Continue it from Home.`))}
+      ${Q('set1', L('Ano ang Set 1 at ang mga exam set?', 'What are Set 1 and the exam sets?'), L('Ang <b>Set 1</b> ay laging nasa Home at bukas sa lahat. May bagong set bawat linggo (Set 2, 3…), makikita sa <b>Lahat ng exam set</b>, pinakabago muna. Ang <b>Bagong halo</b> ay bagong random na exam tuwing pipindutin.',
+        '<b>Set 1</b> is always on Home and open to everyone. A new set comes every week (Set 2, 3…), listed in <b>All exam sets</b>, newest first. <b>New mix</b> is a new random exam every time.'))}
+      ${Q('practice', L('Paano mag-practice kada subject?', 'How do I practice by subject?'), L('Pumunta sa <a href="#/practice">Practice</a>, pumili ng level, subject, ilang tanong at timer, tapos <b>Simulan ang practice</b>. Agad makikita kung tama o mali, kasama ang paliwanag.', 'Go to <a href="#/practice">Practice</a>, pick the level, subject, number of questions and timer, then <b>Start practice</b>. You see right away if you are right or wrong, with an explanation.'))}
+      ${Q('results', L('Saan ang resulta, PDF, email at print?', 'Where are results, PDF, email and print?'), L('Sa <a href="#/history">Resulta</a> ang lahat ng exam mo at ang score kada subject. Buksan ang isang exam para sa review. Sa Premium, may <b>I-save bilang PDF</b>, <b>Ipadala sa email</b> at <b>Print</b> sa itaas ng resulta (gumagana offline ang PDF at Print).', '<a href="#/history">Results</a> has all your exams and your score by subject. Open an exam for the review. With Premium, <b>Save as PDF</b>, <b>Send to email</b> and <b>Print</b> are at the top of the result (PDF and Print work offline).'))}
+      ${Q('look', L('Paano palitan ang level, wika, itsura at tunog?', 'How do I change the level, language, look and sounds?'), L('<b>Level:</b> pindutin ang PRO / SUBPRO sa kanang itaas o sa Home.<br><b>Wika:</b> pindutin ang flag sa kanang itaas.<br><b>Itsura at Tunog:</b> sa <a href="#/account">Account</a>. Para mag-zoom, i-pinch ang screen gamit ang dalawang daliri.', '<b>Level:</b> tap PRO / SUBPRO at the top right or on Home.<br><b>Language:</b> tap the flag at the top right.<br><b>Look and Sounds:</b> in <a href="#/account">Account</a>. To zoom, pinch the screen with two fingers.'))}
+      ${Q('bio', L('Paano mag-login gamit ang face o fingerprint?', 'How do I log in with face or fingerprint?'), L('Sa <a href="#/account">Account</a> → <b>Mabilis na login</b>, piliin ang Face o Fingerprint (Premium). Sa susunod, pindutin lang ito sa login screen. Pwede ka ring mag-login gamit ang <b>code sa email</b>, walang password.', 'In <a href="#/account">Account</a> → <b>Quick login</b>, choose Face or Fingerprint (Premium). Next time, just tap it on the login screen. You can also log in with an <b>email code</b>, no password.'))}
+      ${Q('offline', L('Gumagana ba kahit walang internet?', 'Does it work without internet?'), L('Oo, sa Premium: lahat ng practice, mock exam at naka-save na exam set. Ise-save online ang mga resulta kapag may internet na. Kailangang mag-online kahit isang beses bawat 30 araw. Kailangan ng internet sa libreng plan.', 'Yes, with Premium: all practice, mock exams and saved exam sets. Results are saved online when the internet is back. Go online at least once every 30 days. The free plan needs internet.'))}
+      ${Q('logout', L('Bakit ako na-logout?', 'Why was I logged out?'), L('<b>Isang device lang ang pwedeng naka-login</b> sa isang account. Kapag nag-login ka sa ibang phone o computer, malo-logout ang nauna. Kung hindi ikaw ang nag-login, mag-login ulit at palitan agad ang password sa <a href="#/account">Account</a>.', '<b>Only one device can be logged in</b> to an account. When you log in on another phone or computer, the first one is logged out. If it was not you, log in again and change your password right away in <a href="#/account">Account</a>.'))}
+      ${Q('pay', L('Paano magbayad o i-extend ang Premium?', 'How do I pay or extend Premium?'), L('Sa <a href="#/premium">Account → Premium</a>. Magbayad online (bukas agad ang Premium), o manual: magpadala sa account na nakalista, tapos ilagay ang reference number at screenshot ng resibo. May email kapag na-approve na.', 'In <a href="#/premium">Account → Premium</a>. Pay online (Premium opens right away), or manually: send to a listed account, then enter the reference number and a screenshot of the receipt. You get an email once it is approved.'))}
+      </div>`);
+    $('#tourAgain').onclick = () => Tour.replay();
+  }
+
   /* ---------------- router ---------------- */
   async function route() {
     stopTimer();
@@ -2012,6 +2183,8 @@
     F.key = null; // a new screen starts with every drop down closed
     const parts = (location.hash.replace(/^#\/?/, '') || '').split('/');
     const [p0, p1] = parts;
+    if (p0 !== 'admin' && $('#admTabs')) $('#admTabs').remove(); // admin tabs are reused only between admin tabs
+    if (p0) Tour.stop(); // the guide runs on Home only
     applyLook();
     if (!S.user) { if (p0 === 'register') return viewAuth('register'); if (p0 === 'forgot') return viewForgot(); if (p0 === 'otp') return viewOtp(); return viewAuth('login'); }
     if (S.config.verify && !S.user.email_verified) return viewVerify();
@@ -2026,6 +2199,7 @@
       if (p0 === 'result') return await viewResult(p1);
       if (p0 === 'history') return await viewHistory();
       if (p0 === 'account') return viewAccount();
+      if (p0 === 'help') return viewHelp();
       if (p0 === 'admin') return await viewAdmin(p1 || 'overview');
       return go('#/');
     } catch (e) {
@@ -2053,6 +2227,7 @@
   function applyMe(me) { S.user = me.user; S.config = me.config; S.premium = me.premium; S.practiceToday = me.practice_today || 0; S.mockToday = me.mock_today || 0; }
   async function refreshMe() {
     const me = await api('GET', '/api/me');
+    if (!me.user && me.ended === 'replaced') { S.authNote = ELSEWHERE(); S.exam = null; stopTimer(); }
     applyMe(me);
     if (me.user) { store.set('cse-boot', me); syncSoon(); } else { store.del('cse-boot'); if (IS_APP) store.del('cse-token'); }
   }
