@@ -11,6 +11,7 @@ const mail = require('./mail');
 const sets = require('./sets');
 const paymongo = require('./paymongo');
 const web = require('./webbuild');
+const translator = require('./translate');
 
 const PORT = Number(process.env.PORT) || 3000;
 const ADMIN_EMAIL = (process.env.ADMIN_EMAIL || '').trim().toLowerCase();
@@ -305,6 +306,18 @@ app.post('/api/me/password', auth, wrap(async (req, res) => {
 }));
 
 app.get('/api/meta', (req, res) => res.json({ subjects: SUBJECTS, exams: EXAMS }));
+
+// English <-> Filipino translator (see src/translate.js). The app keeps answers on the device for offline use.
+app.post('/api/translate', auth, verified, wrap(async (req, res) => {
+  if (limited('tr:' + req.user.id, 200, 60 * 60 * 1000)) return res.status(429).json({ error: 'Masyadong maraming translate ngayong oras. Maghintay muna.' });
+  try {
+    res.json(await translator.translate(req.body.text, String(req.body.from || ''), String(req.body.to || '')));
+  } catch (e) {
+    if (e.status) return res.status(e.status).json({ error: e.message });
+    console.error('translate:', e.message);
+    res.status(502).json({ error: 'Hindi gumana ang translator ngayon. Subukan ulit mamaya.', code: 'translate' });
+  }
+}));
 
 /* ------------------------------ attempts ------------------------------ */
 // Items sent to the browser. Answers are hidden during a timed mock exam.

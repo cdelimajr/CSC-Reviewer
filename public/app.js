@@ -286,8 +286,24 @@
   const BIO_SERVER = 'cse-reviewer';
   const b64 = { to: (buf) => btoa(String.fromCharCode(...new Uint8Array(buf))), from: (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0)) };
   const rand = (n) => crypto.getRandomValues(new Uint8Array(n));
+  /* Face or fingerprint: the user picks one, but the device's own prompt decides what it accepts.
+     - iPhone: Face ID or Touch ID, whichever the phone has.
+     - Android: face works only on phones whose face unlock is "strong" (Class 3, e.g. Pixel 8 and newer).
+       On other phones Android allows only the fingerprint for apps, so the prompt asks for the fingerprint.
+     - Windows Hello and browsers: the same prompt for face, fingerprint or PIN. */
+  const METHODS = { face: ['🙂', 'Face'], finger: ['👆', 'Fingerprint'] };
   const Bio = {
     saved: () => store.get('cse-bio'),
+    // Which options to offer on this device: ['face'], ['finger'] or both.
+    async methods() {
+      const kind = await this.kind();
+      if (!kind) return [];
+      if (kind !== 'native') return ['face', 'finger'];
+      let t = 0;
+      try { t = (await NB.isAvailable()).biometryType; } catch { /* unknown */ }
+      return t === 2 || t === 4 ? ['face'] : t === 6 ? ['face', 'finger'] : ['finger'];
+    },
+    btn(rec) { const [ic, l] = METHODS[(rec && rec.method) || 'finger']; return rec && rec.kind === 'desktop' && !rec.method ? '🔐 Windows Hello' : `${ic} ${l}`; },
     async kind() {
       if (NB) { try { const r = await NB.isAvailable(); return r.isAvailable ? 'native' : null; } catch { return null; } }
       if (DESK) { try { return (await DESK.hello.available()) ? 'desktop' : null; } catch { return null; } }
@@ -296,17 +312,18 @@
       }
       return null;
     },
-    label: () => (NB ? 'fingerprint / face' : DESK ? 'Windows Hello' : 'fingerprint / face / PIN'),
-    async check(reason) {
-      if (NB) { await NB.verifyIdentity({ reason, title: 'CSE Reviewer', subtitle: reason, negativeButtonText: 'Kanselahin' }); return; }
-      if (DESK) { if (!(await DESK.hello.verify(reason))) throw new Error('Hindi na-verify.'); }
+    async check(reason, method) {
+      const hint = method === 'face' ? 'Tumingin sa camera' : method === 'finger' ? 'Idikit ang daliri sa sensor' : reason;
+      if (NB) { await NB.verifyIdentity({ reason, title: 'CSE Reviewer', subtitle: reason, description: hint, negativeButtonText: 'Kanselahin' }); return; }
+      if (DESK) { if (!(await DESK.hello.verify(`${reason}. ${hint}.`))) throw new Error('Hindi na-verify.'); }
     },
-    async enable() {
+    async enable(method) {
       const kind = await this.kind();
-      if (!kind) throw new Error('Walang fingerprint, face, o Windows Hello sa device na ito.');
-      await this.check('I-on ang mabilis na login');
-      const { key } = await api('POST', '/api/auth/device', { name: kind === 'native' ? 'Phone app' : kind === 'desktop' ? 'Windows app' : 'Browser' });
-      const rec = { kind, email: S.user.email, name: S.user.name.split(' ')[0] };
+      if (!kind) throw new Error('Walang face, fingerprint, o Windows Hello sa device na ito.');
+      if (!method) method = (await this.methods())[0] || 'finger';
+      await this.check('I-on ang mabilis na login', method);
+      const { key } = await api('POST', '/api/auth/device', { name: (kind === 'native' ? 'Phone app' : kind === 'desktop' ? 'Windows app' : 'Browser') + (method === 'face' ? ' (face)' : '') });
+      const rec = { kind, method, email: S.user.email, name: S.user.name.split(' ')[0] };
       try {
         if (kind === 'native') await NB.setCredentials({ username: S.user.email, password: key, server: BIO_SERVER });
         else if (kind === 'desktop') rec.data = await DESK.protect(key);
@@ -325,9 +342,9 @@
     },
     async unlock() {
       const rec = this.saved();
-      if (!rec) throw new Error('Walang naka-save na fingerprint/face login.');
-      if (rec.kind === 'native') { await this.check('Mag-login sa CSE Reviewer'); return (await NB.getCredentials({ server: BIO_SERVER })).password; }
-      if (rec.kind === 'desktop') { await this.check('Mag-login sa CSE Reviewer'); return DESK.unprotect(rec.data); }
+      if (!rec) throw new Error('Walang naka-save na face/fingerprint login.');
+      if (rec.kind === 'native') { await this.check('Mag-login sa CSE Reviewer', rec.method); return (await NB.getCredentials({ server: BIO_SERVER })).password; }
+      if (rec.kind === 'desktop') { await this.check('Mag-login sa CSE Reviewer', rec.method); return DESK.unprotect(rec.data); }
       await navigator.credentials.get({ publicKey: { challenge: rand(32), allowCredentials: [{ type: 'public-key', id: b64.from(rec.cred) }], userVerification: 'required', timeout: 60000 } });
       return rec.data;
     },
@@ -346,7 +363,55 @@
     },
   };
   const bioErr = (e) => (e && e.name === 'NotAllowedError') || /cancel/i.test(String(e && (e.message || e.code)))
-    ? 'Kinansela.' : (e && e.message) || 'Hindi gumana ang fingerprint/face login.';
+    ? 'Kinansela.' : (e && e.message) || 'Hindi gumana ang face/fingerprint login.';
+  // Switch between face and fingerprint without a new device key (same secret, only the label and the prompt change).
+  function setBioMethod(method) { const rec = Bio.saved(); if (rec) store.set('cse-bio', { ...rec, method }); }
+
+  /* ---------------- collapsible sections (drop down / up) ----------------
+     A section that opens and closes when its title is tapped. Uses <details>, so it needs no script to work
+     and opens instantly. Each section's open/closed choice is remembered on this device. */
+  const folds = () => store.get('cse-fold', {});
+  function fold(key, title, body, { open = true, card = true, id = '' } = {}) {
+    const st = folds(), isOpen = key in st ? st[key] : open;
+    return `<details class="fold${card ? ' card' : ' plain'}" data-fold="${key}"${id ? ` id="${id}"` : ''}${isOpen ? ' open' : ''}>
+      <summary><span class="fold-title">${title}</span><span class="chev" aria-hidden="true"></span></summary><div class="fold-body">${body}</div></details>`;
+  }
+  // Saved on the tap itself (not on the later "toggle" event), so a screen refresh right after a tap keeps the choice.
+  document.addEventListener('click', (e) => {
+    const sum = e.target.closest && e.target.closest('details.fold > summary');
+    const d = sum && sum.parentNode;
+    if (!d || !d.dataset.fold) return;
+    const st = folds(); st[d.dataset.fold] = !d.open; store.set('cse-fold', st);
+  }, true);
+
+  /* ---------------- show / hide password ----------------
+     Every password box gets an eye button, on every screen (login, register, new password, Account). */
+  function addEye(input) {
+    input.dataset.eye = '1';
+    const wrap = document.createElement('span');
+    wrap.className = 'pw-wrap';
+    input.parentNode.insertBefore(wrap, input);
+    wrap.appendChild(input);
+    const b = document.createElement('button');
+    b.type = 'button'; b.className = 'pw-eye';
+    const paint = () => {
+      const shown = input.type === 'text';
+      b.textContent = shown ? '🙈' : '👁️';
+      b.setAttribute('aria-label', shown ? 'Itago ang password' : 'Ipakita ang password');
+      b.setAttribute('aria-pressed', String(shown));
+    };
+    b.onmousedown = (e) => e.preventDefault(); // keep the keyboard open on phones
+    b.onclick = () => {
+      const pos = input.selectionStart;
+      input.type = input.type === 'password' ? 'text' : 'password';
+      paint();
+      if (document.activeElement === input && pos != null) try { input.setSelectionRange(pos, pos); } catch { /* ignore */ }
+    };
+    paint();
+    wrap.appendChild(b);
+  }
+  const eyes = (root = document) => $$('input[type=password]:not([data-eye])', root).forEach(addEye);
+  new MutationObserver(() => eyes()).observe(document.body, { childList: true, subtree: true });
 
   /* ---------------- shell ---------------- */
   function shell(active, body) {
@@ -354,8 +419,8 @@
     const links = [['home', '#/', 'Home', '🏠'], ['practice', '#/practice', 'Practice', '📝'], ['history', '#/history', 'Resulta', '📊'], ...(isAdmin ? [['admin', '#/admin', 'Admin', '🛠️']] : []), ['account', '#/account', 'Account', '👤']];
     $app.innerHTML = `
       <header class="topbar">
+        <span class="side"></span>
         <a class="brand" href="#/"><img src="icons/icon.svg" alt="">CSE Reviewer</a>
-        <span class="spacer"></span>
         <nav class="nav-desktop row" style="gap:2px">${links.map(([k, h, l]) => `<a class="link ${active === k ? 'active' : ''}" href="${h}">${l}</a>`).join('')}</nav>
       </header>
       <main class="wrap">${body}</main>
@@ -384,10 +449,12 @@
   // After a password or code login: offer fingerprint/face login once (Premium, on devices that have it).
   async function offerBio() {
     if (!S.user || !S.premium || S.exam || Bio.saved() || store.get('cse-bio-asked') || (S.config.verify && !S.user.email_verified)) return;
-    if (!(await Bio.kind())) return;
+    const ms = await Bio.methods();
+    if (!ms.length) return;
     store.set('cse-bio-asked', 1);
-    if (!(await confirmBox('Mas mabilis na login', `Sa susunod, mag-login gamit lang ang <b>${esc(Bio.label())}</b>, walang password.`, 'I-on'))) return;
-    try { await Bio.enable(); toast('Naka-on na ang mabilis na login.'); } catch (e) { toast(bioErr(e)); }
+    const name = ms.map((m) => METHODS[m][1].toLowerCase()).join(' o ');
+    if (!(await confirmBox('Mas mabilis na login', `Sa susunod, mag-login gamit lang ang <b>${esc(name)}</b>, walang password. Mapipili mo kung Face o Fingerprint sa Account → Mabilis na login.`, 'I-on'))) return;
+    try { await Bio.enable(ms[0]); toast('Naka-on na ang mabilis na login.'); } catch (e) { toast(bioErr(e)); }
   }
 
   function viewAuth(mode) {
@@ -404,7 +471,7 @@
       ${reg ? '<p class="muted small auth-note">Gumamit ng aktibong email. Padadalhan ka ng code para ma-verify ito.</p>' : `
       <div class="auth-alt">
         <a class="btn secondary" href="#/otp">✉️ Code sa email</a>
-        ${bio ? `<button class="btn secondary" id="bio" type="button">${bio.kind === 'desktop' ? '🔐 Windows Hello' : '👆 Fingerprint'}</button>` : ''}
+        ${bio ? `<button class="btn secondary" id="bio" type="button">${Bio.btn(bio)}</button>` : ''}
       </div>
       <a class="auth-link" href="#/forgot">Nakalimutan ang password?</a>`}`,
     reg ? '<span class="muted small">May account na?</span><a class="btn ghost block" href="#/login">Mag-login</a>'
@@ -603,38 +670,33 @@
     const mocks = stats.mocks;
     const best = mocks.length ? Math.max(...mocks.map((m) => m.pct)) : null;
     const ex = S.meta.exams;
-    const examCard = (e, desc) => `
-      <div class="card exam-card">
-        <div class="row between"><h3>${esc(e.title.replace(' Mock Exam', ''))}</h3><span class="pill">Mock Exam</span></div>
+    const examCard = (e, desc) => fold('home-' + e.key, `<h3>${esc(e.title.replace(' Mock Exam', ''))}</h3><span class="pill">Mock Exam</span>`, `
+        <div class="exam-card">
         <div class="meta"><span class="pill warn">${e.items} items</span><span class="pill warn">${fmtDur(e.minutes)}</span><span class="pill warn">Passing ${e.passing}%</span></div>
         <p class="muted small" style="margin:4px 0 8px">${desc}</p>
         <p class="small" style="margin:0 0 10px">${e.sections.map((s) => `${esc(subjName(s.subject))} (${s.count})`).join(' · ')}</p>
         <a class="btn" href="#/sets/${e.key}">Pumili ng exam set</a>
-      </div>`;
+        </div>`);
     shell('home', `
       <h1>Kumusta, ${esc(S.user.name.split(' ')[0])}! 👋</h1>
       ${isFree() ? `<a class="notice" href="#/premium" style="display:block;margin:8px 0">🆓 <b>Libreng plan:</b> ${S.config.free.practice_daily} practice kada araw (hanggang ${S.config.free.practice_items} tanong), at Set 1 ng bawat mock exam. Kailangan ng internet.<br>⭐ <b>Premium:</b> walang limit, lahat ng exam set, gumagana offline, at mas mabilis. Kumuha ng Premium →</a>` : ''}
-      <p class="muted" style="margin-top:0">Pumili ng mock exam o mag-practice kada subject.</p>
+      <p class="muted" style="margin-top:0">Pumili ng mock exam. Nasa <a href="#/practice">Practice</a> ang practice kada subject.</p>
       ${open.length ? `<div class="notice" style="margin:12px 0">May hindi ka pa natatapos na exam: <b>${esc(open[0].title)}</b>. <a href="#/exam/${open[0].id}">Ituloy ito →</a></div>` : ''}
       ${list.some((a) => a.pending && a.finished_at) ? '<p class="muted small">⏳ May mga resulta kang ginawa offline. Ise-save ang mga ito online kapag may internet na.</p>' : ''}
-      <div class="grid two" style="margin-top:12px">
+      <div class="grid two folds" style="margin-top:12px">
         ${examCard(ex.pro, 'Para sa second-level positions sa gobyerno (hal. Admin Officer, Analyst).')}
         ${examCard(ex.subpro, 'Para sa first-level positions (hal. clerk, aide, technician).')}
       </div>
-      <div class="card" style="margin-top:12px">
-        <div class="row between"><div><h3>Practice kada subject</h3><p class="muted small" style="margin:0">Pumili ng subject at ilang tanong. Makikita agad kung tama ka, may paliwanag pa.</p></div>
-        <a class="btn secondary" href="#/practice">Mag-practice</a></div>
-      </div>
-      <h2>Ang progress mo</h2>
+      <a class="list-item" href="#/translate" style="margin-top:12px"><span style="font-size:22px">🌐</span><div class="grow"><b>Translator</b><div class="muted small">English ↔ Filipino, may boses na nagbabasa</div></div><span>›</span></a>
+      ${fold('home-progress', '<h2>Ang progress mo</h2>', `
       <div class="grid stats">
         <div class="card stat"><div class="v">${stats.attempts}</div><div class="l">Natapos na exam/practice</div></div>
         <div class="card stat"><div class="v">${mocks.length}</div><div class="l">Mock exam na natapos</div></div>
         <div class="card stat"><div class="v">${best === null ? '–' : best + '%'}</div><div class="l">Pinakamataas na mock score</div></div>
         <div class="card stat"><div class="v">${mocks.filter((m) => m.pct >= 80).length}</div><div class="l">Pasado (80% pataas)</div></div>
-      </div>
-      ${Object.keys(stats.subjects).length ? `<div class="card" style="margin-top:12px"><h3>Score kada subject</h3>${subjectBars(stats.subjects)}</div>` : ''}
-      <h2>Mga huling exam</h2>
-      ${done.length ? `<div class="list">${done.slice(0, 5).map(attemptRow).join('')}</div><p><a href="#/history">Tingnan lahat →</a></p>` : '<div class="card empty">Wala ka pang natatapos na exam. Subukan ang isang mock exam!</div>'}
+      </div>`, { card: false })}
+      ${Object.keys(stats.subjects).length ? `<div style="margin-top:12px">${fold('home-subjects', '<h3>Score kada subject</h3>', subjectBars(stats.subjects))}</div>` : ''}
+      ${fold('home-recent', '<h2>Mga huling exam</h2>', done.length ? `<div class="list">${done.slice(0, 5).map(attemptRow).join('')}</div><p><a href="#/history">Tingnan lahat →</a></p>` : '<div class="card empty">Wala ka pang natatapos na exam. Subukan ang isang mock exam!</div>', { card: false })}
     `);
   }
 
@@ -774,8 +836,7 @@
       <p class="muted" style="margin-top:0">Makikita agad kung tama o mali ang sagot mo, kasama ang paliwanag.</p>
       ${isFree() ? `<a class="notice" href="#/premium" style="display:block;margin-bottom:12px">🆓 Libreng plan: <b>${Math.max(0, S.config.free.practice_daily - (S.practiceToday || 0))} sa ${S.config.free.practice_daily}</b> practice na lang ang natitira ngayong araw, hanggang ${S.config.free.practice_items} tanong bawat isa. Walang limit sa Premium →</a>` : ''}
       <div class="card">
-        <h3>1. Pumili ng subject</h3>
-        <div class="subject-grid" id="subs">${Object.entries(subs).map(([k, v]) => `<button class="subject-btn" data-s="${k}"><b>${esc(v.name)}</b><span>${esc(v.desc)}</span></button>`).join('')}</div>
+        ${fold('practice-1', '<h3>1. Pumili ng subject</h3><span class="pill" id="subPick"></span>', `<div class="subject-grid" id="subs">${Object.entries(subs).map(([k, v]) => `<button class="subject-btn" data-s="${k}"><b>${esc(v.name)}</b><span>${esc(v.desc)}</span></button>`).join('')}</div>`, { card: false })}
         <h3 style="margin-top:18px">2. Ilang tanong?</h3>
         <div class="seg" id="cnt">${[10, 20, 30, 50].map((n) => `<button data-n="${n}" ${isFree() && n > S.config.free.practice_items ? 'disabled title="Premium"' : ''}>${isFree() && n > S.config.free.practice_items ? '🔒 ' : ''}${n}</button>`).join('')}</div>
         <h3 style="margin-top:18px">3. May timer?</h3>
@@ -784,6 +845,7 @@
       </div>`);
     const paint = () => {
       $$('#subs [data-s]').forEach((b) => b.classList.toggle('active', b.dataset.s === st.subject));
+      $('#subPick').textContent = subs[st.subject] ? subs[st.subject].name : '';
       $$('#cnt [data-n]').forEach((b) => b.classList.toggle('active', +b.dataset.n === st.count));
       $$('#tm [data-m]').forEach((b) => b.classList.toggle('active', +b.dataset.m === st.minutes));
     };
@@ -1045,13 +1107,323 @@
           ${trend.map((m) => `<div title="${m.pct}%" style="flex:1;max-width:48px;height:${m.pct * 1.3}px;background:${m.pct >= 80 ? 'var(--ok)' : 'var(--primary)'};border-radius:6px 6px 0 0"></div>`).join('')}
         </div><p class="muted small">Bawat bar ay isang mock exam (luma → bago).</p></div>` : ''}
       ${Object.keys(stats.subjects).length ? `<div class="card" style="margin-top:12px"><h3>Kabuuang score kada subject</h3>${subjectBars(stats.subjects)}<p class="muted small">Tip: pag-aralan muna ang subject na may pinakamababang score.</p></div>` : ''}
-      <h2>Lahat ng exam</h2>
-      ${list.length ? `<div class="list">${list.map(attemptRow).join('')}</div>` : '<div class="card empty">Wala pang resulta.</div>'}`);
+      ${fold('history-all', `<h2>Lahat ng exam</h2>${list.length ? `<span class="pill">${list.length}</span>` : ''}`, list.length ? `<div class="list">${list.map(attemptRow).join('')}</div>` : '<div class="card empty">Wala pang resulta.</div>', { card: false })}`);
     $$('.list-item').forEach((el) => {
       const id = el.getAttribute('href').split('/').pop();
       const a = list.find((x) => String(x.id) === id && !x.pending) || list.find((x) => String(x.id) === id);
       if (a && !a.finished_at) el.setAttribute('href', '#/exam/' + id);
     });
+  }
+
+  /* ---------------- voice (text to speech) ----------------
+     Reads text aloud with the best voice on the device, so it sounds natural and not robotic:
+     - Android/iPhone app: the phone's own voices (Google / Apple), through the TextToSpeech plugin.
+     - Browsers and the Windows app: the Web Speech voices of the device or browser.
+     "Natural", "Neural", "Online", Google and Siri voices come first. When offline, voices that need internet are skipped.
+     The text is read one sentence at a time, which sounds smoother and avoids long-text cut-offs in some browsers. */
+  const TTSN = capNative && Capacitor.isPluginAvailable && Capacitor.isPluginAvailable('TextToSpeech')
+    ? (Capacitor.Plugins.TextToSpeech || Capacitor.registerPlugin('TextToSpeech')) : null;
+  const WSS = !TTSN && window.speechSynthesis && window.SpeechSynthesisUtterance ? window.speechSynthesis : null;
+  const LANGS = { en: { name: 'English', tag: 'en-US' }, fil: { name: 'Filipino', tag: 'fil-PH' } };
+  const Speech = {
+    _voices: null, _run: 0,
+    settings: () => ({ rate: 0.95, pitch: 1, ...(store.get('cse-voice') || {}) }),
+    save(p) { store.set('cse-voice', { ...this.settings(), ...p }); },
+    available: () => !!(TTSN || WSS),
+    async voices() {
+      if (this._voices && this._voices.length) return this._voices;
+      let list = [];
+      if (TTSN) {
+        try { list = ((await TTSN.getSupportedVoices()).voices || []).map((v, i) => ({ ...v, index: i })); } catch { list = []; }
+      } else if (WSS) {
+        let v = WSS.getVoices();
+        if (!v.length) {
+          v = await new Promise((res) => {
+            const t = setTimeout(() => res(WSS.getVoices()), 1500);
+            WSS.addEventListener('voiceschanged', () => { clearTimeout(t); res(WSS.getVoices()); }, { once: true });
+          });
+        }
+        list = v.map((x) => ({ name: x.name, lang: x.lang, localService: x.localService, voiceURI: x.voiceURI, ref: x }));
+      }
+      this._voices = list;
+      return list;
+    },
+    // fil, en, or "near" (Indonesian/Malay: spelled like Tagalog, so they read Filipino text much better than an English voice).
+    family(v) {
+      const l = String(v.lang || '').toLowerCase().replace('_', '-');
+      return /^(fil|tl)\b/.test(l) ? 'fil' : /^en\b/.test(l) ? 'en' : /^(id|in|ms)\b/.test(l) ? 'near' : '';
+    },
+    score(v, lang) {
+      const fam = this.family(v), n = `${v.name} ${v.voiceURI}`;
+      const online = navigator.onLine && !S.offline;
+      let s = lang === 'fil' ? (fam === 'fil' ? 1000 : fam === 'near' ? 300 : -1) : fam === 'en' ? 1000 : -1;
+      if (s < 0) return s;
+      if (lang === 'en') { const l = String(v.lang).toLowerCase(); s += l.endsWith('ph') ? 60 : l.endsWith('us') ? 40 : l.endsWith('gb') ? 30 : 0; }
+      if (/natural|neural|wavenet|studio|journey|premium|enhanced|online/i.test(n)) s += 200;
+      if (/siri/i.test(n)) s += 150;
+      if (/google/i.test(n)) s += 120;
+      if (/-network\b/i.test(n)) s += 100; // Android: better voice that streams from Google
+      if (/espeak|compact|robot/i.test(n)) s -= 300;
+      if (/microsoft (david|zira|mark|hazel|george|susan)/i.test(n)) s -= 50; // older Windows voices
+      if (!online && v.localService === false) s -= 2000; // needs internet
+      if (v.default) s += 5;
+      return s;
+    },
+    async ranked(lang) {
+      return (await this.voices()).map((v) => ({ v, s: this.score(v, lang) })).filter((x) => x.s >= 0).sort((a, b) => b.s - a.s).map((x) => x.v);
+    },
+    async pick(lang) {
+      const list = await this.ranked(lang), want = this.settings()[lang];
+      return list.find((v) => v.voiceURI === want) || list[0] || null;
+    },
+    stop() {
+      this._run++;
+      const end = this._end; this._end = null;
+      if (end) end();
+      if (TTSN) TTSN.stop().catch(() => {});
+      if (WSS) WSS.cancel();
+    },
+    // Resolves when done or stopped. onEnd is also called when stopped.
+    async say(text, lang, onEnd) {
+      this.stop();
+      const run = this._run;
+      this._end = onEnd || null;
+      const done = () => { if (run === this._run && this._end) { const e = this._end; this._end = null; e(); } };
+      text = String(text || '').trim();
+      if (!text) return done();
+      const v = await this.pick(lang);
+      if (!v) { done(); throw new Error(lang === 'fil' ? 'Walang Filipino na boses sa device na ito. Tingnan ang "Boses" sa ibaba kung paano magdagdag.' : 'Walang English na boses sa device na ito.'); }
+      const { rate, pitch } = this.settings();
+      const parts = text.split(/(?<=[.!?…;:])\s+|\n+/).map((x) => x.trim()).filter(Boolean);
+      try {
+        if (TTSN) {
+          for (const p of parts) {
+            if (run !== this._run) break;
+            await TTSN.speak({ text: p, lang: v.lang || LANGS[lang].tag, rate, pitch, volume: 1, voice: v.index, category: 'playback' });
+          }
+        } else {
+          await new Promise((resolve) => {
+            parts.forEach((p, i) => {
+              const u = new SpeechSynthesisUtterance(p);
+              u.voice = v.ref; u.lang = v.lang; u.rate = rate; u.pitch = pitch;
+              if (i === parts.length - 1) { u.onend = resolve; u.onerror = resolve; }
+              WSS.speak(u);
+            });
+            const iv = setInterval(() => { if (run !== this._run || !WSS.speaking) { clearInterval(iv); resolve(); } }, 400);
+          });
+        }
+      } finally { done(); }
+    },
+  };
+
+  /* ---------------- translator (English <-> Filipino) ----------------
+     Order, fastest first, so there is no waiting when the answer is already known:
+     1. Translations done before, kept on this device (works offline).
+     2. Online: the server (Google Translate when GOOGLE_TRANSLATE_API_KEY is set, otherwise the free MyMemory service).
+     3. The browser's own offline translator, where it exists (newer Chrome / Edge on a computer).
+     4. Offline: a small built-in dictionary (dict.js), word by word. Only a rough guide. */
+  const Tr = {
+    MAX: 1000,
+    saved: () => store.get(uk('cse-tr'), []),
+    find(from, to, text) { return this.saved().find((x) => x.from === from && x.to === to && x.src === text); },
+    remember(e) {
+      const list = [e, ...this.saved().filter((x) => !(x.from === e.from && x.to === e.to && x.src === e.src))].slice(0, 150);
+      if (!store.set(uk('cse-tr'), list)) store.set(uk('cse-tr'), list.slice(0, 30));
+    },
+    _dev: {},
+    // Only when the language pack is already on the device (no download, no waiting).
+    async device(text, from, to) {
+      if (!('Translator' in self)) return null;
+      const quick = (pr) => Promise.race([pr, new Promise((_, no) => setTimeout(() => no(new Error('timeout')), 3000))]);
+      const codes = (l) => (l === 'fil' ? ['fil', 'tl'] : ['en']);
+      for (const f of codes(from)) for (const t of codes(to)) {
+        try {
+          const k = f + '|' + t;
+          if (!this._dev[k]) {
+            if ((await quick(self.Translator.availability({ sourceLanguage: f, targetLanguage: t }))) !== 'available') continue;
+            this._dev[k] = await quick(self.Translator.create({ sourceLanguage: f, targetLanguage: t }));
+          }
+          return await quick(this._dev[k].translate(text));
+        } catch { /* not supported here */ }
+      }
+      return null;
+    },
+    _dict: null,
+    dict() {
+      if (this._dict) return this._dict;
+      this._dict = new Promise((resolve, reject) => {
+        const build = () => {
+          const en = new Map(), fil = new Map();
+          for (const pair of String(window.CSE_DICT || '').split('|')) {
+            const [a, b] = pair.split('=');
+            if (!a || !b) continue;
+            if (!en.has(a)) en.set(a, b);
+            if (!fil.has(b)) fil.set(b, a);
+          }
+          resolve({ en, fil });
+        };
+        if (window.CSE_DICT) return build();
+        const sc = document.createElement('script');
+        sc.src = 'dict.js'; sc.onload = build; sc.onerror = () => { this._dict = null; reject(new Error('Hindi ma-load ang offline na diksyunaryo.')); };
+        document.head.appendChild(sc);
+      });
+      return this._dict;
+    },
+    async offline(text, from) {
+      const map = (await this.dict())[from];
+      const toks = text.match(/[\p{L}\p{M}'’-]+|[^\p{L}\p{M}'’-]+/gu) || [];
+      const out = [];
+      let hit = 0, words = 0;
+      for (let i = 0; i < toks.length; i++) {
+        const t = toks[i];
+        if (!/\p{L}/u.test(t)) { out.push(t); continue; }
+        words++;
+        let done = false;
+        for (let n = 4; n >= 1 && !done; n--) {
+          const idx = [i]; // word tokens i, i+2, i+4… separated only by spaces
+          for (let j = 1; j < n; j++) { const sp = toks[i + 2 * j - 1], w = toks[i + 2 * j]; if (!sp || !/^ +$/.test(sp) || !w || !/\p{L}/u.test(w)) break; idx.push(i + 2 * j); }
+          if (idx.length !== n) continue;
+          const phrase = idx.map((k) => toks[k]).join(' ').toLowerCase().replace(/’/g, "'");
+          const m = map.get(phrase);
+          if (m) {
+            const cap = /^\p{Lu}/u.test(t);
+            out.push(cap ? m.charAt(0).toUpperCase() + m.slice(1) : m);
+            i = idx[idx.length - 1]; hit += n; done = true;
+          }
+        }
+        if (!done) out.push(t);
+      }
+      return { text: out.join(''), known: words ? hit / words : 0 };
+    },
+    async run(text, from, to) {
+      text = String(text || '').trim().slice(0, this.MAX);
+      const old = this.find(from, to, text);
+      if (old) return { ...old, cached: true };
+      let r = null, err = null;
+      if (navigator.onLine && !S.offline) {
+        try { const d = await api('POST', '/api/translate', { text, from, to }); r = { out: d.text, via: d.provider }; } catch (e) { err = e; if (e.status && e.status < 500 && e.code !== 'translate') throw e; }
+      }
+      if (!r) { const d = await this.device(text, from, to); if (d) r = { out: d, via: 'device' }; }
+      if (r) { const e = { from, to, src: text, out: r.out, via: r.via, at: Date.now() }; this.remember(e); return e; }
+      const d = await this.offline(text, from);
+      return { from, to, src: text, out: d.text, via: 'dict', known: d.known, err };
+    },
+  };
+  const viaText = (r) => (r.via === 'dict' ? '📖 Offline na diksyunaryo: salita-por-salita lang, kaya hindi perpekto ang grammar. Mas tama kapag may internet.'
+    : r.cached ? `⚡ Naka-save sa device${r.via && r.via !== 'device' ? ' · ' + r.via : ''}` : r.via === 'device' ? '⚡ Translator ng device (offline)' : `🌐 ${r.via}`);
+
+  function viewTranslate() {
+    let from = store.get('cse-tr-from') === 'fil' ? 'fil' : 'en';
+    const to = () => (from === 'en' ? 'fil' : 'en');
+    const recent = Tr.saved().slice(0, 8);
+    shell('home', `
+      <p class="small" style="margin:0"><a href="#/">‹ Home</a></p>
+      <h1>Translator</h1>
+      <p class="muted" style="margin-top:0">English ↔ Filipino. Pindutin ang 🔊 para marinig kung paano ito binabasa.</p>
+      <div class="card">
+        <div class="tr-dir"><b id="fromL"></b><button class="btn ghost small" id="swap" type="button" aria-label="Palitan ang direksyon">⇄</button><b id="toL"></b></div>
+        <textarea id="src" maxlength="${Tr.MAX}" aria-label="Text na ita-translate"></textarea>
+        <div class="row between small" style="margin-top:6px"><span class="muted" id="cnt"></span>
+          <span class="row" style="gap:6px"><button class="btn ghost small" id="clr" type="button">Burahin</button>${Speech.available() ? '<button class="btn ghost small" id="sayS" type="button" aria-label="Pakinggan">🔊</button>' : ''}</span></div>
+        <button class="btn block" id="go" type="button" style="margin-top:10px">I-translate</button>
+        <div class="tr-out" id="out" hidden>
+          <div class="tr-text" id="outT"></div>
+          <div class="row" style="margin-top:10px;gap:6px">${Speech.available() ? '<button class="btn small" id="sayT" type="button">🔊 Pakinggan</button>' : ''}<button class="btn ghost small" id="copy" type="button">Kopyahin</button></div>
+          <p class="muted small" id="via" style="margin:8px 0 0"></p>
+        </div>
+        <div class="err" id="err"></div>
+      </div>
+      <div class="stack" style="margin-top:12px">
+        ${fold('tr-voice', '<h3>Boses</h3>', '<div id="vbox"><p class="muted small" style="margin:0">Tinitingnan ang mga boses…</p></div>', { open: false })}
+        ${recent.length ? fold('tr-recent', '<h3>Mga huling translate</h3>', `<div class="list">${recent.map((x, i) => `<button class="list-item tr-recent" type="button" data-r="${i}"><div class="grow" style="text-align:left"><div class="ellipsis"><b>${esc(x.src)}</b></div><div class="muted small ellipsis">${esc(x.out)}</div></div><span class="pill">${x.from === 'en' ? 'EN→FIL' : 'FIL→EN'}</span></button>`).join('')}</div>`, { open: false }) : ''}
+      </div>`);
+    const src = $('#src');
+    const paintDir = () => {
+      $('#fromL').textContent = LANGS[from].name; $('#toL').textContent = LANGS[to()].name;
+      src.placeholder = from === 'en' ? 'I-type o i-paste ang English dito…' : 'I-type o i-paste ang Filipino dito…';
+    };
+    const count = () => { $('#cnt').textContent = `${src.value.length}/${Tr.MAX}`; };
+    const show = (r) => {
+      $('#out').hidden = false; $('#outT').textContent = r.out; $('#via').textContent = viaText(r);
+      $('#out').dataset.lang = r.to;
+    };
+    const go = async () => {
+      const text = src.value.trim();
+      $('#err').textContent = '';
+      if (!text) { src.focus(); return; }
+      const b = $('#go'); b.disabled = true; b.textContent = 'Tina-translate…';
+      try { show(await Tr.run(text, from, to())); } catch (e) { $('#err').textContent = e.message; } finally { b.disabled = false; b.textContent = 'I-translate'; }
+    };
+    const speakBtn = (btn, getText, getLang) => {
+      if (!btn) return;
+      const label = btn.textContent;
+      btn.onclick = async () => {
+        if (btn.dataset.on) { Speech.stop(); return; }
+        const t = getText();
+        if (!t) return;
+        btn.dataset.on = '1'; btn.textContent = '⏹ Ihinto';
+        $('#err').textContent = '';
+        try { await Speech.say(t, getLang(), () => { delete btn.dataset.on; btn.textContent = label; }); } catch (e) { $('#err').textContent = e.message; }
+      };
+    };
+    paintDir(); count();
+    src.oninput = count;
+    src.onkeydown = (e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); go(); } };
+    $('#go').onclick = go;
+    $('#swap').onclick = () => {
+      const outT = $('#out').hidden ? '' : $('#outT').textContent;
+      from = to(); store.set('cse-tr-from', from); paintDir();
+      if (outT) { src.value = outT; count(); $('#out').hidden = true; }
+    };
+    $('#clr').onclick = () => { src.value = ''; count(); $('#out').hidden = true; $('#err').textContent = ''; Speech.stop(); src.focus(); };
+    $('#copy').onclick = async () => {
+      try { await navigator.clipboard.writeText($('#outT').textContent); toast('Nakopya.'); } catch { toast('Hindi makopya. Pindutin nang matagal ang text para kopyahin.'); }
+    };
+    speakBtn($('#sayS'), () => src.value.trim(), () => from);
+    speakBtn($('#sayT'), () => $('#outT').textContent, () => $('#out').dataset.lang || to());
+    $$('[data-r]').forEach((b) => (b.onclick = () => {
+      const x = recent[+b.dataset.r];
+      from = x.from; store.set('cse-tr-from', from); paintDir();
+      src.value = x.src; count(); show({ ...x, cached: true }); window.scrollTo(0, 0);
+    }));
+    paintVoices();
+  }
+
+  async function paintVoices() {
+    const el = $('#vbox');
+    if (!el) return;
+    if (!Speech.available()) { el.innerHTML = '<p class="muted small" style="margin:0">Walang text-to-speech sa device o browser na ito.</p>'; return; }
+    const [fil, en] = await Promise.all([Speech.ranked('fil'), Speech.ranked('en')]);
+    if (!el.isConnected) return;
+    const st = Speech.settings();
+    const label = (v) => {
+      const extra = TTSN ? String(v.voiceURI || '').split('-x-')[1] || '' : '';
+      return `${v.name}${extra ? ' · ' + extra.replace(/-(local|network)$/, '') : ''} (${v.lang})${v.localService === false ? ' · online' : ''}`;
+    };
+    const sel = (lang, list) => list.length ? `<select id="v-${lang}">${list.map((v, i) => `<option value="${esc(v.voiceURI)}" ${(st[lang] ? st[lang] === v.voiceURI : i === 0) ? 'selected' : ''}>${i === 0 ? '⭐ ' : ''}${esc(label(v))}</option>`).join('')}</select>` : '<p class="muted small" style="margin:0">Wala</p>';
+    const noFil = !fil.some((v) => Speech.family(v) === 'fil');
+    const how = TTSN ? (capNative && /android/i.test(navigator.userAgent)
+      ? 'Sa phone: Settings → Text-to-speech output → Google (Speech Services) → ⚙️ → Install voice data → Filipino.'
+      : 'Sa iPhone: Settings → Accessibility → Spoken Content → Voices.')
+      : DESK || /windows/i.test(navigator.userAgent) ? 'Sa Windows: Settings → Time & language → Speech → Add voices → Filipino. (Sa Microsoft Edge, may libreng "Natural" na Filipino na boses kapag may internet.)'
+      : /android/i.test(navigator.userAgent) ? 'Sa Android: Settings → Text-to-speech output → Google → Install voice data → Filipino.'
+      : 'I-install ang Filipino na boses sa settings ng device, o gamitin ang Microsoft Edge o Chrome.';
+    el.innerHTML = `
+      <p class="muted small" style="margin:0 0 6px">Nauuna (⭐) ang pinaka-natural na boses sa device mo.</p>
+      <label for="v-fil">Filipino</label>${sel('fil', fil)}
+      ${noFil ? `<p class="small" style="margin:6px 0 0">⚠️ Walang Filipino na boses sa device na ito${fil.length ? ', kaya Indonesian/Malay ang gamit (malapit ang bigkas)' : ''}. ${how}</p>${TTSN && /android/i.test(navigator.userAgent) ? '<button class="btn ghost small" id="vinst" type="button" style="margin-top:6px">Buksan ang voice settings</button>' : ''}` : ''}
+      <label for="v-en">English</label>${sel('en', en)}
+      <label for="v-rate">Bilis: <span id="rateV"></span></label><input type="range" id="v-rate" min="0.7" max="1.3" step="0.05" value="${st.rate}" style="width:100%">
+      <label for="v-pitch">Tono: <span id="pitchV"></span></label><input type="range" id="v-pitch" min="0.8" max="1.2" step="0.05" value="${st.pitch}" style="width:100%">
+      <div class="row" style="margin-top:12px"><button class="btn secondary small" id="tFil" type="button">🔊 Subukan (Filipino)</button><button class="btn secondary small" id="tEn" type="button">🔊 Subukan (English)</button></div>`;
+    const showVals = () => { $('#rateV').textContent = `${Math.round(+$('#v-rate').value * 100)}%`; $('#pitchV').textContent = `${Math.round(+$('#v-pitch').value * 100)}%`; };
+    showVals();
+    ['fil', 'en'].forEach((l) => { const s = $('#v-' + l); if (s) s.onchange = () => Speech.save({ [l]: s.value }); });
+    $('#v-rate').oninput = () => { showVals(); Speech.save({ rate: +$('#v-rate').value }); };
+    $('#v-pitch').oninput = () => { showVals(); Speech.save({ pitch: +$('#v-pitch').value }); };
+    $('#tFil').onclick = () => Speech.say('Magandang araw! Handa ka na bang mag-review para sa Civil Service Exam?', 'fil').catch((e) => toast(e.message));
+    $('#tEn').onclick = () => Speech.say('Good day! Are you ready to review for the Civil Service Exam?', 'en').catch((e) => toast(e.message));
+    if ($('#vinst')) $('#vinst').onclick = () => TTSN.openInstall().catch(() => toast('Buksan ang Settings → Text-to-speech.'));
   }
 
   /* ---------------- account ---------------- */
@@ -1063,27 +1435,21 @@
         <span class="pill">${S.user.role === 'admin' ? 'Admin' : 'Reviewer'}</span></div>
       </div>
       <a class="list-item" href="#/premium" style="margin-top:12px"><div class="grow"><b>Premium</b><div class="muted small">${S.user.role === 'admin' ? 'Admin: bukas lahat' : S.premium && S.user.premium_until > Date.now() ? 'Aktibo hanggang ' + new Date(S.user.premium_until).toLocaleDateString('en-PH') : S.config.premium_required ? 'Hindi pa aktibo' : 'Libre pa ang mock exams'}</div></div><span>›</span></a>
-      ${S.premium ? `<div class="card" style="margin-top:12px" id="lookCard">
-        <h3>Itsura ng screen</h3>
+      <div class="stack">
+      ${S.premium ? fold('acc-look', '<h3>Itsura ng screen</h3>', `
         <p class="muted small" style="margin:0 0 10px">Malambot na kulay na hindi masakit sa mata. Para mag-zoom, i-pinch ang screen gamit ang dalawang daliri${IS_APP && !capNative ? ' (o Ctrl + scroll / touchpad pinch)' : ''}.</p>
         <div class="seg" id="themes">${THEMES.map(([k, l]) => `<button type="button" data-theme="${k}" class="${(look() || {}).theme === k ? 'active' : ''}">${l}</button>`).join('')}</div>
-        ${zoomNow !== 1 ? `<p class="small" style="margin:10px 0 0">Zoom: <b>${Math.round(zoomNow * 100)}%</b> · <a href="#" id="zreset">Ibalik sa 100%</a></p>` : ''}
-      </div>
-      <div class="card" style="margin-top:12px" id="bioCard"><h3>Mabilis na login</h3><p class="muted small" style="margin:0">Tinitingnan…</p></div>` : ''}
-      <div class="card" style="margin-top:12px">
-        <h3>Palitan ang password</h3>
+        ${zoomNow !== 1 ? `<p class="small" style="margin:10px 0 0">Zoom: <b>${Math.round(zoomNow * 100)}%</b> · <a href="#" id="zreset">Ibalik sa 100%</a></p>` : ''}`, { open: false, id: 'lookCard' })
+      + fold('acc-bio', '<h3>Mabilis na login</h3><span class="pill ok" id="bioPill" style="display:none"></span>', '<div id="bioCard"><p class="muted small" style="margin:0">Tinitingnan…</p></div>', { open: false }) : ''}
+      ${fold('acc-pw', '<h3>Palitan ang password</h3>', `
         <form id="pwf"><label>Kasalukuyang password</label><input type="password" id="cur" autocomplete="current-password">
         <label>Bagong password</label><input type="password" id="npw" autocomplete="new-password" placeholder="8 characters o higit pa">
-        <div class="err" id="err"></div><button class="btn" type="submit">I-save</button></form>
-      </div>
-      <div class="card" style="margin-top:12px">
-        <h3>I-install sa phone</h3>
+        <div class="err" id="err"></div><button class="btn" type="submit">I-save</button></form>`, { open: false })}
+      ${fold('acc-install', '<h3>I-install sa phone</h3>', `
         <p class="muted small" style="margin:0 0 10px"><b>Android (Chrome):</b> pindutin ang ⋮ menu → "Add to Home screen" o "Install app".<br><b>iPhone (Safari):</b> pindutin ang Share (□↑) → "Add to Home Screen".<br>Sa Premium, gumagana ito kahit offline. Kailangan ng internet para mag-login, magbayad, at makatanggap ng email.</p>
-        <button class="btn secondary" id="install" hidden>I-install ang app</button>
-      </div>
-      <div class="card" style="margin-top:12px">
-        <h3>Tungkol sa exam</h3>
-        <p class="muted small" style="margin:0">Sinusunod ng mock exam ang format ng Career Service Exam (pen and paper test) ng Civil Service Commission: Professional na 170 tanong sa loob ng 3 oras at 10 minuto, at Subprofessional na 165 tanong sa loob ng 2 oras at 40 minuto, lahat ay may 4 na pagpipilian at 80% ang passing rate. Hindi inilalabas ng CSC ang eksaktong bilang kada subject, kaya tantiya ang hati ng mga tanong. Ang app na ito ay hindi opisyal na produkto ng CSC.</p>
+        <button class="btn secondary" id="install" hidden>I-install ang app</button>`, { open: false })}
+      ${fold('acc-about', '<h3>Tungkol sa exam</h3>', `
+        <p class="muted small" style="margin:0">Sinusunod ng mock exam ang format ng Career Service Exam (pen and paper test) ng Civil Service Commission: Professional na 170 tanong sa loob ng 3 oras at 10 minuto, at Subprofessional na 165 tanong sa loob ng 2 oras at 40 minuto, lahat ay may 4 na pagpipilian at 80% ang passing rate. Hindi inilalabas ng CSC ang eksaktong bilang kada subject, kaya tantiya ang hati ng mga tanong. Ang app na ito ay hindi opisyal na produkto ng CSC.</p>`, { open: false })}
       </div>
       <button class="btn ghost block" id="logout" style="margin-top:16px">Mag-logout</button>`);
     $$('#themes [data-theme]').forEach((b) => (b.onclick = () => {
@@ -1107,18 +1473,35 @@
 
   async function paintBioCard() {
     const el = $('#bioCard');
-    const rec = Bio.saved(), kind = await Bio.kind();
-    if (!el.isConnected) return;
+    const rec = Bio.saved(), ms = await Bio.methods();
+    if (!el || !el.isConnected) return;
     const mine = rec && rec.email === S.user.email;
-    el.innerHTML = `<h3>Mabilis na login</h3>
-      ${!kind && !rec ? '<p class="muted small" style="margin:0">Walang fingerprint, face, o Windows Hello sa device na ito. Pwede ka pa ring mag-login gamit ang <b>code sa email</b>, walang password.</p>'
-      : mine ? `<p class="small" style="margin:0 0 10px">✅ Naka-on. Sa login screen, pindutin ang <b>${rec.kind === 'desktop' ? 'Windows Hello' : 'Fingerprint'}</b> para makapasok nang walang password.</p><button class="btn ghost small" id="bioOff">I-off</button>`
-      : `<p class="muted small" style="margin:0 0 10px">Mag-login gamit ang <b>${esc(Bio.label())}</b>, walang password.${rec ? ` Papalitan nito ang naka-save na login ni ${esc(rec.name)} sa device na ito.` : ''}</p><button class="btn secondary" id="bioOn">👆 I-on</button>`}
-      <div class="err" id="berr"></div>`;
-    if ($('#bioOn')) $('#bioOn').onclick = async (e) => {
-      e.target.disabled = true;
-      try { if (rec) await Bio.forget(); await Bio.enable(); toast('Naka-on na ang mabilis na login.'); paintBioCard(); } catch (err) { $('#berr').textContent = bioErr(err); e.target.disabled = false; }
-    };
+    const cur = mine ? rec.method || 'finger' : null;
+    const pill = $('#bioPill');
+    if (pill) { pill.textContent = mine ? 'Naka-on: ' + METHODS[cur][1] : ''; pill.style.display = mine ? '' : 'none'; }
+    const choice = (m) => `<button class="btn ${mine && cur === m ? '' : 'secondary'}" data-m="${m}" type="button">${METHODS[m][0]} ${METHODS[m][1]}</button>`;
+    const note = !ms.length ? '' : NB
+      ? (ms.includes('face') && ms.includes('finger') ? 'Ang phone ang nagpapasya kung tatanggapin ang face. Sa maraming Android phone, fingerprint lang ang pinapayagan para sa apps; kung ganoon, fingerprint ang hihingin kahit Face ang pinili mo.' : '')
+      : DESK ? 'Gamit ang Windows Hello: face (kung may Windows Hello camera ang computer), fingerprint, o PIN.'
+      : 'Gamit ang lock ng device mo: face, fingerprint, o PIN, depende sa kung ano ang naka-set up.';
+    el.innerHTML = !ms.length && !rec
+      ? '<p class="muted small" style="margin:0">Walang face, fingerprint, o Windows Hello sa device na ito. Pwede ka pa ring mag-login gamit ang <b>code sa email</b>, walang password.</p>'
+      : `<p class="small" style="margin:0 0 10px">${mine ? `✅ Naka-on. Sa login screen, pindutin ang <b>${esc(Bio.btn(rec))}</b> para makapasok nang walang password.`
+        : `Pumili kung paano ka magla-login nang walang password.${rec ? ` Papalitan nito ang naka-save na login ni ${esc(rec.name)} sa device na ito.` : ''}`}</p>
+        ${ms.length ? `<div class="auth-alt" style="margin-top:0">${ms.map(choice).join('')}</div>` : ''}
+        ${note ? `<p class="muted small" style="margin:10px 0 0">${note}</p>` : ''}
+        ${mine ? '<button class="btn ghost small" id="bioOff" style="margin-top:10px">I-off</button>' : ''}`;
+    el.insertAdjacentHTML('beforeend', '<div class="err" id="berr"></div>');
+    $$('#bioCard [data-m]').forEach((b) => (b.onclick = async () => {
+      const m = b.dataset.m;
+      if (mine && cur === m) return;
+      $$('#bioCard [data-m]').forEach((x) => (x.disabled = true));
+      try {
+        if (mine) { await Bio.check(`Gamitin ang ${METHODS[m][1]}`, m); setBioMethod(m); }
+        else { if (rec) await Bio.forget(); await Bio.enable(m); }
+        toast(`Naka-on na ang ${METHODS[m][1]} login.`); paintBioCard();
+      } catch (err) { $('#berr').textContent = bioErr(err); $$('#bioCard [data-m]').forEach((x) => (x.disabled = false)); }
+    }));
     if ($('#bioOff')) $('#bioOff').onclick = async () => { await Bio.forget(); toast('Naka-off na ang mabilis na login.'); paintBioCard(); };
   }
 
@@ -1141,7 +1524,6 @@
   }
   async function admOverview(el) {
     const o = await api('GET', '/api/admin/overview');
-    const totalQ = o.questions.reduce((x, y) => x + y.n, 0);
     el.innerHTML = `
       <div class="grid stats">
         <div class="card stat"><div class="v">${o.users}</div><div class="l">Kabuuang users</div></div>
@@ -1153,10 +1535,7 @@
       </div>
       ${o.pendingPayments ? `<a class="notice" href="#/admin/payments" style="display:block;margin-top:12px">💳 May <b>${o.pendingPayments}</b> bayad na hinihintay ma-check →</a>` : ''}
       ${!o.mail.enabled ? '<div class="notice" style="margin-top:12px;background:var(--warn-soft)">⚠️ Hindi pa naka-set up ang email. Hindi pa nagpapadala ng verification code, resulta at resibo. Tingnan ang README (Email setup).</div>' : ''}
-      <div class="grid stats" style="margin-top:12px"><div class="card stat"><div class="v">${o.premiumUsers}</div><div class="l">Premium users</div></div></div>
-      <div class="card" style="margin-top:12px"><h3>Question bank (${totalQ} nakasulat na tanong)</h3>
-        <table><tr><th>Subject</th><th>Bilang</th></tr>${o.questions.map((q) => `<tr><td>${esc(subjName(q.subject))}</td><td>${q.n}</td></tr>`).join('')}</table>
-        <p class="muted small">Bukod dito, awtomatikong gumagawa ang app ng bagong tanong para sa Numerical, Analytical, Clerical at vocabulary, kaya iba-iba ang bawat exam.</p></div>`;
+      <div class="grid stats" style="margin-top:12px"><div class="card stat"><div class="v">${o.premiumUsers}</div><div class="l">Premium users</div></div></div>`;
   }
   async function admUsers(el) {
     const paint = async (q = '') => {
@@ -1363,6 +1742,7 @@
   /* ---------------- router ---------------- */
   async function route() {
     stopTimer();
+    Speech.stop();
     guardOff();
     if (S.exam) { saveAnswers(true); S.exam = null; document.onkeydown = null; }
     document.querySelectorAll('.modal-bg').forEach((m) => m.remove());
@@ -1378,6 +1758,7 @@
       if (p0 === 'premium') return await viewPremium();
       if (p0 === 'login' || p0 === 'register' || p0 === 'otp' || p0 === 'forgot' || !p0) return await viewHome();
       if (p0 === 'practice') return viewPractice();
+      if (p0 === 'translate') return viewTranslate();
       if (p0 === 'exam') return await viewExam(p1);
       if (p0 === 'result') return await viewResult(p1);
       if (p0 === 'history') return await viewHistory();
