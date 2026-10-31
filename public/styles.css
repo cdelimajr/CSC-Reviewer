@@ -271,3 +271,12 @@ html[data-theme] #toast { background: var(--text); color: var(--card); }
 html[data-theme] .offline-bar { background: var(--warn-soft); color: var(--warn-text); border-color: var(--line); }
 html[data-theme] .modal-bg { background: rgba(20, 18, 14, .45); }
 html[data-theme] .q-text { font-weight: 500; }
+
+/* screen protection during exams (see "screen protection" in app.js) */
+.privacy-strip { font-size: 12px; line-height: 1.35; text-align: center; padding: 4px 16px; color: var(--muted); background: var(--card); border-bottom: 1px solid var(--line); }
+#wm, #shield { display: none; }
+body.guard #wm { display: block; position: fixed; inset: 0; z-index: 40; pointer-events: none; opacity: .14; background-repeat: repeat; }
+body.guard #qwrap { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+body.guard.away #shield { display: grid; place-items: center; text-align: center; position: fixed; inset: 0; z-index: 70; background: var(--bg); padding: 24px; }
+body.guard.away #app { visibility: hidden; }
+@media print { body.guard #app, body.guard #wm { display: none !important; } body.guard::before { content: "Protektado ng Data Privacy Act of 2012 (RA 10173). Bawal kopyahin o i-print ang exam."; display: block; padding: 40px; font-size: 20px; } }

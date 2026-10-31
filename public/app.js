@@ -654,7 +654,62 @@
     </a>`;
   }
 
+  /* ---------------- screen protection during exams and practice (all users) ----------------
+     An app cannot see another person's camera, and cannot show anything on another person's phone.
+     So it protects the questions in the ways it can:
+     - Android app: screenshots and screen recording are blocked (FLAG_SECURE, see .github/workflows/apps.yml).
+       Windows app: same (content protection, see apps/desktop/main.js).
+     - A light watermark with the user's email and a Data Privacy Act (RA 10173) warning covers the questions,
+       so a photo or video of the screen carries the warning and shows which account it came from.
+     - The questions are hidden while the app is in the background or not in focus,
+       and cannot be selected, copied or printed. */
+  const PRIVACY_LINE = 'Protektado ng Data Privacy Act of 2012 (RA 10173). Bawal kopyahin, kunan ng larawan o i-video.';
+  function watermark(who) {
+    const x = (t) => esc(t).replace(/[^\x20-\x7e]/g, ''); // plain text only inside the image
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="340" height="200"><g transform="rotate(-24 170 100)" fill="#808080" font-family="Arial,sans-serif" text-anchor="middle">`
+      + `<text x="170" y="88" font-size="15" font-weight="700">RA 10173 - BAWAL KUNAN NG LARAWAN/VIDEO</text>`
+      + `<text x="170" y="112" font-size="14">${x(who)}</text></g></svg>`;
+    return 'data:image/svg+xml,' + encodeURIComponent(svg);
+  }
+  function guardOn() {
+    document.body.classList.add('guard');
+    let wm = document.getElementById('wm');
+    if (!wm) {
+      wm = document.createElement('div'); wm.id = 'wm'; wm.setAttribute('aria-hidden', 'true');
+      const sh = document.createElement('div'); sh.id = 'shield'; sh.setAttribute('aria-hidden', 'true');
+      sh.innerHTML = `<div><div style="font-size:40px">🔒</div><b>Nakatago ang tanong</b><p class="muted small">${esc(PRIVACY_LINE)}</p></div>`;
+      document.body.append(wm, sh);
+    }
+    wm.style.backgroundImage = `url("${watermark(S.user ? S.user.email : '')}")`;
+  }
+  function guardOff() { document.body.classList.remove('guard', 'away'); }
+  const away = (on) => document.body.classList.toggle('away', on && document.body.classList.contains('guard'));
+  document.addEventListener('visibilitychange', () => away(document.hidden));
+  document.addEventListener('pause', () => away(true)); // Android/iPhone app goes to the background
+  document.addEventListener('resume', () => away(false));
+  window.addEventListener('blur', () => away(true));
+  window.addEventListener('focus', () => away(false));
+  ['copy', 'cut', 'contextmenu', 'selectstart', 'dragstart'].forEach((ev) => document.addEventListener(ev, (e) => {
+    if (document.body.classList.contains('guard') && !(e.target.closest && e.target.closest('input, textarea'))) e.preventDefault();
+  }));
+  document.addEventListener('keyup', (e) => {
+    if (e.key !== 'PrintScreen' || !document.body.classList.contains('guard')) return;
+    try { navigator.clipboard && navigator.clipboard.writeText(PRIVACY_LINE).catch(() => {}); } catch { /* ignore */ }
+    toast('⚠️ ' + PRIVACY_LINE);
+  });
+  // Shown once per account, before the first exam or practice.
+  async function privacyNotice() {
+    if (store.get(uk('cse-privacy-ok'))) return true;
+    const ok = await confirmBox('Paalala sa privacy', `Ang mga tanong at ang account mo ay <b>protektado ng Data Privacy Act of 2012 (RA 10173)</b>.
+      Bawal kopyahin, i-screenshot, kunan ng larawan, o i-video ang screen habang nag-e-exam.<br><br>
+      May malabong watermark ng email mo at babala ng RA 10173 sa screen, kaya makikita ito sa anumang larawan o video na kukunin ng iba.
+      Sa Android at Windows app, naka-block ang screenshot at screen recording.`, 'Naiintindihan ko');
+    if (ok) store.set(uk('cse-privacy-ok'), 1);
+    return ok;
+  }
+
   async function startExam(mode, opts = {}) {
+    if (!(await privacyNotice())) return;
     if (mode !== 'practice') {
       const e = S.meta.exams[mode];
       const ok = await confirmBox(`Simulan ang ${e.title}?`, `Mayroon itong <b>${e.items} tanong</b> at <b>${fmtDur(e.minutes)}</b> na oras, tulad ng totoong CSE. Tuloy-tuloy ang timer kahit isara mo ang app, pero naka-save ang mga sagot mo. Kailangan ng ${e.passing}% para pumasa.`, 'Simulan na');
@@ -774,6 +829,7 @@
         <button class="btn secondary small" id="navBtn">☰ Lahat</button>
       </div></div>
       <div class="progress"><i id="prog"></i></div>
+      <div class="privacy-strip">🔒 ${esc(PRIVACY_LINE)}</div>
       <main class="wrap" id="qwrap" style="padding-bottom:120px"></main>
       <div class="exam-actions"><div class="inner">
         <button class="btn ghost" id="prev">‹ Bumalik</button>
@@ -793,6 +849,7 @@
       paintQ();
     };
     $('#navBtn').onclick = openNav;
+    guardOn();
     document.onkeydown = (e) => {
       if (!S.exam || document.querySelector('.modal-bg')) return;
       const k = e.key.toUpperCase();
@@ -1306,6 +1363,7 @@
   /* ---------------- router ---------------- */
   async function route() {
     stopTimer();
+    guardOff();
     if (S.exam) { saveAnswers(true); S.exam = null; document.onkeydown = null; }
     document.querySelectorAll('.modal-bg').forEach((m) => m.remove());
     const parts = (location.hash.replace(/^#\/?/, '') || '').split('/');

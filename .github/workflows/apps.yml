@@ -50,6 +50,28 @@ jobs:
         run: mkdir -p ~/.android && echo "$KEYSTORE" | base64 -d > ~/.android/debug.keystore
       - run: npm ci
       - run: npm run android
+      - name: Block screenshots and screen recording (FLAG_SECURE)
+        # Protects the exam questions. Screenshots and recordings of the app come out black,
+        # and the app is blank in the recent apps list.
+        run: |
+          f=$(find android/app/src/main/java -name MainActivity.java | head -1)
+          pkg=$(sed -n 's/^package \(.*\);/\1/p' "$f")
+          cat > "$f" <<EOF
+          package $pkg;
+
+          import android.os.Bundle;
+          import android.view.WindowManager;
+          import com.getcapacitor.BridgeActivity;
+
+          public class MainActivity extends BridgeActivity {
+              @Override
+              public void onCreate(Bundle savedInstanceState) {
+                  super.onCreate(savedInstanceState);
+                  getWindow().setFlags(WindowManager.LayoutParams.FLAG_SECURE, WindowManager.LayoutParams.FLAG_SECURE);
+              }
+          }
+          EOF
+          cat "$f"
       - name: Fingerprint / face login permission
         run: grep -q USE_BIOMETRIC android/app/src/main/AndroidManifest.xml || sed -i 's#</manifest>#    <uses-permission android:name="android.permission.USE_BIOMETRIC" />\n</manifest>#' android/app/src/main/AndroidManifest.xml
       - name: Version number
