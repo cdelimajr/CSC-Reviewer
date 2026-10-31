@@ -105,7 +105,7 @@ const db = {
       'ALTER TABLE users ADD COLUMN premium_until INTEGER NOT NULL DEFAULT 0',
       'ALTER TABLE attempts ADD COLUMN set_id INTEGER',
       'ALTER TABLE attempts ADD COLUMN client_id TEXT',
-      // Online payments (Xendit)
+      // Online payments (PayMongo)
       `ALTER TABLE payments ADD COLUMN provider TEXT NOT NULL DEFAULT 'manual'`,
       'ALTER TABLE payments ADD COLUMN invoice_id TEXT',
       'ALTER TABLE payments ADD COLUMN checkout_url TEXT',

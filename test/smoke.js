@@ -7,8 +7,8 @@ process.env.DB_PATH = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'cse-')), 
 process.env.NODE_ENV = 'test';
 process.env.REQUIRE_EMAIL_VERIFICATION = '1';
 process.env.INITIAL_SETS = '3';
-process.env.XENDIT_SECRET_KEY = 'xnd_test_key';
-process.env.XENDIT_CALLBACK_TOKEN = 'cb_test_token';
+process.env.PAYMONGO_SECRET_KEY = 'sk_test_key';
+process.env.PAYMONGO_WEBHOOK_SECRET = 'whsk_test_secret';
 const app = require('../src/server');
 const mail = require('../src/mail');
 
@@ -93,42 +93,50 @@ const lastCode = (to) => {
   r = await U('GET', '/api/premium'); assert.equal(r.data.active, true);
   assert.equal((await U('POST', '/api/attempts', { mode: 'subpro' })).status, 200, 'premium unlocks mocks');
 
-  // Online payment (Xendit, faked here): checkout, webhook, Premium extended once only
-  const invoices = {};
+  // Online payment (PayMongo, faked here): checkout, signed webhook, Premium extended once only
+  const sessions = {};
   const fake = require('express')().use(require('express').json())
-    .post('/v2/invoices', (q, s) => {
-      assert.equal(q.get('authorization'), 'Basic ' + Buffer.from('xnd_test_key:').toString('base64'));
-      const inv = { id: 'inv_' + (Object.keys(invoices).length + 1), external_id: q.body.external_id, amount: q.body.amount, status: 'PENDING', invoice_url: 'https://checkout.xendit.test/' + q.body.external_id };
-      invoices[inv.id] = inv; s.json(inv);
+    .post('/v1/checkout_sessions', (q, s) => {
+      assert.equal(q.get('authorization'), 'Basic ' + Buffer.from('sk_test_key:').toString('base64'));
+      const at = q.body.data.attributes;
+      assert.ok(at.payment_method_types.includes('gcash') && at.payment_method_types.includes('paymaya'));
+      const cs = { id: 'cs_' + (Object.keys(sessions).length + 1), attributes: { reference_number: at.reference_number, line_items: at.line_items, status: 'active', payments: [], checkout_url: 'https://checkout.paymongo.test/' + at.reference_number } };
+      sessions[cs.id] = cs; s.json({ data: cs });
     })
-    .get('/v2/invoices/:id', (q, s) => (invoices[q.params.id] ? s.json(invoices[q.params.id]) : s.status(404).json({ message: 'not found' })))
+    .get('/v1/checkout_sessions/:id', (q, s) => (sessions[q.params.id] ? s.json({ data: sessions[q.params.id] }) : s.status(404).json({ errors: [{ detail: 'not found' }] })))
     .listen(0);
-  process.env.XENDIT_API_URL = `http://127.0.0.1:${fake.address().port}`;
+  process.env.PAYMONGO_API_URL = `http://127.0.0.1:${fake.address().port}`;
+  const payIt = (cs, method) => Object.assign(cs.attributes, { payment_method_used: method, payments: [{ id: 'pay_' + cs.id, attributes: { status: 'paid', amount: cs.attributes.line_items[0].amount } }] });
   assert.equal((await U('GET', '/api/me')).data.config.online_pay, true);
   const before = (await U('GET', '/api/premium')).data.until;
   r = await U('POST', '/api/payments/checkout', {});
-  assert.ok(r.data.url.startsWith('https://checkout.xendit.test/'), 'checkout link');
+  assert.ok(r.data.url.startsWith('https://checkout.paymongo.test/'), 'checkout link');
   assert.equal((await U('POST', '/api/payments/checkout', {})).data.url, r.data.url, 'unpaid checkout reused');
-  const inv = Object.values(invoices)[0];
-  assert.equal(inv.amount, 99);
-  const hook = (body, token) => fetch(base + '/api/payments/xendit/webhook', { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-callback-token': token }, body: JSON.stringify(body) });
-  assert.equal((await hook({ id: inv.id, external_id: inv.external_id, status: 'PAID' }, 'wrong')).status, 401, 'bad callback token');
-  // Webhook says PAID but Xendit says it is not: nothing changes
-  assert.equal((await hook({ id: inv.id, external_id: inv.external_id, status: 'PAID' }, 'cb_test_token')).status, 200);
+  const cs1 = Object.values(sessions)[0];
+  assert.equal(cs1.attributes.line_items[0].amount, 9900, 'amount in centavos');
+  const crypto = require('node:crypto');
+  const hook = (csId, secret = 'whsk_test_secret', t = Math.floor(Date.now() / 1000)) => {
+    const body = JSON.stringify({ data: { id: 'evt_1', attributes: { type: 'checkout_session.payment.paid', livemode: false, data: { id: csId, attributes: { status: 'paid' } } } } });
+    const sig = crypto.createHmac('sha256', secret).update(`${t}.${body}`).digest('hex');
+    return fetch(base + '/api/payments/paymongo/webhook', { method: 'POST', headers: { 'Content-Type': 'application/json', 'Paymongo-Signature': `t=${t},te=${sig},li=` }, body });
+  };
+  assert.equal((await hook(cs1.id, 'wrong')).status, 401, 'bad signature');
+  assert.equal((await hook(cs1.id, 'whsk_test_secret', Math.floor(Date.now() / 1000) - 3600)).status, 401, 'old signature');
+  // Webhook says paid but PayMongo says it is not: nothing changes
+  assert.equal((await hook(cs1.id)).status, 200);
   assert.equal((await U('GET', '/api/premium')).data.until, before, 'body alone does not activate');
-  Object.assign(invoices[inv.id], { status: 'PAID', paid_amount: 99, payment_channel: 'GCASH' });
-  assert.equal((await hook({ id: inv.id, external_id: inv.external_id, status: 'PAID' }, 'cb_test_token')).status, 200);
-  await hook({ id: inv.id, external_id: inv.external_id, status: 'PAID' }, 'cb_test_token'); // Xendit may send it twice
+  payIt(cs1, 'gcash');
+  assert.equal((await hook(cs1.id)).status, 200);
+  await hook(cs1.id); // PayMongo may send it twice
   r = await U('GET', '/api/premium');
   assert.ok(Math.abs(r.data.until - (before + 30 * 864e5)) < 5000, 'premium extended by 30 days, once');
-  const paid = r.data.payments.find((x) => x.provider === 'xendit');
-  assert.equal(paid.status, 'approved'); assert.equal(paid.method, 'GCASH'); assert.equal(paid.checkout_url, null);
+  const paid = r.data.payments.find((x) => x.provider === 'paymongo');
+  assert.equal(paid.status, 'approved'); assert.equal(paid.method, 'GCash'); assert.equal(paid.checkout_url, null);
   assert.ok(mail.outbox.some((m) => m.to === 'juan@test.ph' && m.subject.startsWith('Aktibo na')), 'user emailed');
-  assert.equal((await hook({ id: 'inv_unknown', external_id: 'x', status: 'PAID' }, 'cb_test_token')).status, 200, 'test callbacks ignored');
+  assert.equal((await hook('cs_unknown')).status, 200, 'unknown checkouts ignored');
   // Paid while the webhook was late: opening the Premium page checks it
-  r = await U('POST', '/api/payments/checkout', {});
-  const inv2 = Object.values(invoices)[1];
-  Object.assign(inv2, { status: 'PAID', paid_amount: 99, payment_channel: 'PAYMAYA' });
+  await U('POST', '/api/payments/checkout', {});
+  payIt(Object.values(sessions)[1], 'paymaya');
   r = await U('GET', '/api/premium');
   assert.ok(Math.abs(r.data.until - (before + 60 * 864e5)) < 5000, 'premium page picks up the payment');
   fake.close();

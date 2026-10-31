@@ -8,7 +8,7 @@ const { SUBJECTS, EXAMS } = require('./blueprint');
 const { buildExam, grade } = require('./exam');
 const mail = require('./mail');
 const sets = require('./sets');
-const xendit = require('./xendit');
+const paymongo = require('./paymongo');
 
 const PORT = Number(process.env.PORT) || 3000;
 const ADMIN_EMAIL = (process.env.ADMIN_EMAIL || '').trim().toLowerCase();
@@ -131,7 +131,8 @@ app.use('/api', (req, res, next) => {
   if (req.method === 'OPTIONS') return res.sendStatus(204);
   next();
 });
-app.use(express.json({ limit: '4mb' }));
+// Keep the exact bytes of PayMongo webhooks, which the signature check needs.
+app.use(express.json({ limit: '4mb', verify: (req, res, buf) => { if (req.originalUrl.startsWith('/api/payments/paymongo/')) req.rawBody = buf; } }));
 
 app.use(async (req, res, next) => {
   const token = sessionToken(req);
@@ -228,7 +229,7 @@ app.get('/api/me', wrap(async (req, res) => {
   const st = await getSettings();
   res.json({
     user: publicUser(req.user) || null,
-    config: { verify: REQUIRE_VERIFY, mail: mail.enabled, premium_required: st.premium_required === '1', free: freeLimits(st), online_pay: xendit.enabled },
+    config: { verify: REQUIRE_VERIFY, mail: mail.enabled, premium_required: st.premium_required === '1', free: freeLimits(st), online_pay: paymongo.enabled },
     premium: req.user ? hasPremium(req.user, st) : false,
     practice_today: req.user ? await practiceToday(req.user.id) : 0,
   });
@@ -472,28 +473,30 @@ app.post('/api/offline/sync', auth, verified, premiumOnly, wrap(async (req, res)
 /* ------------------------------ premium & payments ------------------------------ */
 app.get('/api/premium', auth, wrap(async (req, res) => {
   const st = await getSettings();
-  // If the user just came back from the Xendit checkout, check it now (in case the webhook is late).
+  // If the user just came back from the PayMongo checkout, check it now (in case the webhook is late).
   let user = req.user;
-  if (xendit.enabled) {
-    const open = await db.all(`SELECT * FROM payments WHERE user_id = ? AND provider = 'xendit' AND status = 'checkout' ORDER BY id DESC LIMIT 3`, user.id);
-    for (const p of open) await syncInvoice(p).catch((e) => console.error('Xendit check failed:', e.message));
+  if (paymongo.enabled) {
+    const open = await db.all(`SELECT * FROM payments WHERE user_id = ? AND provider = 'paymongo' AND status = 'checkout' ORDER BY id DESC LIMIT 3`, user.id);
+    for (const p of open) await syncCheckout(p).catch((e) => console.error('PayMongo check failed:', e.message));
     if (open.length) user = await db.get('SELECT * FROM users WHERE id = ?', user.id);
   }
   const payments = await db.all(`SELECT id, amount, method, reference, status, note, created_at, decided_at, provider,
-    CASE WHEN status = 'checkout' THEN checkout_url END AS checkout_url FROM payments WHERE user_id = ? ORDER BY created_at DESC LIMIT 20`, user.id);
+    CASE WHEN status = 'checkout' THEN checkout_url END AS checkout_url FROM payments
+    WHERE user_id = ? AND NOT (provider = 'xendit' AND status = 'checkout') ORDER BY created_at DESC LIMIT 20`, user.id);
   res.json({
-    required: st.premium_required === '1', active: hasPremium(user, st), until: user.premium_until || 0, online: xendit.enabled,
+    required: st.premium_required === '1', active: hasPremium(user, st), until: user.premium_until || 0, online: paymongo.enabled,
     price: st.price, plan_days: Number(st.plan_days) || 30, method: st.pay_method, pay_name: st.pay_name, pay_number: st.pay_number, note: st.pay_note, payments,
   });
 }));
 
-/* Online payments (Xendit): checkout page, then the webhook turns on Premium. */
+/* Online payments (PayMongo): checkout page, then the webhook turns on Premium. */
 const publicUrl = (req) => (process.env.APP_URL || process.env.RENDER_EXTERNAL_URL || `${req.protocol}://${req.get('host')}`).replace(/\/$/, '');
+const METHOD_NAMES = { gcash: 'GCash', paymaya: 'Maya', card: 'Card', grab_pay: 'GrabPay', qrph: 'QR Ph', shopee_pay: 'ShopeePay', billease: 'BillEase', dob: 'BPI Online', dob_ubp: 'UnionBank Online' };
 
 // Mark an online payment as paid and add the plan days to the user's Premium. Safe to call more than once.
-async function markPaid(p, inv) {
-  const channel = String(inv.payment_channel || inv.payment_method || 'Online').slice(0, 40);
-  const r = await db.run(`UPDATE payments SET status = 'approved', method = ?, decided_at = ? WHERE id = ? AND status IN ('checkout', 'expired')`, channel, Date.now(), p.id);
+async function markPaid(p, method) {
+  const r = await db.run(`UPDATE payments SET status = 'approved', method = ?, decided_at = ? WHERE id = ? AND status IN ('checkout', 'expired')`,
+    String(method || 'Online').slice(0, 40), Date.now(), p.id);
   if (r.changes !== 1) return false; // already done
   const days = Number(p.days) || Number((await getSettings()).plan_days) || 30;
   await db.run('UPDATE users SET premium_until = MAX(premium_until, ?) + ? WHERE id = ?', Date.now(), days * 864e5, p.user_id);
@@ -502,54 +505,63 @@ async function markPaid(p, inv) {
   return true;
 }
 
-// Read the invoice from Xendit (never trust the webhook body alone) and update our record.
-async function syncInvoice(p) {
+// Read the checkout from PayMongo (never trust the webhook body alone) and update our record.
+async function syncCheckout(p) {
   if (!p.invoice_id) return;
-  const inv = await xendit.getInvoice(p.invoice_id);
-  if (inv.external_id !== p.reference) return;
-  if (inv.status === 'PAID' || inv.status === 'SETTLED') {
-    const paid = Number(inv.paid_amount ?? inv.amount);
-    if (!(paid >= Number(p.amount))) { console.error(`Xendit invoice ${inv.id}: paid ${paid}, expected ${p.amount}`); return; }
-    await markPaid(p, inv);
-  } else if (inv.status === 'EXPIRED') {
+  const cs = await paymongo.getCheckout(p.invoice_id);
+  const at = cs.attributes || {};
+  if (at.reference_number !== p.reference) return;
+  const paid = (at.payments || []).filter((x) => x.attributes && x.attributes.status === 'paid');
+  if (paid.length) {
+    const cents = paid.reduce((n, x) => n + Number(x.attributes.amount || 0), 0);
+    if (cents < Math.round(Number(p.amount) * 100)) { console.error(`PayMongo checkout ${cs.id}: paid ${cents / 100}, expected ${p.amount}`); return; }
+    const type = at.payment_method_used || (paid[0].attributes.source && paid[0].attributes.source.type) || '';
+    await markPaid(p, METHOD_NAMES[type] || type || 'Online');
+  } else if (at.status === 'expired') {
     await db.run(`UPDATE payments SET status = 'expired', decided_at = ? WHERE id = ? AND status = 'checkout'`, Date.now(), p.id);
   }
 }
 
 app.post('/api/payments/checkout', auth, verified, wrap(async (req, res) => {
-  if (!xendit.enabled) return res.status(404).json({ error: 'Hindi pa naka-set up ang online na bayad.' });
+  if (!paymongo.enabled) return res.status(404).json({ error: 'Hindi pa naka-set up ang online na bayad.' });
   const st = await getSettings();
   const amount = Number(st.price);
-  if (!(amount >= 1)) return res.status(400).json({ error: 'Wala pang presyo ang Premium. Makipag-ugnayan sa admin.' });
+  // PayMongo's smallest payment is ₱20.
+  if (!(amount >= 20)) return res.status(400).json({ error: 'Kailangang ₱20 o higit pa ang presyo ng Premium. Makipag-ugnayan sa admin.' });
   // Reuse an unpaid checkout from the last 23 hours (the link lasts 24 hours).
-  const open = await db.get(`SELECT * FROM payments WHERE user_id = ? AND provider = 'xendit' AND status = 'checkout' AND created_at > ? ORDER BY id DESC LIMIT 1`,
+  const open = await db.get(`SELECT * FROM payments WHERE user_id = ? AND provider = 'paymongo' AND status = 'checkout' AND created_at > ? ORDER BY id DESC LIMIT 1`,
     req.user.id, Date.now() - 23 * 3600e3);
   if (open && Number(open.amount) === amount && open.checkout_url) return res.json({ url: open.checkout_url });
   if (limited('checkout:' + req.user.id, 10, 60 * 60 * 1000)) return res.status(429).json({ error: 'Masyadong maraming subok. Maghintay muna.' });
   const days = Number(st.plan_days) || 30;
-  const externalId = `cse-${req.user.id}-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`;
-  let inv;
+  const reference = `cse-${req.user.id}-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`;
+  let cs;
   try {
-    inv = await xendit.createInvoice({
-      externalId, amount, email: req.user.email, name: req.user.name,
+    cs = await paymongo.createCheckout({
+      reference, amount, email: req.user.email, name: req.user.name,
       description: `CSE Reviewer Premium (${days} araw)`, returnUrl: publicUrl(req) + '/#/premium',
     });
   } catch (e) {
-    console.error('Xendit invoice failed:', e.message);
+    console.error('PayMongo checkout failed:', e.message);
     return res.status(502).json({ error: 'Hindi mabuksan ang bayaran ngayon. Subukan ulit mamaya.' });
   }
+  const url = cs.attributes.checkout_url;
   await db.run(`INSERT INTO payments (user_id, amount, method, reference, status, provider, invoice_id, checkout_url, days, created_at)
-    VALUES (?, ?, 'Online', ?, 'checkout', 'xendit', ?, ?, ?, ?)`, req.user.id, String(amount), externalId, inv.id, inv.invoice_url, days, Date.now());
-  res.json({ url: inv.invoice_url });
+    VALUES (?, ?, 'Online', ?, 'checkout', 'paymongo', ?, ?, ?, ?)`, req.user.id, String(amount), reference, cs.id, url, days, Date.now());
+  res.json({ url });
 }));
 
-// Xendit calls this when an invoice is paid or expires. Set the URL in Xendit → Settings → Webhooks → Invoices.
-app.post('/api/payments/xendit/webhook', wrap(async (req, res) => {
-  if (!xendit.webhookReady) return res.status(503).json({ error: 'Xendit is not set up' });
-  if (!xendit.checkToken(req.get('x-callback-token'))) return res.status(401).json({ error: 'Invalid callback token' });
-  const b = req.body || {};
-  const p = await db.get(`SELECT * FROM payments WHERE provider = 'xendit' AND (invoice_id = ? OR reference = ?)`, String(b.id || ''), String(b.external_id || ''));
-  if (p) await syncInvoice(p); // unknown invoices (like Xendit's test callback) are accepted and ignored
+// PayMongo calls this when a checkout is paid. Add it in PayMongo → Developers → Webhooks
+// with the event "checkout_session.payment.paid".
+app.post('/api/payments/paymongo/webhook', wrap(async (req, res) => {
+  if (!paymongo.webhookReady) return res.status(503).json({ error: 'PayMongo is not set up' });
+  if (!paymongo.checkSignature(req.get('paymongo-signature'), req.rawBody)) return res.status(401).json({ error: 'Invalid signature' });
+  const ev = (req.body && req.body.data && req.body.data.attributes) || {};
+  const csId = String((ev.data && ev.data.id) || '');
+  if (ev.type === 'checkout_session.payment.paid' && csId) {
+    const p = await db.get(`SELECT * FROM payments WHERE provider = 'paymongo' AND invoice_id = ?`, csId);
+    if (p) await syncCheckout(p); // unknown checkouts are accepted and ignored
+  }
   res.json({ ok: true });
 }));
 

@@ -1,7 +1,7 @@
 // Service worker: keeps the app's files on the device so CSE Reviewer opens instantly, even without internet.
 // Files come from the device first (no waiting) and are updated in the background for the next visit.
 // Questions for offline use are saved by app.js. Server data (/api) is never cached here.
-const CACHE = 'cse-reviewer-v5';
+const CACHE = 'cse-reviewer-v6';
 const FILES = ['/', '/index.html', '/app.js', '/config.js', '/styles.css', '/manifest.webmanifest',
   '/icons/icon.svg', '/icons/icon-192.png', '/icons/icon-512.png'];
 
