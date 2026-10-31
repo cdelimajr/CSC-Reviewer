@@ -8,6 +8,11 @@ Reviewer at mock exam para sa Philippine Civil Service Exam (Career Service Exam
 - **Libu-libong iba-ibang tanong:** 222 nakasulat na tanong at 43 uri ng generator (math, series, logic, analogy, grammar, Filipino, clerical, mga batas at Konstitusyon), kaya halos hindi umuulit ang exam.
 - **Practice kada subject** na may agarang tama/mali at paliwanag (laging libre).
 - **Account na may aktibong email:** may verification code sa email, forgot password, email ng resulta pagkatapos ng mock exam, at progress report.
+- **Simpleng login sa isang screen:** walang scroll sa phone. Pwedeng mag-login gamit ang password o **code sa email (OTP)**, walang password. Nasa ibaba ang "Gumawa ng account".
+- **Premium: madaling gamitin at komportable sa mata:**
+  - **Fingerprint / face login** (Android at iPhone app), **Windows Hello** (Windows app), o fingerprint/face/PIN ng device sa browser. I-on sa Account → Mabilis na login (inaalok din pagkatapos mag-login). Nawawala ito kapag na-reset ang password.
+  - **Malambot na kulay** na hindi masakit sa mata: Auto, Malambot, Sepia, o Madilim (Account → Itsura ng screen).
+  - **Pinch zoom:** i-pinch ang screen gamit ang dalawang daliri para lumaki o lumiit (sa computer: Ctrl + scroll o touchpad pinch). Walang zoom button. Naaalala ang zoom sa device.
 - **Premium (bayad) para sa mock exams:** online na bayad sa PayMongo (GCash, Maya, card, GrabPay, QR Ph para sa bank apps, at iba pa). Awtomatikong bubukas o mae-extend ang Premium pagkabayad, at may email sa user. Pwede pa rin ang manual na GCash (reference number, admin ang nag-a-approve) kapag may GCash number sa Admin → Settings. Naka-off ang Premium hangga't hindi binubuksan sa Admin → Settings.
 - **Libre at Premium:** kapag naka-on ang Premium (Admin → Settings), online lang ang libreng plan at may limit: 3 practice kada araw (hanggang 20 tanong), at Set 1 lang ng bawat mock exam. Nababago ng admin ang mga limit na ito. Sa Premium: walang limit, lahat ng exam set at Bagong halo, at gumagana offline. Kapag naka-off ang Premium, lahat ay may Premium features.
 - **Mabilis at offline (Premium):** nase-save sa device ang app, 200 tanong kada subject, at ang 5 pinakabagong exam set kada level. Agad bumubukas ang app at ang mga exam (hindi na hinihintay ang server), online man o offline. Ise-save online ang mga resulta sa background, at kumukuha ito ng bagong tanong tuwing 6 na oras. Kailangang mag-online kahit isang beses bawat 30 araw. Kailangan pa rin ng internet para sa login, email, at bayad.
@@ -31,7 +36,7 @@ Kapag walang `TURSO_DATABASE_URL`, gumagamit ito ng lokal na SQLite file sa `dat
 | `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN` | Turso database |
 | `ADMIN_EMAIL` | Ang account na may ganitong email ay magiging admin |
 | `ADMIN_PASSWORD` | Kung kasama ng `ADMIN_EMAIL`, gagawa agad ng verified na admin account |
-| `BREVO_API_KEY` | Brevo API key para makapagpadala ng email (o `RESEND_API_KEY` para sa Resend) |
+| `BREVO_API_KEY` | Brevo API key para makapagpadala ng email (o `RESEND_API_KEY` para sa Resend). Ito rin ang nagpapadala ng login code (OTP) |
 | `MAIL_FROM`, `MAIL_FROM_NAME` | Email at pangalan ng nagpapadala (dapat verified sa Brevo) |
 | `REQUIRE_EMAIL_VERIFICATION` | `1` o `0`; default ay `1` kapag may email provider |
 | `SET_INTERVAL_DAYS` | Ilang araw bago gumawa ng bagong exam set (default 7, `0` para i-off) |
@@ -66,6 +71,6 @@ Kapag may bagong pagbabago sa `main` na pumasa sa tests, kusang nag-a-update ang
 - **Windows (Setup.exe):** awtomatiko mula sa Releases. Dina-download sa background at ini-install kapag isinara ang app. Hindi nag-a-update nang kusa ang portable .exe.
 - **iPhone:** pareho sa Android ang screens, pero kailangan munang ma-sign ang app.
 
-Ang mga app na na-install bago nito ay kailangang palitan nang isang beses ng bagong build; pagkatapos noon, kusa na. Opsyonal: para ma-install ang bagong APK nang hindi muna binubura ang luma, ilagay ang parehong signing key sa secret na `ANDROID_DEBUG_KEYSTORE` (base64 ng `debug.keystore`).
+Ang mga app na na-install bago nito ay kailangang palitan nang isang beses ng bagong build; pagkatapos noon, kusa na. Para sa fingerprint/face login sa Android at iPhone, kailangan ang APK/IPA na may biometric plugin (mula sa bersyong ito pataas); sa lumang APK, gumagana pa rin ang password at code sa email. Opsyonal: para ma-install ang bagong APK nang hindi muna binubura ang luma, ilagay ang parehong signing key sa secret na `ANDROID_DEBUG_KEYSTORE` (base64 ng `debug.keystore`).
 
 Para sa Google Play Store, kailangan ng release signing key at Google Play developer account ($25 isang beses).

@@ -210,6 +210,144 @@
     });
   }
 
+  /* ---------------- look: comfortable colors and pinch zoom (Premium) ----------------
+     Premium users get soft, easy-on-the-eyes colors (or sepia / dark) and can zoom the screens
+     with two fingers (or Ctrl + scroll / touchpad pinch on a computer). No zoom buttons.
+     The choice is saved on the device, so the login screen keeps the same look. */
+  const THEMES = [['auto', 'Auto'], ['comfort', 'Malambot'], ['sepia', 'Sepia'], ['dark', 'Madilim']];
+  const ZMIN = 0.8, ZMAX = 1.6;
+  const look = () => store.get('cse-look');
+  const lookOn = () => (S.user ? !!S.premium : !!look());
+  const darkMQ = window.matchMedia ? matchMedia('(prefers-color-scheme: dark)') : null;
+  let zoomNow = 1;
+  function setZoom(z) {
+    z = Math.round(Math.min(ZMAX, Math.max(ZMIN, z)) * 100) / 100;
+    if (z === zoomNow) return z;
+    const y = window.scrollY * (z / zoomNow);
+    zoomNow = z;
+    // Only the content zooms (styles.css: main, .modal). The top bar, bottom menu and exam buttons keep their size.
+    document.documentElement.style.setProperty('--z', String(z));
+    window.scrollTo(0, y);
+    return z;
+  }
+  function applyLook() {
+    const on = lookOn();
+    let L = look();
+    if (on && S.user && !L) { L = { theme: 'auto', zoom: 1 }; store.set('cse-look', L); }
+    const root = document.documentElement;
+    const theme = on ? (L.theme === 'auto' ? (darkMQ && darkMQ.matches ? 'dark' : 'comfort') : L.theme) : '';
+    if ((root.dataset.theme || '') !== theme) {
+      if (theme) root.dataset.theme = theme; else delete root.dataset.theme;
+      const meta = document.querySelector('meta[name=theme-color]');
+      if (meta) meta.content = theme ? getComputedStyle(root).getPropertyValue('--bar').trim() || '#1e40af' : '#1e40af';
+    }
+    setZoom(on ? Number(L.zoom) || 1 : 1);
+  }
+  if (darkMQ && darkMQ.addEventListener) darkMQ.addEventListener('change', applyLook);
+  (() => {
+    let start = null, want = 1, raf = 0;
+    const dist = (t) => Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY);
+    const paint = () => { raf = 0; setZoom(want); };
+    const save = () => { const L = look(); if (L && L.zoom !== zoomNow) { store.set('cse-look', { ...L, zoom: zoomNow }); toast(`Zoom ${Math.round(zoomNow * 100)}%`); } };
+    document.addEventListener('touchstart', (e) => {
+      if (e.touches.length === 2 && lookOn()) start = { d: dist(e.touches) || 1, z: zoomNow };
+    }, { passive: true });
+    document.addEventListener('touchmove', (e) => {
+      if (!start || e.touches.length !== 2) return;
+      e.preventDefault(); // our zoom instead of the browser's
+      want = start.z * (dist(e.touches) / start.d);
+      if (!raf) raf = requestAnimationFrame(paint);
+    }, { passive: false });
+    document.addEventListener('touchend', (e) => { if (start && e.touches.length < 2) { start = null; save(); } }, { passive: true });
+    document.addEventListener('touchcancel', () => { if (start) { start = null; save(); } }, { passive: true });
+    // Safari's own pinch gesture
+    document.addEventListener('gesturestart', (e) => { if (lookOn()) e.preventDefault(); });
+    // Computer: Ctrl + mouse wheel, or pinching on the touchpad (sent as Ctrl + wheel).
+    let wheelT = 0;
+    window.addEventListener('wheel', (e) => {
+      if (!e.ctrlKey || !lookOn()) return;
+      e.preventDefault();
+      want = zoomNow * Math.exp(-e.deltaY * (e.deltaMode ? 0.05 : 0.0025));
+      if (!raf) raf = requestAnimationFrame(paint);
+      clearTimeout(wheelT); wheelT = setTimeout(save, 400);
+    }, { passive: false });
+  })();
+
+  /* ---------------- fingerprint / face login (Premium) ----------------
+     The server gives this device a secret login key. It is kept behind the device's own lock:
+     - Android/iPhone app: fingerprint or face (key stored in the phone's secure storage)
+     - Windows app: Windows Hello (fingerprint, face or PIN; key encrypted for this Windows account)
+     - Browsers: the device's fingerprint/face/PIN through the browser (passkey check)
+     Only one account per device. Logging out keeps it, so the user can log back in with a touch. */
+  const capNative = !!(window.Capacitor && Capacitor.isNativePlatform && Capacitor.isNativePlatform());
+  const NB = capNative && Capacitor.isPluginAvailable && Capacitor.isPluginAvailable('NativeBiometric')
+    ? (Capacitor.Plugins.NativeBiometric || Capacitor.registerPlugin('NativeBiometric')) : null;
+  const DESK = window.cseDesktop && window.cseDesktop.hello ? window.cseDesktop : null;
+  const BIO_SERVER = 'cse-reviewer';
+  const b64 = { to: (buf) => btoa(String.fromCharCode(...new Uint8Array(buf))), from: (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0)) };
+  const rand = (n) => crypto.getRandomValues(new Uint8Array(n));
+  const Bio = {
+    saved: () => store.get('cse-bio'),
+    async kind() {
+      if (NB) { try { const r = await NB.isAvailable(); return r.isAvailable ? 'native' : null; } catch { return null; } }
+      if (DESK) { try { return (await DESK.hello.available()) ? 'desktop' : null; } catch { return null; } }
+      if (!IS_APP && window.PublicKeyCredential && window.isSecureContext && PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable) {
+        try { return (await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable()) ? 'web' : null; } catch { return null; }
+      }
+      return null;
+    },
+    label: () => (NB ? 'fingerprint / face' : DESK ? 'Windows Hello' : 'fingerprint / face / PIN'),
+    async check(reason) {
+      if (NB) { await NB.verifyIdentity({ reason, title: 'CSE Reviewer', subtitle: reason, negativeButtonText: 'Kanselahin' }); return; }
+      if (DESK) { if (!(await DESK.hello.verify(reason))) throw new Error('Hindi na-verify.'); }
+    },
+    async enable() {
+      const kind = await this.kind();
+      if (!kind) throw new Error('Walang fingerprint, face, o Windows Hello sa device na ito.');
+      await this.check('I-on ang mabilis na login');
+      const { key } = await api('POST', '/api/auth/device', { name: kind === 'native' ? 'Phone app' : kind === 'desktop' ? 'Windows app' : 'Browser' });
+      const rec = { kind, email: S.user.email, name: S.user.name.split(' ')[0] };
+      try {
+        if (kind === 'native') await NB.setCredentials({ username: S.user.email, password: key, server: BIO_SERVER });
+        else if (kind === 'desktop') rec.data = await DESK.protect(key);
+        else {
+          const cred = await navigator.credentials.create({ publicKey: {
+            rp: { name: 'CSE Reviewer' }, user: { id: rand(16), name: S.user.email, displayName: S.user.name },
+            challenge: rand(32), pubKeyCredParams: [{ type: 'public-key', alg: -7 }, { type: 'public-key', alg: -257 }],
+            authenticatorSelection: { authenticatorAttachment: 'platform', userVerification: 'required', residentKey: 'discouraged' }, timeout: 60000,
+          } });
+          rec.cred = b64.to(cred.rawId); rec.data = key;
+        }
+      } catch (e) { api('POST', '/api/auth/device/remove', { key }).catch(() => {}); throw e; }
+      if (!rec.data) rec.data = 'native';
+      store.set('cse-bio', rec);
+      return rec;
+    },
+    async unlock() {
+      const rec = this.saved();
+      if (!rec) throw new Error('Walang naka-save na fingerprint/face login.');
+      if (rec.kind === 'native') { await this.check('Mag-login sa CSE Reviewer'); return (await NB.getCredentials({ server: BIO_SERVER })).password; }
+      if (rec.kind === 'desktop') { await this.check('Mag-login sa CSE Reviewer'); return DESK.unprotect(rec.data); }
+      await navigator.credentials.get({ publicKey: { challenge: rand(32), allowCredentials: [{ type: 'public-key', id: b64.from(rec.cred) }], userVerification: 'required', timeout: 60000 } });
+      return rec.data;
+    },
+    async login() {
+      const key = await this.unlock();
+      try { return await api('POST', '/api/auth/device/login', { key }); } catch (e) { if (e.code === 'device') this.forget(true); throw e; }
+    },
+    async forget(localOnly) {
+      const rec = this.saved();
+      store.del('cse-bio');
+      if (!rec) return;
+      let key = rec.kind === 'web' ? rec.data : null;
+      if (rec.kind === 'native') { try { key = !localOnly && (await NB.getCredentials({ server: BIO_SERVER })).password; } catch { /* gone */ } NB.deleteCredentials({ server: BIO_SERVER }).catch(() => {}); }
+      if (rec.kind === 'desktop' && !localOnly) { try { key = await DESK.unprotect(rec.data); } catch { /* gone */ } }
+      if (key && !localOnly) api('POST', '/api/auth/device/remove', { key }).catch(() => {});
+    },
+  };
+  const bioErr = (e) => (e && e.name === 'NotAllowedError') || /cancel/i.test(String(e && (e.message || e.code)))
+    ? 'Kinansela.' : (e && e.message) || 'Hindi gumana ang fingerprint/face login.';
+
   /* ---------------- shell ---------------- */
   function shell(active, body) {
     const isAdmin = S.user && S.user.role === 'admin';
@@ -225,40 +363,53 @@
     if (!S.keepScroll) window.scrollTo(0, 0);
   }
 
-  /* ---------------- auth screens ---------------- */
+  /* ---------------- auth screens ----------------
+     One screen, no scrolling on a phone: name of the app, the form, quick login options,
+     and "Gumawa ng account" at the bottom. */
+  function authShell(inner, foot = '') {
+    $app.innerHTML = `<main class="auth-screen">
+      <div class="auth-head"><img class="logo" src="icons/icon.svg" alt=""><h1>CSE Reviewer</h1></div>
+      <div class="auth-body">${inner}</div>
+      ${foot ? `<div class="auth-foot">${foot}</div>` : ''}</main>`;
+    window.scrollTo(0, 0);
+  }
+  const lastEmail = () => (Bio.saved() && Bio.saved().email) || store.get('cse-last-email') || '';
+  async function afterLogin(r, msg) {
+    if (r && r.user) store.set('cse-last-email', r.user.email);
+    await refreshMe();
+    toast(msg);
+    go('#/');
+    setTimeout(offerBio, 700);
+  }
+  // After a password or code login: offer fingerprint/face login once (Premium, on devices that have it).
+  async function offerBio() {
+    if (!S.user || !S.premium || S.exam || Bio.saved() || store.get('cse-bio-asked') || (S.config.verify && !S.user.email_verified)) return;
+    if (!(await Bio.kind())) return;
+    store.set('cse-bio-asked', 1);
+    if (!(await confirmBox('Mas mabilis na login', `Sa susunod, mag-login gamit lang ang <b>${esc(Bio.label())}</b>, walang password.`, 'I-on'))) return;
+    try { await Bio.enable(); toast('Naka-on na ang mabilis na login.'); } catch (e) { toast(bioErr(e)); }
+  }
+
   function viewAuth(mode) {
     const reg = mode === 'register';
-    $app.innerHTML = `
-      <main class="wrap">
-        <div class="hero">
-          <img class="logo" src="icons/icon.svg" alt="">
-          <h1>CSE Reviewer</h1>
-          <p class="muted">Mag-review para sa Civil Service Exam gamit ang mock exam na kahawig ng totoong exam: parehong format, dami ng tanong, oras, at 4 na pagpipilian.</p>
-        </div>
-        <div class="card auth">
-          <div class="tabs" style="margin-top:0">
-            <button class="${reg ? '' : 'active'}" data-go="#/login">Mag-login</button>
-            <button class="${reg ? 'active' : ''}" data-go="#/register">Gumawa ng account</button>
-          </div>
-          <form id="authForm" novalidate>
-            ${reg ? '<label for="name">Pangalan</label><input id="name" type="text" autocomplete="name" required placeholder="Juan Dela Cruz">' : ''}
-            <label for="email">Email</label>
-            <input id="email" type="email" autocomplete="email" required placeholder="ikaw@email.com">
-            <label for="pw">Password</label>
-            <input id="pw" type="password" autocomplete="${reg ? 'new-password' : 'current-password'}" required placeholder="${reg ? 'Hindi bababa sa 8 characters' : ''}">
-            <div class="err" id="err"></div>
-            <button class="btn block" type="submit" style="margin-top:8px">${reg ? 'Gumawa ng account' : 'Mag-login'}</button>
-          </form>
-          ${reg ? '<p class="muted small" style="margin-bottom:0">Gumamit ng aktibong email. Padadalhan ka namin ng code para ma-verify ito, at doon din ipapadala ang mga resulta at resibo.</p>' : '<p style="text-align:center;margin:14px 0 0"><a href="#/forgot">Nakalimutan ang password?</a></p>'}
-        </div>
-        <div class="features auth" style="max-width:880px">
-          <div class="feature"><b>Professional at Subprofessional</b>170 at 165 na tanong, may timer na 3h10m at 2h40m.</div>
-          <div class="feature"><b>Practice kada subject</b>Verbal, Numerical, Analytical, Clerical at General Info, may paliwanag sa bawat sagot.</div>
-          <div class="feature"><b>Mga exam set</b>Pumili mula sa pinakabago hanggang pinakalumang set, o bagong halo ng tanong.</div>
-          <div class="feature"><b>Gamitin sa phone</b>I-install sa home screen para parang app.</div>
-        </div>
-      </main>`;
-    $$('[data-go]').forEach((b) => (b.onclick = () => go(b.dataset.go)));
+    const bio = !reg && Bio.saved();
+    authShell(`
+      <form id="authForm" class="auth-form" novalidate>
+        ${reg ? '<input id="name" type="text" autocomplete="name" required placeholder="Pangalan" aria-label="Pangalan">' : ''}
+        <input id="email" type="email" autocomplete="${reg ? 'email' : 'username'}" required placeholder="Email" aria-label="Email" value="${reg ? '' : esc(lastEmail())}">
+        <input id="pw" type="password" autocomplete="${reg ? 'new-password' : 'current-password'}" required placeholder="${reg ? 'Password (8 characters pataas)' : 'Password'}" aria-label="Password">
+        <div class="err" id="err"></div>
+        <button class="btn block" type="submit">${reg ? 'Gumawa ng account' : 'Mag-login'}</button>
+      </form>
+      ${reg ? '<p class="muted small auth-note">Gumamit ng aktibong email. Padadalhan ka ng code para ma-verify ito.</p>' : `
+      <div class="auth-alt">
+        <a class="btn secondary" href="#/otp">✉️ Code sa email</a>
+        ${bio ? `<button class="btn secondary" id="bio" type="button">${bio.kind === 'desktop' ? '🔐 Windows Hello' : '👆 Fingerprint'}</button>` : ''}
+      </div>
+      <a class="auth-link" href="#/forgot">Nakalimutan ang password?</a>`}`,
+    reg ? '<span class="muted small">May account na?</span><a class="btn ghost block" href="#/login">Mag-login</a>'
+      : '<span class="muted small">Wala pang account?</span><a class="btn ghost block" href="#/register">Gumawa ng account</a>');
+    if (!reg) $(lastEmail() ? '#pw' : '#email').focus({ preventScroll: true });
     $('#authForm').onsubmit = async (e) => {
       e.preventDefault();
       const btn = $('button[type=submit]', e.target);
@@ -267,48 +418,87 @@
         const body = { email: $('#email').value, password: $('#pw').value };
         if (reg) body.name = $('#name').value;
         const r = await api('POST', reg ? '/api/auth/register' : '/api/auth/login', body);
-        await refreshMe();
-        toast(reg ? `Maligayang pagdating, ${r.user.name}!` : 'Naka-login ka na.');
-        go('#/');
+        await afterLogin(r, reg ? `Maligayang pagdating, ${r.user.name}!` : 'Naka-login ka na.');
       } catch (err) { $('#err').textContent = err.message; btn.disabled = false; }
     };
+    if ($('#bio')) $('#bio').onclick = async (e) => {
+      e.target.disabled = true; $('#err').textContent = '';
+      try { await afterLogin(await Bio.login(), 'Naka-login ka na.'); } catch (err) { $('#err').textContent = bioErr(err); e.target.disabled = false; if (!Bio.saved()) e.target.remove(); }
+    };
+  }
+
+  // Login with a 6-digit code sent to the email, no password needed.
+  function viewOtp() {
+    let email = lastEmail();
+    const ask = () => {
+      authShell(`<p class="muted small auth-note" style="margin-top:0">Magpapadala kami ng 6-digit na code sa email mo. Iyon ang gagamitin mo para mag-login.</p>
+        <form id="of" class="auth-form" novalidate>
+          <input id="email" type="email" autocomplete="username" placeholder="Email" aria-label="Email" value="${esc(email)}">
+          <div class="err" id="err"></div>
+          <button class="btn block" type="submit">Ipadala ang code</button>
+        </form><a class="auth-link" href="#/login">Gamitin ang password</a>`,
+      '<span class="muted small">Wala pang account?</span><a class="btn ghost block" href="#/register">Gumawa ng account</a>');
+      $('#email').focus({ preventScroll: true });
+      $('#of').onsubmit = async (e) => {
+        e.preventDefault();
+        const btn = $('button[type=submit]', e.target); btn.disabled = true; $('#err').textContent = '';
+        email = $('#email').value.trim();
+        try { await api('POST', '/api/auth/otp', { email }); enter(); } catch (err) { $('#err').textContent = err.message; btn.disabled = false; }
+      };
+    };
+    const enter = () => {
+      authShell(`<p class="muted small auth-note" style="margin-top:0">Kung may account ang <b>${esc(email)}</b>, may code nang dumating doon. Tingnan din ang Spam o Promotions.</p>
+        <form id="cf" class="auth-form" novalidate>
+          <input id="code" class="code-input" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="123456" aria-label="Code">
+          <div class="err" id="err"></div>
+          <button class="btn block" type="submit">Mag-login</button>
+        </form>
+        <div class="auth-alt"><button class="btn ghost" id="again" type="button">Ipadala ulit</button><button class="btn ghost" id="other" type="button">Ibang email</button></div>`);
+      const code = $('#code');
+      code.focus({ preventScroll: true });
+      code.oninput = () => { if (/^\d{6}$/.test(code.value.trim())) $('#cf').requestSubmit(); };
+      $('#cf').onsubmit = async (e) => {
+        e.preventDefault();
+        const btn = $('button[type=submit]', e.target); btn.disabled = true; $('#err').textContent = '';
+        try { await afterLogin(await api('POST', '/api/auth/otp/login', { email, code: code.value }), 'Naka-login ka na.'); } catch (err) { $('#err').textContent = err.message; btn.disabled = false; }
+      };
+      $('#again').onclick = async () => { try { await api('POST', '/api/auth/otp', { email }); toast('Naipadala ang bagong code.'); } catch (err) { $('#err').textContent = err.message; } };
+      $('#other').onclick = ask;
+    };
+    ask();
   }
 
   function viewVerify() {
-    $app.innerHTML = `<main class="wrap"><div class="hero"><img class="logo" src="icons/icon.svg" alt=""><h1>I-verify ang iyong email</h1>
-      <p class="muted">Nagpadala kami ng 6-digit na code sa <b>${esc(S.user.email)}</b>. Tingnan din ang Spam o Promotions folder.</p></div>
-      <div class="card auth"><form id="vf"><label for="code">Code</label>
-        <input id="code" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="123456" style="font-size:24px;letter-spacing:6px;text-align:center">
+    authShell(`<p class="muted small auth-note" style="margin-top:0">Nagpadala kami ng 6-digit na code sa <b>${esc(S.user.email)}</b> para ma-verify ang email mo. Tingnan din ang Spam o Promotions.</p>
+      <form id="vf" class="auth-form"><input id="code" class="code-input" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="123456" aria-label="Code">
         <div class="err" id="err"></div><button class="btn block" type="submit">I-verify</button></form>
-        <div class="row between" style="margin-top:14px"><button class="btn ghost small" id="resend">Ipadala ulit ang code</button><button class="btn ghost small" id="out">Mag-logout</button></div>
-      </div></main>`;
+      <div class="auth-alt"><button class="btn ghost" id="resend" type="button">Ipadala ulit</button><button class="btn ghost" id="out" type="button">Mag-logout</button></div>`);
     $('#vf').onsubmit = async (e) => {
       e.preventDefault();
-      try { await api('POST', '/api/auth/verify', { code: $('#code').value }); await refreshMe(); toast('Na-verify na ang email mo!'); go('#/'); } catch (err) { $('#err').textContent = err.message; }
+      try { await api('POST', '/api/auth/verify', { code: $('#code').value }); await refreshMe(); toast('Na-verify na ang email mo!'); go('#/'); setTimeout(offerBio, 700); } catch (err) { $('#err').textContent = err.message; }
     };
     $('#resend').onclick = async () => { try { await api('POST', '/api/auth/resend'); toast('Naipadala ang bagong code.'); } catch (err) { $('#err').textContent = err.message; } };
-    $('#out').onclick = async () => { await api('POST', '/api/auth/logout'); S.user = null; go('#/login'); };
+    $('#out').onclick = async () => { await api('POST', '/api/auth/logout'); store.del('cse-token'); store.del('cse-boot'); S.user = null; go('#/login'); };
   }
 
   function viewForgot() {
-    let email = '';
-    $app.innerHTML = `<main class="wrap"><div class="hero"><img class="logo" src="icons/icon.svg" alt=""><h1>Nakalimutan ang password</h1>
-      <p class="muted">Magpapadala kami ng code sa email mo para makagawa ka ng bagong password.</p></div>
-      <div class="card auth" id="fbox"><form id="ff"><label for="email">Email</label><input id="email" type="email" autocomplete="email">
-        <div class="err" id="err"></div><button class="btn block" type="submit">Ipadala ang code</button></form>
-        <p style="text-align:center;margin:14px 0 0"><a href="#/login">Bumalik sa login</a></p></div></main>`;
+    let email = lastEmail();
+    authShell(`<p class="muted small auth-note" style="margin-top:0">Magpapadala kami ng code sa email mo para makagawa ka ng bagong password.</p>
+      <div id="fbox"><form id="ff" class="auth-form"><input id="email" type="email" autocomplete="email" placeholder="Email" aria-label="Email" value="${esc(email)}">
+        <div class="err" id="err"></div><button class="btn block" type="submit">Ipadala ang code</button></form></div>
+      <a class="auth-link" href="#/login">Bumalik sa login</a>`);
     $('#ff').onsubmit = async (e) => {
       e.preventDefault();
       email = $('#email').value.trim();
       try {
         await api('POST', '/api/auth/forgot', { email });
-        $('#fbox').innerHTML = `<p class="small">Kung may account ang <b>${esc(email)}</b>, may code nang dumating doon.</p>
-          <form id="rf"><label>Code</label><input id="code" type="text" inputmode="numeric" maxlength="6" autocomplete="one-time-code">
-          <label>Bagong password</label><input id="npw" type="password" autocomplete="new-password" placeholder="8 characters o higit pa">
+        $('#fbox').innerHTML = `<p class="small" style="margin-top:0">Kung may account ang <b>${esc(email)}</b>, may code nang dumating doon.</p>
+          <form id="rf" class="auth-form"><input id="code" class="code-input" type="text" inputmode="numeric" maxlength="6" autocomplete="one-time-code" placeholder="123456" aria-label="Code">
+          <input id="npw" type="password" autocomplete="new-password" placeholder="Bagong password (8 characters pataas)" aria-label="Bagong password">
           <div class="err" id="err"></div><button class="btn block" type="submit">I-save ang bagong password</button></form>`;
         $('#rf').onsubmit = async (ev) => {
           ev.preventDefault();
-          try { await api('POST', '/api/auth/reset', { email, code: $('#code').value, password: $('#npw').value }); toast('Napalitan na ang password. Mag-login na.'); go('#/login'); } catch (err) { $('#err').textContent = err.message; }
+          try { await api('POST', '/api/auth/reset', { email, code: $('#code').value, password: $('#npw').value }); Bio.forget(true); toast('Napalitan na ang password. Mag-login na.'); go('#/login'); } catch (err) { $('#err').textContent = err.message; }
         };
       } catch (err) { $('#err').textContent = err.message; }
     };
@@ -363,7 +553,9 @@
             <tr><td>Practice kada subject</td><td>${S.config.free.practice_daily}x kada araw, hanggang ${S.config.free.practice_items} tanong</td><td>Walang limit</td></tr>
             <tr><td>Mock exam (Pro at Subpro)</td><td>Set 1 lang</td><td>Lahat ng set + Bagong halo</td></tr>
             <tr><td>Offline (walang internet)</td><td>Hindi</td><td>Oo, buong app</td></tr>
-            <tr><td>Bilis</td><td>Hinihintay ang server</td><td>Agad-agad (naka-save sa device)</td></tr></table>`}
+            <tr><td>Bilis</td><td>Hinihintay ang server</td><td>Agad-agad (naka-save sa device)</td></tr>
+            <tr><td>Itsura</td><td>Karaniwan</td><td>Malambot sa mata (o Sepia / Madilim) + pinch zoom</td></tr>
+            <tr><td>Login</td><td>Password o code sa email</td><td>Pati fingerprint / face / Windows Hello</td></tr></table>`}
       </div>
       ${S.user.role === 'admin' ? '' : `<div class="card" style="margin-top:12px">
         <h3>${p.active && until ? 'I-extend ang Premium' : 'Kumuha ng Premium'}</h3>
@@ -814,6 +1006,13 @@
         <span class="pill">${S.user.role === 'admin' ? 'Admin' : 'Reviewer'}</span></div>
       </div>
       <a class="list-item" href="#/premium" style="margin-top:12px"><div class="grow"><b>Premium</b><div class="muted small">${S.user.role === 'admin' ? 'Admin: bukas lahat' : S.premium && S.user.premium_until > Date.now() ? 'Aktibo hanggang ' + new Date(S.user.premium_until).toLocaleDateString('en-PH') : S.config.premium_required ? 'Hindi pa aktibo' : 'Libre pa ang mock exams'}</div></div><span>›</span></a>
+      ${S.premium ? `<div class="card" style="margin-top:12px" id="lookCard">
+        <h3>Itsura ng screen</h3>
+        <p class="muted small" style="margin:0 0 10px">Malambot na kulay na hindi masakit sa mata. Para mag-zoom, i-pinch ang screen gamit ang dalawang daliri${IS_APP && !capNative ? ' (o Ctrl + scroll / touchpad pinch)' : ''}.</p>
+        <div class="seg" id="themes">${THEMES.map(([k, l]) => `<button type="button" data-theme="${k}" class="${(look() || {}).theme === k ? 'active' : ''}">${l}</button>`).join('')}</div>
+        ${zoomNow !== 1 ? `<p class="small" style="margin:10px 0 0">Zoom: <b>${Math.round(zoomNow * 100)}%</b> · <a href="#" id="zreset">Ibalik sa 100%</a></p>` : ''}
+      </div>
+      <div class="card" style="margin-top:12px" id="bioCard"><h3>Mabilis na login</h3><p class="muted small" style="margin:0">Tinitingnan…</p></div>` : ''}
       <div class="card" style="margin-top:12px">
         <h3>Palitan ang password</h3>
         <form id="pwf"><label>Kasalukuyang password</label><input type="password" id="cur" autocomplete="current-password">
@@ -830,6 +1029,13 @@
         <p class="muted small" style="margin:0">Sinusunod ng mock exam ang format ng Career Service Exam (pen and paper test) ng Civil Service Commission: Professional na 170 tanong sa loob ng 3 oras at 10 minuto, at Subprofessional na 165 tanong sa loob ng 2 oras at 40 minuto, lahat ay may 4 na pagpipilian at 80% ang passing rate. Hindi inilalabas ng CSC ang eksaktong bilang kada subject, kaya tantiya ang hati ng mga tanong. Ang app na ito ay hindi opisyal na produkto ng CSC.</p>
       </div>
       <button class="btn ghost block" id="logout" style="margin-top:16px">Mag-logout</button>`);
+    $$('#themes [data-theme]').forEach((b) => (b.onclick = () => {
+      store.set('cse-look', { ...(look() || { zoom: 1 }), theme: b.dataset.theme });
+      $$('#themes button').forEach((x) => x.classList.toggle('active', x === b));
+      applyLook();
+    }));
+    if ($('#zreset')) $('#zreset').onclick = (e) => { e.preventDefault(); store.set('cse-look', { ...look(), zoom: 1 }); applyLook(); e.target.parentNode.remove(); };
+    if ($('#bioCard')) paintBioCard();
     $('#pwf').onsubmit = async (e) => {
       e.preventDefault();
       try { await api('POST', '/api/me/password', { current: $('#cur').value, password: $('#npw').value }); toast('Napalitan na ang password.'); e.target.reset(); $('#err').textContent = ''; } catch (err) { $('#err').textContent = err.message; }
@@ -840,6 +1046,23 @@
       store.del('cse-token'); store.del('cse-boot'); S.user = null; go('#/login');
     };
     if (window._installPrompt) { const b = $('#install'); b.hidden = false; b.onclick = () => window._installPrompt.prompt(); }
+  }
+
+  async function paintBioCard() {
+    const el = $('#bioCard');
+    const rec = Bio.saved(), kind = await Bio.kind();
+    if (!el.isConnected) return;
+    const mine = rec && rec.email === S.user.email;
+    el.innerHTML = `<h3>Mabilis na login</h3>
+      ${!kind && !rec ? '<p class="muted small" style="margin:0">Walang fingerprint, face, o Windows Hello sa device na ito. Pwede ka pa ring mag-login gamit ang <b>code sa email</b>, walang password.</p>'
+      : mine ? `<p class="small" style="margin:0 0 10px">✅ Naka-on. Sa login screen, pindutin ang <b>${rec.kind === 'desktop' ? 'Windows Hello' : 'Fingerprint'}</b> para makapasok nang walang password.</p><button class="btn ghost small" id="bioOff">I-off</button>`
+      : `<p class="muted small" style="margin:0 0 10px">Mag-login gamit ang <b>${esc(Bio.label())}</b>, walang password.${rec ? ` Papalitan nito ang naka-save na login ni ${esc(rec.name)} sa device na ito.` : ''}</p><button class="btn secondary" id="bioOn">👆 I-on</button>`}
+      <div class="err" id="berr"></div>`;
+    if ($('#bioOn')) $('#bioOn').onclick = async (e) => {
+      e.target.disabled = true;
+      try { if (rec) await Bio.forget(); await Bio.enable(); toast('Naka-on na ang mabilis na login.'); paintBioCard(); } catch (err) { $('#berr').textContent = bioErr(err); e.target.disabled = false; }
+    };
+    if ($('#bioOff')) $('#bioOff').onclick = async () => { await Bio.forget(); toast('Naka-off na ang mabilis na login.'); paintBioCard(); };
   }
 
   /* ---------------- admin ---------------- */
@@ -1087,14 +1310,15 @@
     document.querySelectorAll('.modal-bg').forEach((m) => m.remove());
     const parts = (location.hash.replace(/^#\/?/, '') || '').split('/');
     const [p0, p1] = parts;
-    if (!S.user) { if (p0 === 'register') return viewAuth('register'); if (p0 === 'forgot') return viewForgot(); return viewAuth('login'); }
+    applyLook();
+    if (!S.user) { if (p0 === 'register') return viewAuth('register'); if (p0 === 'forgot') return viewForgot(); if (p0 === 'otp') return viewOtp(); return viewAuth('login'); }
     if (S.config.verify && !S.user.email_verified) return viewVerify();
     S.locked = false;
     if (S.offline && !canOffline() && !(p0 === 'exam' && isLocal(p1))) return viewOfflineLocked();
     try {
       if (p0 === 'sets') return await viewSets(p1);
       if (p0 === 'premium') return await viewPremium();
-      if (p0 === 'login' || p0 === 'register' || !p0) return await viewHome();
+      if (p0 === 'login' || p0 === 'register' || p0 === 'otp' || p0 === 'forgot' || !p0) return await viewHome();
       if (p0 === 'practice') return viewPractice();
       if (p0 === 'exam') return await viewExam(p1);
       if (p0 === 'result') return await viewResult(p1);

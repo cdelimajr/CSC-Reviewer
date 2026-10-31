@@ -49,6 +49,28 @@ const lastCode = (to) => {
   assert.equal((await U('GET', '/api/stats')).status, 401, 'old sessions ended after reset');
   assert.equal((await U('POST', '/api/auth/login', { email: 'juan@test.ph', password: 'newpass123' })).status, 200);
 
+  // Login with a code sent to the email
+  const O = client();
+  assert.equal((await O('POST', '/api/auth/otp', { email: 'nobody@test.ph' })).status, 200, 'same answer for unknown email');
+  assert.equal((await O('POST', '/api/auth/otp', { email: 'juan@test.ph' })).status, 200);
+  assert.equal((await O('POST', '/api/auth/otp/login', { email: 'juan@test.ph', code: '000000' })).status, 400);
+  r = await O('POST', '/api/auth/otp/login', { email: 'juan@test.ph', code: lastCode('juan@test.ph') });
+  assert.equal(r.status, 200); assert.equal(r.data.user.email, 'juan@test.ph');
+  assert.equal((await O('GET', '/api/stats')).status, 200, 'logged in with code');
+  assert.equal((await client()('POST', '/api/auth/otp/login', { email: 'juan@test.ph', code: lastCode('juan@test.ph') })).status, 400, 'code works once');
+
+  // Fingerprint/face login: a device key that logs in without a password
+  assert.equal((await client()('POST', '/api/auth/device', {})).status, 401);
+  r = await U('POST', '/api/auth/device', { name: 'Test phone' });
+  const devKey = r.data.key;
+  assert.match(devKey, /^\d+\.[a-f0-9]{64}$/);
+  const D = client();
+  assert.equal((await D('POST', '/api/auth/device/login', { key: devKey.slice(0, -1) + (devKey.endsWith('0') ? '1' : '0') })).status, 401, 'wrong key');
+  assert.equal((await D('POST', '/api/auth/device/login', { key: devKey })).status, 200);
+  assert.equal((await D('GET', '/api/stats')).status, 200, 'logged in with device key');
+  await D('POST', '/api/auth/device/remove', { key: devKey });
+  assert.equal((await client()('POST', '/api/auth/device/login', { key: devKey })).status, 401, 'removed key stops working');
+
   // Exam sets (newest first) and mock exams
   r = await U('GET', '/api/sets?mode=pro');
   assert.equal(r.data.length, 3); assert.equal(r.data[0].number, 3, 'newest first');
