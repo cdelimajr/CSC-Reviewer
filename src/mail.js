@@ -56,10 +56,11 @@ const safeSend = (...a) => send(...a).catch((e) => { console.error('Email error:
 
 const templates = {
   code(to, name, code, purpose) {
-    const what = purpose === 'reset' ? 'i-reset ang iyong password' : 'i-verify ang iyong email';
-    const subject = purpose === 'reset' ? `Code para sa bagong password: ${code}` : `Verification code: ${code}`;
+    const what = { reset: 'i-reset ang iyong password', login: 'mag-login sa CSE Reviewer' }[purpose] || 'i-verify ang iyong email';
+    const subject = { reset: `Code para sa bagong password: ${code}`, login: `Login code: ${code}` }[purpose] || `Verification code: ${code}`;
+    const title = { reset: 'I-reset ang password', login: 'Login code' }[purpose] || 'I-verify ang iyong email';
     return safeSend(to, subject,
-      layout(purpose === 'reset' ? 'I-reset ang password' : 'I-verify ang iyong email', `<p>Hi ${esc(name || '')},</p>
+      layout(title, `<p>Hi ${esc(name || '')},</p>
         <p>Gamitin ang code na ito para ${what}:</p>
         <p style="font-size:32px;font-weight:bold;letter-spacing:8px;background:#e8eefc;color:#1e40af;text-align:center;padding:14px;border-radius:10px">${code}</p>
         <p style="color:#5b6478;font-size:14px">Mag-e-expire ito sa loob ng 15 minuto.</p>`),

@@ -91,6 +91,15 @@ CREATE TABLE IF NOT EXISTS payments (
   decided_at INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_payments_status ON payments(status, created_at);
+CREATE TABLE IF NOT EXISTS devices (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  secret_hash TEXT NOT NULL,
+  name TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL,
+  last_used_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_devices_user ON devices(user_id);
 `;
 
 // Convert libSQL rows into plain objects.

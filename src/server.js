@@ -223,7 +223,65 @@ app.post('/api/auth/reset', wrap(async (req, res) => {
   await db.batch([
     ['UPDATE users SET pass_hash = ?, salt = ?, email_verified = 1 WHERE id = ?', [hash, salt, u.id]],
     ['DELETE FROM sessions WHERE user_id = ?', [u.id]],
+    ['DELETE FROM devices WHERE user_id = ?', [u.id]],
   ]);
+  res.json({ ok: true });
+}));
+
+/* Login with a one-time code sent to the email (no password needed). */
+app.post('/api/auth/otp', wrap(async (req, res) => {
+  const email = String(req.body.email || '').trim().toLowerCase();
+  if (!isEmail(email)) return res.status(400).json({ error: 'Ilagay ang wastong email.' });
+  if (limited('otp:' + req.ip, 8) || limited('otp:' + email, 3, 5 * 60 * 1000)) return res.status(429).json({ error: 'Naipadala na ang code. Maghintay ng ilang minuto bago humingi ulit.' });
+  const u = await db.get('SELECT * FROM users WHERE email = ?', email);
+  if (u && !u.disabled) await sendCode(u, 'login');
+  res.json({ ok: true }); // Same answer either way, so emails cannot be guessed.
+}));
+
+app.post('/api/auth/otp/login', wrap(async (req, res) => {
+  const email = String(req.body.email || '').trim().toLowerCase();
+  if (limited('otplogin:' + req.ip + email, 10)) return res.status(429).json({ error: 'Masyadong maraming subok. Maghintay ng 10 minuto.' });
+  const u = await db.get('SELECT * FROM users WHERE email = ?', email);
+  if (!u || !(await useCode(email, 'login', req.body.code))) return res.status(400).json({ error: 'Mali o expired na ang code.' });
+  if (u.disabled) return res.status(403).json({ error: 'Naka-disable ang account na ito. Makipag-ugnayan sa admin.' });
+  // Receiving the code proves the email works.
+  if (!u.email_verified) await db.run('UPDATE users SET email_verified = 1 WHERE id = ?', u.id);
+  await newSession(res, u.id);
+  res.json(withToken(res, { user: publicUser({ ...u, email_verified: 1 }) }));
+}));
+
+/* Fingerprint / face login (Premium). The device keeps a secret key that only unlocks after the
+   fingerprint, face or Windows Hello check on the device. The server only sees the key. */
+const deviceKey = (key) => {
+  const m = /^(\d+)\.([a-f0-9]{64})$/.exec(String(key || ''));
+  return m && { id: Number(m[1]), secret: m[2] };
+};
+app.post('/api/auth/device', auth, verified, wrap(async (req, res) => {
+  if (!hasPremium(req.user, await getSettings())) return res.status(402).json({ error: 'Para sa Premium ang fingerprint/face login.', code: 'premium' });
+  if (limited('device:' + req.user.id, 10, 60 * 60 * 1000)) return res.status(429).json({ error: 'Masyadong maraming subok. Maghintay muna.' });
+  const secret = crypto.randomBytes(32).toString('hex');
+  const r = await db.run('INSERT INTO devices (user_id, secret_hash, name, created_at) VALUES (?, ?, ?, ?)',
+    req.user.id, sha(secret), String(req.body.name || '').slice(0, 60), Date.now());
+  res.json({ key: `${r.lastInsertRowid}.${secret}` });
+}));
+app.post('/api/auth/device/login', wrap(async (req, res) => {
+  if (limited('devlogin:' + req.ip, 20)) return res.status(429).json({ error: 'Masyadong maraming subok. Maghintay ng 10 minuto.' });
+  const k = deviceKey(req.body.key);
+  const d = k && (await db.get('SELECT * FROM devices WHERE id = ?', k.id));
+  if (!d || !crypto.timingSafeEqual(Buffer.from(d.secret_hash, 'hex'), Buffer.from(sha(k.secret), 'hex'))) {
+    return res.status(401).json({ error: 'Hindi na gumagana ang fingerprint/face login sa device na ito. Mag-login gamit ang password o code.', code: 'device' });
+  }
+  const u = await db.get('SELECT * FROM users WHERE id = ?', d.user_id);
+  if (!u) return res.status(401).json({ error: 'Wala na ang account na ito.', code: 'device' });
+  if (u.disabled) return res.status(403).json({ error: 'Naka-disable ang account na ito. Makipag-ugnayan sa admin.' });
+  await db.run('UPDATE devices SET last_used_at = ? WHERE id = ?', Date.now(), d.id);
+  await newSession(res, u.id);
+  res.json(withToken(res, { user: publicUser(u) }));
+}));
+app.post('/api/auth/device/remove', wrap(async (req, res) => {
+  const k = deviceKey(req.body.key);
+  const d = k && (await db.get('SELECT * FROM devices WHERE id = ?', k.id));
+  if (d && d.secret_hash === sha(k.secret)) await db.run('DELETE FROM devices WHERE id = ?', d.id);
   res.json({ ok: true });
 }));
 
@@ -631,14 +689,14 @@ app.post('/api/admin/users/:id/password', admin, wrap(async (req, res) => {
   if (pw.length < 8) return res.status(400).json({ error: 'Ang password ay dapat may 8 characters o higit pa.' });
   const { salt, hash } = hashPassword(pw);
   await db.run('UPDATE users SET pass_hash = ?, salt = ? WHERE id = ?', hash, salt, Number(req.params.id));
-  await db.run('DELETE FROM sessions WHERE user_id = ?', Number(req.params.id));
+  await db.batch([['DELETE FROM sessions WHERE user_id = ?', [Number(req.params.id)]], ['DELETE FROM devices WHERE user_id = ?', [Number(req.params.id)]]]);
   res.json({ ok: true });
 }));
 
 app.delete('/api/admin/users/:id', admin, wrap(async (req, res) => {
   const id = Number(req.params.id);
   if (id === req.user.id) return res.status(400).json({ error: 'Hindi mo mabubura ang sarili mong account.' });
-  await db.batch([['DELETE FROM payments WHERE user_id = ?', [id]], ['DELETE FROM attempts WHERE user_id = ?', [id]], ['DELETE FROM sessions WHERE user_id = ?', [id]], ['DELETE FROM users WHERE id = ?', [id]]]);
+  await db.batch([['DELETE FROM payments WHERE user_id = ?', [id]], ['DELETE FROM attempts WHERE user_id = ?', [id]], ['DELETE FROM sessions WHERE user_id = ?', [id]], ['DELETE FROM devices WHERE user_id = ?', [id]], ['DELETE FROM users WHERE id = ?', [id]]]);
   res.json({ ok: true });
 }));
 
