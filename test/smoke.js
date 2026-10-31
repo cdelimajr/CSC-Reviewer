@@ -59,6 +59,15 @@ const lastCode = (to) => {
   assert.equal((await O('GET', '/api/stats')).status, 200, 'logged in with code');
   assert.equal((await client()('POST', '/api/auth/otp/login', { email: 'juan@test.ph', code: lastCode('juan@test.ph') })).status, 400, 'code works once');
 
+  // One login at a time: the code login above ended the older session, and that device is told why
+  r = await U('GET', '/api/stats');
+  assert.equal(r.status, 401); assert.equal(r.data.code, 'replaced', 'old device: logged in on another device');
+  assert.equal((await U('GET', '/api/me')).data.ended, 'replaced');
+  r = await U('POST', '/api/auth/login', { email: 'juan@test.ph', password: 'newpass123' });
+  assert.equal(r.data.others, 1, 'the new login says one other device was logged out');
+  assert.equal((await O('GET', '/api/stats')).data.code, 'replaced');
+  assert.equal((await U('GET', '/api/stats')).status, 200);
+
   // Fingerprint/face login: a device key that logs in without a password
   assert.equal((await client()('POST', '/api/auth/device', {})).status, 401);
   r = await U('POST', '/api/auth/device', { name: 'Test phone' });
@@ -68,12 +77,21 @@ const lastCode = (to) => {
   assert.equal((await D('POST', '/api/auth/device/login', { key: devKey.slice(0, -1) + (devKey.endsWith('0') ? '1' : '0') })).status, 401, 'wrong key');
   assert.equal((await D('POST', '/api/auth/device/login', { key: devKey })).status, 200);
   assert.equal((await D('GET', '/api/stats')).status, 200, 'logged in with device key');
+  assert.equal((await U('GET', '/api/stats')).status, 401, 'device login also ends the other session');
+  await U('POST', '/api/auth/login', { email: 'juan@test.ph', password: 'newpass123' });
   await D('POST', '/api/auth/device/remove', { key: devKey });
   assert.equal((await client()('POST', '/api/auth/device/login', { key: devKey })).status, 401, 'removed key stops working');
 
   // Exam sets (newest first) and mock exams
   r = await U('GET', '/api/sets?mode=pro');
   assert.equal(r.data.length, 3); assert.equal(r.data[0].number, 3, 'newest first');
+  // Set 1 always exists: it cannot be deleted, and if it is missing it is made again
+  const set1 = r.data.find((x) => x.number === 1);
+  assert.equal((await A('DELETE', '/api/admin/sets/' + set1.id)).status, 400, 'Set 1 cannot be deleted');
+  await require('../src/db').run('DELETE FROM exam_sets WHERE id = ?', set1.id);
+  await require('../src/sets').ensureSets();
+  r = await U('GET', '/api/sets?mode=pro');
+  assert.equal(r.data.length, 3); assert.equal(r.data[r.data.length - 1].number, 1, 'Set 1 made again');
   r = await U('POST', '/api/attempts', { mode: 'pro', set_id: r.data[0].id });
   assert.equal(r.data.items.length, 170); assert.ok(r.data.title.includes('Set 3'));
   assert.ok(r.data.items.every((i) => i.choices.length === 4 && i.answer === undefined), 'answers hidden');
@@ -214,11 +232,15 @@ const lastCode = (to) => {
   r = await U('GET', '/api/me');
   assert.equal(r.data.config.watermark, true, 'watermark on by default'); assert.equal(r.data.config.ads.on, true);
   r = await A('GET', '/api/admin/settings');
-  assert.deepEqual(r.data.pay_methods.map((m) => m.id), ['gcash', 'maya', 'paypal', 'bank'], 'default manual accounts');
-  const methods = r.data.pay_methods.map((m) => (m.id === 'maya' ? { ...m, on: true, account: '09181112222', account_name: 'Juan D.' } : m));
-  methods.push({ id: 'bdo', type: 'bank', name: 'BDO', bank: 'BDO', account: '0012 3456 7890', on: true });
+  assert.deepEqual(r.data.pay_methods.map((m) => m.id), ['gcash'], 'only the GCash account that has a number (no empty Maya/PayPal/bank)');
+  assert.equal(r.data.pay_methods[0].name, 'GCash');
+  // Accounts are added with the type dropdown; the name comes from the type (no "name in the app")
+  const methods = [...r.data.pay_methods, { id: 'maya', type: 'maya', name: 'ignored', account: '09181112222', account_name: 'Juan D.', on: true },
+    { id: 'paypal', type: 'paypal', on: false }, { id: 'bdo', type: 'bank', bank: 'BDO', account: '0012 3456 7890', on: true },
+    { id: 'coins', type: 'other', bank: 'Coins.ph', account: '0917', on: false }];
   r = await A('PUT', '/api/admin/settings', { pay_methods: methods, exam_watermark: '0', pay_online_on: '0', adsense_client: 'ca-pub-1234567890123456' });
-  assert.equal(r.data.pay_methods.length, 5);
+  assert.deepEqual(r.data.pay_methods.map((m) => m.id), ['gcash', 'maya', 'bdo', 'coins'], 'an empty preset is dropped');
+  assert.deepEqual(r.data.pay_methods.map((m) => m.name), ['GCash', 'Maya', 'BDO', 'Coins.ph'], 'names come from the type or bank');
   assert.equal((await U('GET', '/api/me')).data.config.watermark, false, 'watermark can be turned off');
   r = await U('GET', '/api/premium');
   assert.equal(r.data.online, false, 'online payment turned off'); assert.equal(r.data.manual, true);
@@ -228,7 +250,7 @@ const lastCode = (to) => {
   assert.equal((await A('PUT', '/api/admin/pay-qr/maya', { data: png })).status, 200);
   assert.equal((await fetch(base + '/api/pay/qr/maya')).headers.get('content-type'), 'image/png', 'QR code served');
   assert.equal((await U('GET', '/api/premium')).data.methods.find((m) => m.id === 'maya').has_qr, true);
-  assert.equal((await U('POST', '/api/payments', { method_id: 'paypal', reference: 'PP123456' })).status, 400, 'turned-off account refused');
+  assert.equal((await U('POST', '/api/payments', { method_id: 'coins', reference: 'PP123456' })).status, 400, 'turned-off account refused');
   assert.equal((await U('POST', '/api/payments', { method_id: 'maya', reference: 'MY123456', proof: 'data:text/html;base64,AAAA' })).status, 400, 'proof must be an image');
   assert.equal((await U('POST', '/api/payments', { method_id: 'maya', reference: 'MY123456', proof: png })).status, 200);
   r = await A('GET', '/api/admin/payments');
@@ -250,6 +272,13 @@ const lastCode = (to) => {
   ar = await fetch(base + '/api/me', { headers: { Authorization: 'Bearer ' + tok } });
   assert.equal((await ar.json()).user.email, 'juan@test.ph', 'bearer token works');
   assert.equal((await U('POST', '/api/auth/login', { email: 'juan@test.ph', password: 'newpass123' })).data.token, undefined, 'website gets no token');
+  ar = await fetch(base + '/api/me', { headers: { Authorization: 'Bearer ' + tok } });
+  assert.equal((await ar.json()).ended, 'replaced', 'app logged out after the website login');
+
+  // Guided tour for new Premium users: shown once per account
+  assert.equal((await U('GET', '/api/me')).data.user.tour_done, false);
+  await U('POST', '/api/me/tour', { done: true });
+  assert.equal((await U('GET', '/api/me')).data.user.tour_done, true);
 
   // Admin
   assert.equal((await U('GET', '/api/admin/users')).status, 403, 'user blocked from admin');

@@ -399,3 +399,42 @@ label.check { display: flex; gap: 10px; align-items: center; font-weight: 600; m
 label.check input { width: 22px; height: 22px; flex: 0 0 auto; }
 input[type=range] { width: 100%; accent-color: var(--primary); }
 input[type=file] { font-size: 14px; max-width: 100%; }
+
+/* Help: the "?" at the top right, next to the language flag */
+.help-btn { display: inline-grid; place-items: center; width: 28px; height: 28px; border-radius: 50%; border: 2px solid rgba(255,255,255,.85); color: #fff; font-weight: 800; font-size: 15px; text-decoration: none; flex: 0 0 auto; line-height: 1; }
+.help-btn:hover { background: rgba(255,255,255,.15); }
+html[data-theme] .topbar .help-btn { border-color: var(--line); color: var(--primary); }
+.help-a ol { margin: 0 0 8px; padding-left: 20px; }
+.help-a li { margin: 2px 0; }
+.help-hero { border-top: 4px solid var(--accent); }
+
+/* Guide for new Premium users: the screen goes dim except the part being explained, with a card next to it. */
+.tour { position: fixed; inset: 0; z-index: 300; }
+.tour-hole { position: fixed; border-radius: 12px; box-shadow: 0 0 0 9999px rgba(8, 12, 24, .62); outline: 3px solid var(--accent); outline-offset: 0; pointer-events: none; transition: left .2s, top .2s, width .2s, height .2s; }
+.tour-tip { position: fixed; background: var(--card); color: var(--text); border-radius: 14px; padding: 14px 16px 12px; box-shadow: 0 10px 30px rgba(0,0,0,.35); }
+.tour-tip h3 { margin: 2px 0 6px; font-size: 17px; }
+.tour-tip p { margin: 0 0 12px; font-size: 14px; color: var(--muted); }
+.tour-tip p b { color: var(--text); }
+.tour-count { font-size: 12px; font-weight: 700; color: var(--primary); }
+.tour-btns { display: flex; align-items: center; gap: 6px; }
+.tour-btns .grow { flex: 1; }
+body.touring { overflow: hidden; }
+
+/* Admin: the tabs wrap into rows on a phone, so they never scroll sideways and never move when one is tapped. */
+.tabs.adm-tabs { flex-wrap: wrap; overflow: visible; }
+@media (max-width: 720px) {
+  .tabs.adm-tabs { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; }
+  .tabs.adm-tabs button { padding: 8px 4px; font-size: 13px; white-space: normal; line-height: 1.2; min-height: 38px; border-radius: 10px; }
+}
+@media (max-width: 360px) { .tabs.adm-tabs { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+/* Admin → Settings: each part opens and closes; the account type dropdown sits next to "+ Add an account". */
+.adm-settings .fold > summary h3 { font-size: 16px; }
+.pm-add { flex-wrap: nowrap; align-items: stretch; margin-top: 10px; }
+.pm-add select { flex: 1; min-width: 0; }
+.pm-add .btn { flex: 0 0 auto; }
+
+/* Set 1 is pinned on top of the exam sets */
+.list-item.set-one { border: 2px solid var(--primary); }
+
+/* Login screen: why this device was logged out (one login at a time) */
+.auth-kicked { margin-bottom: 10px; background: var(--warn-soft); text-align: left; }

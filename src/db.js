@@ -121,6 +121,11 @@ const db = {
       'ALTER TABLE payments ADD COLUMN days INTEGER',
       // Manual payments: screenshot of the receipt (data URL), checked by the admin
       'ALTER TABLE payments ADD COLUMN proof TEXT',
+      // One login at a time: a session ended by a login on another device is kept (replaced_at) so the
+      // old device can be told why it was logged out.
+      'ALTER TABLE sessions ADD COLUMN replaced_at INTEGER',
+      // The guided tour for new Premium users was shown (or skipped).
+      'ALTER TABLE users ADD COLUMN tour_done INTEGER NOT NULL DEFAULT 0',
     ]) {
       try { await client.execute(sql); } catch (e) { if (!/duplicate column/i.test(e.message)) throw e; }
     }
