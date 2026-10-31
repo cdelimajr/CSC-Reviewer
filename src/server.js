@@ -8,6 +8,7 @@ const { SUBJECTS, EXAMS } = require('./blueprint');
 const { buildExam, grade } = require('./exam');
 const mail = require('./mail');
 const sets = require('./sets');
+const xendit = require('./xendit');
 
 const PORT = Number(process.env.PORT) || 3000;
 const ADMIN_EMAIL = (process.env.ADMIN_EMAIL || '').trim().toLowerCase();
@@ -227,7 +228,7 @@ app.get('/api/me', wrap(async (req, res) => {
   const st = await getSettings();
   res.json({
     user: publicUser(req.user) || null,
-    config: { verify: REQUIRE_VERIFY, mail: mail.enabled, premium_required: st.premium_required === '1', free: freeLimits(st) },
+    config: { verify: REQUIRE_VERIFY, mail: mail.enabled, premium_required: st.premium_required === '1', free: freeLimits(st), online_pay: xendit.enabled },
     premium: req.user ? hasPremium(req.user, st) : false,
     practice_today: req.user ? await practiceToday(req.user.id) : 0,
   });
@@ -471,11 +472,85 @@ app.post('/api/offline/sync', auth, verified, premiumOnly, wrap(async (req, res)
 /* ------------------------------ premium & payments ------------------------------ */
 app.get('/api/premium', auth, wrap(async (req, res) => {
   const st = await getSettings();
-  const payments = await db.all('SELECT id, amount, method, reference, status, note, created_at, decided_at FROM payments WHERE user_id = ? ORDER BY created_at DESC LIMIT 20', req.user.id);
+  // If the user just came back from the Xendit checkout, check it now (in case the webhook is late).
+  let user = req.user;
+  if (xendit.enabled) {
+    const open = await db.all(`SELECT * FROM payments WHERE user_id = ? AND provider = 'xendit' AND status = 'checkout' ORDER BY id DESC LIMIT 3`, user.id);
+    for (const p of open) await syncInvoice(p).catch((e) => console.error('Xendit check failed:', e.message));
+    if (open.length) user = await db.get('SELECT * FROM users WHERE id = ?', user.id);
+  }
+  const payments = await db.all(`SELECT id, amount, method, reference, status, note, created_at, decided_at, provider,
+    CASE WHEN status = 'checkout' THEN checkout_url END AS checkout_url FROM payments WHERE user_id = ? ORDER BY created_at DESC LIMIT 20`, user.id);
   res.json({
-    required: st.premium_required === '1', active: hasPremium(req.user, st), until: req.user.premium_until || 0,
+    required: st.premium_required === '1', active: hasPremium(user, st), until: user.premium_until || 0, online: xendit.enabled,
     price: st.price, plan_days: Number(st.plan_days) || 30, method: st.pay_method, pay_name: st.pay_name, pay_number: st.pay_number, note: st.pay_note, payments,
   });
+}));
+
+/* Online payments (Xendit): checkout page, then the webhook turns on Premium. */
+const publicUrl = (req) => (process.env.APP_URL || process.env.RENDER_EXTERNAL_URL || `${req.protocol}://${req.get('host')}`).replace(/\/$/, '');
+
+// Mark an online payment as paid and add the plan days to the user's Premium. Safe to call more than once.
+async function markPaid(p, inv) {
+  const channel = String(inv.payment_channel || inv.payment_method || 'Online').slice(0, 40);
+  const r = await db.run(`UPDATE payments SET status = 'approved', method = ?, decided_at = ? WHERE id = ? AND status IN ('checkout', 'expired')`, channel, Date.now(), p.id);
+  if (r.changes !== 1) return false; // already done
+  const days = Number(p.days) || Number((await getSettings()).plan_days) || 30;
+  await db.run('UPDATE users SET premium_until = MAX(premium_until, ?) + ? WHERE id = ?', Date.now(), days * 864e5, p.user_id);
+  const u = await db.get('SELECT * FROM users WHERE id = ?', p.user_id);
+  if (u) mail.payment(u.email, u.name, 'approved', u.premium_until);
+  return true;
+}
+
+// Read the invoice from Xendit (never trust the webhook body alone) and update our record.
+async function syncInvoice(p) {
+  if (!p.invoice_id) return;
+  const inv = await xendit.getInvoice(p.invoice_id);
+  if (inv.external_id !== p.reference) return;
+  if (inv.status === 'PAID' || inv.status === 'SETTLED') {
+    const paid = Number(inv.paid_amount ?? inv.amount);
+    if (!(paid >= Number(p.amount))) { console.error(`Xendit invoice ${inv.id}: paid ${paid}, expected ${p.amount}`); return; }
+    await markPaid(p, inv);
+  } else if (inv.status === 'EXPIRED') {
+    await db.run(`UPDATE payments SET status = 'expired', decided_at = ? WHERE id = ? AND status = 'checkout'`, Date.now(), p.id);
+  }
+}
+
+app.post('/api/payments/checkout', auth, verified, wrap(async (req, res) => {
+  if (!xendit.enabled) return res.status(404).json({ error: 'Hindi pa naka-set up ang online na bayad.' });
+  const st = await getSettings();
+  const amount = Number(st.price);
+  if (!(amount >= 1)) return res.status(400).json({ error: 'Wala pang presyo ang Premium. Makipag-ugnayan sa admin.' });
+  // Reuse an unpaid checkout from the last 23 hours (the link lasts 24 hours).
+  const open = await db.get(`SELECT * FROM payments WHERE user_id = ? AND provider = 'xendit' AND status = 'checkout' AND created_at > ? ORDER BY id DESC LIMIT 1`,
+    req.user.id, Date.now() - 23 * 3600e3);
+  if (open && Number(open.amount) === amount && open.checkout_url) return res.json({ url: open.checkout_url });
+  if (limited('checkout:' + req.user.id, 10, 60 * 60 * 1000)) return res.status(429).json({ error: 'Masyadong maraming subok. Maghintay muna.' });
+  const days = Number(st.plan_days) || 30;
+  const externalId = `cse-${req.user.id}-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`;
+  let inv;
+  try {
+    inv = await xendit.createInvoice({
+      externalId, amount, email: req.user.email, name: req.user.name,
+      description: `CSE Reviewer Premium (${days} araw)`, returnUrl: publicUrl(req) + '/#/premium',
+    });
+  } catch (e) {
+    console.error('Xendit invoice failed:', e.message);
+    return res.status(502).json({ error: 'Hindi mabuksan ang bayaran ngayon. Subukan ulit mamaya.' });
+  }
+  await db.run(`INSERT INTO payments (user_id, amount, method, reference, status, provider, invoice_id, checkout_url, days, created_at)
+    VALUES (?, ?, 'Online', ?, 'checkout', 'xendit', ?, ?, ?, ?)`, req.user.id, String(amount), externalId, inv.id, inv.invoice_url, days, Date.now());
+  res.json({ url: inv.invoice_url });
+}));
+
+// Xendit calls this when an invoice is paid or expires. Set the URL in Xendit → Settings → Webhooks → Invoices.
+app.post('/api/payments/xendit/webhook', wrap(async (req, res) => {
+  if (!xendit.webhookReady) return res.status(503).json({ error: 'Xendit is not set up' });
+  if (!xendit.checkToken(req.get('x-callback-token'))) return res.status(401).json({ error: 'Invalid callback token' });
+  const b = req.body || {};
+  const p = await db.get(`SELECT * FROM payments WHERE provider = 'xendit' AND (invoice_id = ? OR reference = ?)`, String(b.id || ''), String(b.external_id || ''));
+  if (p) await syncInvoice(p); // unknown invoices (like Xendit's test callback) are accepted and ignored
+  res.json({ ok: true });
 }));
 
 app.post('/api/payments', auth, verified, wrap(async (req, res) => {

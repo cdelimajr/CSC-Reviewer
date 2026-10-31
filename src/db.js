@@ -105,9 +105,15 @@ const db = {
       'ALTER TABLE users ADD COLUMN premium_until INTEGER NOT NULL DEFAULT 0',
       'ALTER TABLE attempts ADD COLUMN set_id INTEGER',
       'ALTER TABLE attempts ADD COLUMN client_id TEXT',
+      // Online payments (Xendit)
+      `ALTER TABLE payments ADD COLUMN provider TEXT NOT NULL DEFAULT 'manual'`,
+      'ALTER TABLE payments ADD COLUMN invoice_id TEXT',
+      'ALTER TABLE payments ADD COLUMN checkout_url TEXT',
+      'ALTER TABLE payments ADD COLUMN days INTEGER',
     ]) {
       try { await client.execute(sql); } catch (e) { if (!/duplicate column/i.test(e.message)) throw e; }
     }
+    await client.execute('CREATE INDEX IF NOT EXISTS idx_payments_invoice ON payments(invoice_id)');
   },
   all: async (sql, ...args) => plain(await client.execute({ sql, args })),
   get: async (sql, ...args) => plain(await client.execute({ sql, args }))[0],

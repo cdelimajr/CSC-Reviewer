@@ -348,7 +348,10 @@
     const p = await api('GET', '/api/premium');
     const until = p.until > Date.now() ? new Date(p.until).toLocaleDateString('en-PH', { year: 'numeric', month: 'long', day: 'numeric' }) : '';
     const pending = p.payments.find((x) => x.status === 'pending');
-    const statusPill = { pending: '<span class="pill warn">Hinihintay</span>', approved: '<span class="pill ok">Approved</span>', rejected: '<span class="pill bad">Hindi approved</span>' };
+    const openPay = p.payments.find((x) => x.status === 'checkout' && x.checkout_url);
+    const manual = !p.online || !!p.pay_number; // manual GCash shows when there is no online payment, or the admin set a number
+    const statusPill = { pending: '<span class="pill warn">Hinihintay</span>', checkout: '<span class="pill warn">Hindi pa bayad</span>', approved: '<span class="pill ok">Bayad na</span>', rejected: '<span class="pill bad">Hindi approved</span>', expired: '<span class="pill">Expired</span>' };
+    if (S.user.role !== 'admin' && p.active && p.until !== S.user.premium_until) refreshMe().catch(() => {}); // Premium just started or was extended
     shell('account', `
       <h1>Premium</h1>
       <div class="card">
@@ -363,8 +366,15 @@
             <tr><td>Bilis</td><td>Hinihintay ang server</td><td>Agad-agad (naka-save sa device)</td></tr></table>`}
       </div>
       ${S.user.role === 'admin' ? '' : `<div class="card" style="margin-top:12px">
-        <h3>Paano magbayad</h3>
+        <h3>${p.active && until ? 'I-extend ang Premium' : 'Kumuha ng Premium'}</h3>
         <p style="margin:6px 0"><span class="pill warn" style="font-size:15px">₱${esc(p.price)} para sa ${p.plan_days} araw</span></p>
+        ${p.online ? `
+        <p class="small" style="margin:8px 0">Magbayad online gamit ang <b>GCash, Maya, card, bank transfer</b> at iba pa. Awtomatikong bubukas ang Premium pagkatapos magbayad.</p>
+        ${openPay ? `<div class="notice" style="margin-bottom:10px">May bukas kang bayaran. Kung nakapagbayad ka na, pindutin ang <b>I-check ang bayad</b>.</div>` : ''}
+        <div class="err" id="perr"></div>
+        <button class="btn block" id="paynow">💳 ${openPay ? 'Ituloy ang pagbayad' : 'Magbayad online'}</button>
+        ${openPay ? '<button class="btn block secondary" id="paycheck" style="margin-top:8px">I-check ang bayad</button>' : ''}` : ''}
+        ${manual ? `${p.online ? '<h3 style="margin-top:18px">O magpadala nang manual</h3>' : ''}
         <ol class="small" style="padding-left:18px">
           <li>Magpadala ng <b>₱${esc(p.price)}</b> sa ${esc(p.method)}${p.pay_number ? `: <b>${esc(p.pay_number)}</b>` : ''}${p.pay_name ? ` (${esc(p.pay_name)})` : ''}.</li>
           <li>Kopyahin ang <b>reference number</b> mula sa resibo.</li>
@@ -373,10 +383,16 @@
         ${p.note ? `<p class="muted small">${esc(p.note)}</p>` : ''}
         ${pending ? `<div class="notice">Hinihintay pang ma-check ang bayad mo (ref: <b>${esc(pending.reference)}</b>).</div>` : `
         <form id="payf"><label>Reference number</label><input type="text" id="ref" placeholder="hal. 1012 345 678901" autocomplete="off">
-          <div class="err" id="err"></div><button class="btn block" type="submit">Ipadala</button></form>`}
+          <div class="err" id="err"></div><button class="btn block ${p.online ? 'secondary' : ''}" type="submit">Ipadala</button></form>`}` : ''}
       </div>`}
-      ${p.payments.length ? `<h2>Mga bayad mo</h2><div class="list">${p.payments.map((x) => `<div class="list-item"><div class="grow"><b>₱${esc(x.amount)}</b> · ${esc(x.method)} · ref ${esc(x.reference)}
+      ${p.payments.length ? `<h2>Mga bayad mo</h2><div class="list">${p.payments.map((x) => `<div class="list-item"><div class="grow"><b>₱${esc(x.amount)}</b> · ${esc(x.method)}${x.provider === 'xendit' ? '' : ' · ref ' + esc(x.reference)}
         <div class="muted small">${fmtDate(x.created_at)}${x.note ? ' · ' + esc(x.note) : ''}</div></div>${statusPill[x.status] || ''}</div>`).join('')}</div>` : ''}`);
+    // Xendit's checkout page. In the phone and desktop apps it opens in the browser.
+    if ($('#paynow')) $('#paynow').onclick = async (e) => {
+      e.target.disabled = true;
+      try { const r = await api('POST', '/api/payments/checkout', {}); location.href = r.url; } catch (err) { $('#perr').textContent = err.message; e.target.disabled = false; }
+    };
+    if ($('#paycheck')) $('#paycheck').onclick = () => viewPremium();
     const f = $('#payf');
     if (f) f.onsubmit = async (e) => {
       e.preventDefault();
@@ -1036,6 +1052,8 @@
       <p class="muted small" style="margin:4px 0 0">Kapag naka-off, libre ang lahat at gumagana offline para sa lahat. Kapag naka-on, online lang ang libreng plan at may limit (sa ibaba).</p>
       <div class="row"><div style="flex:1;min-width:120px"><label>Presyo (₱)</label><input type="number" id="price" value="${esc(st.price)}"></div>
       <div style="flex:1;min-width:120px"><label>Ilang araw</label><input type="number" id="days" value="${esc(st.plan_days)}"></div></div>
+      <div class="notice" style="margin:12px 0">${S.config.online_pay ? '✅ <b>Online na bayad (Xendit): naka-on.</b> GCash, Maya, card, bank at iba pa. Awtomatikong bubukas ang Premium pagkabayad. Lalabas lang ang manual na GCash sa ibaba kapag may GCash number.' : '💳 <b>Online na bayad (Xendit): naka-off.</b> Ilagay ang <code>XENDIT_SECRET_KEY</code> at <code>XENDIT_CALLBACK_TOKEN</code> sa server para i-on.'}</div>
+      <h3>Manual na bayad</h3>
       <label>Paraan ng bayad</label><input type="text" id="meth" value="${esc(st.pay_method)}">
       <label>Account name</label><input type="text" id="pname" value="${esc(st.pay_name)}" placeholder="hal. Juan D.">
       <label>GCash number</label><input type="text" id="pnum" value="${esc(st.pay_number)}" placeholder="09XX XXX XXXX">
