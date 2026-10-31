@@ -52,11 +52,20 @@ Kapag walang `TURSO_DATABASE_URL`, gumagamit ito ng lokal na SQLite file sa `dat
 Sa libreng Render plan, natutulog ang server kapag 15 minutong walang gumagamit, kaya mga isang minuto ang unang bukas pagkatapos noon.
 
 ## Android, Windows at iPhone apps
-Nasa `apps/` ang mga app. Kasama na sa loob ng app ang mga screen (kinokopya mula sa `public/`), kaya bumubukas ito kahit offline. Kumokonekta ito sa online CSE Reviewer para mag-login, kumuha ng bagong tanong, at mag-save ng resulta, kaya kailangan munang naka-deploy ito. Kapag binago ang `public/`, gumawa ng bagong build para makuha ito ng mga app.
+Nasa `apps/` ang mga app. Kasama na sa loob ng app ang mga screen (kinokopya mula sa `public/`), kaya bumubukas ito kahit offline. Kumokonekta ito sa online CSE Reviewer para mag-login, kumuha ng bagong tanong, at mag-save ng resulta, kaya kailangan munang naka-deploy ito. Kapag binago ang `public/`, kusang makukuha ito ng mga app (tingnan ang "Kusang pag-update").
 1. Sa GitHub repo: **Settings → Secrets and variables → Actions → Variables**, gumawa ng `APP_URL` (hal. `https://cse-reviewer-7lmg.onrender.com`).
-2. Sa **Actions → Build apps → Run workflow**. Pagkatapos ng ilang minuto, nasa **Releases** na ang:
+2. Kusang tumatakbo ang build sa bawat pagbabago sa `main` (o sa **Actions → Build apps → Run workflow**). Pagkatapos ng ilang minuto, nasa **Releases** na ang:
    - `CSE-Reviewer.apk` para sa Android (i-allow ang "Install unknown apps" kapag ini-install).
    - `CSE-Reviewer-…-Setup.exe` at `…-portable.exe` para sa Windows.
    - `CSE-Reviewer-unsigned.ipa` para sa iPhone. Kailangan itong i-sign bago ma-install: gamit ang Apple Developer account ($99 kada taon) para sa App Store/TestFlight, o pang-test gamit ang libreng Apple ID sa Sideloadly/AltStore (7 araw ang bisa).
+
+### Kusang pag-update
+Kapag may bagong pagbabago sa `main` na pumasa sa tests, kusang nag-a-update ang mga app nang hindi naaabala ang user. Dina-download ito sa background, at ginagamit lang ang bagong bersyon sa ligtas na oras: pagbukas ulit ng app, o habang nasa background ang app at walang ginagawa ang user (walang exam o practice na bukas, walang bukas na window, walang tinatype). Hindi kailanman nag-a-update sa gitna ng exam.
+- **Website / naka-install mula sa website:** awtomatiko (service worker). Gumagana pa rin offline ang Premium.
+- **Android:** awtomatiko ang mga screen at feature (dina-download mula sa server). Kapag hindi bumukas nang maayos ang bagong bersyon, kusang bumabalik sa dati. Ang mga pagbabago sa mismong APK (bihira: bagong plugin, icon, permission) ay kailangan pa ring i-install nang mano-mano mula sa Releases; hindi pinapayagan ng Android ang silent install ng APK na wala sa Play Store.
+- **Windows (Setup.exe):** awtomatiko mula sa Releases. Dina-download sa background at ini-install kapag isinara ang app. Hindi nag-a-update nang kusa ang portable .exe.
+- **iPhone:** pareho sa Android ang screens, pero kailangan munang ma-sign ang app.
+
+Ang mga app na na-install bago nito ay kailangang palitan nang isang beses ng bagong build; pagkatapos noon, kusa na. Opsyonal: para ma-install ang bagong APK nang hindi muna binubura ang luma, ilagay ang parehong signing key sa secret na `ANDROID_DEBUG_KEYSTORE` (base64 ng `debug.keystore`).
 
 Para sa Google Play Store, kailangan ng release signing key at Google Play developer account ($25 isang beses).

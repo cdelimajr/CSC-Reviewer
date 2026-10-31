@@ -1155,8 +1155,66 @@
   }
   init();
 
-  // The website saves itself on the device with a service worker. The apps already have the files built in.
+  /* ---------------- automatic updates ----------------
+     New screens download in the background. They are switched in only at a safe moment: when the app
+     opens, or when it is in the background and the user is not in the middle of anything
+     (no exam or practice, no open window, nothing typed). */
+  const busy = () => !!S.exam || !!document.querySelector('.modal-bg')
+    || $$('input, textarea').some((el) => (el.type === 'checkbox' || el.type === 'radio' ? el.checked !== el.defaultChecked : el.value !== el.defaultValue));
+  const markUpdated = () => store.set('cse-updated', 1);
+  if (store.get('cse-updated')) { store.del('cse-updated'); setTimeout(() => toast('Na-update ang app sa bagong bersyon.'), 600); }
+
+  // Website (and the app installed from the website): the service worker keeps the files on the device.
   if (!IS_APP && 'serviceWorker' in navigator && location.protocol.startsWith('http')) {
-    window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js').catch(() => {}));
+    window.addEventListener('load', async () => {
+      let reg;
+      try { reg = await navigator.serviceWorker.register('/sw.js', { updateViaCache: 'none' }); } catch { return; }
+      let controlled = !!navigator.serviceWorker.controller, reloadWhenSafe = false;
+      const applyWhenSafe = () => {
+        if (!document.hidden || busy()) return;
+        if (reloadWhenSafe) { markUpdated(); location.reload(); return; }
+        if (reg.waiting && navigator.serviceWorker.controller) reg.waiting.postMessage('skip-waiting');
+      };
+      navigator.serviceWorker.addEventListener('controllerchange', () => {
+        if (!controlled) { controlled = true; return; } // first visit: nothing to refresh
+        reloadWhenSafe = true; applyWhenSafe();
+      });
+      document.addEventListener('visibilitychange', () => { if (document.hidden) applyWhenSafe(); else reg.update().catch(() => {}); });
+      setInterval(() => reg.update().catch(() => {}), 60 * 60e3);
+    });
+  }
+
+  // Android/iPhone app: new screens come from the server as a zip (Capacitor Updater plugin, no cloud service).
+  // If a new version fails to start, the plugin goes back to the previous one by itself.
+  const cap = window.Capacitor;
+  const Updater = IS_APP && cap && cap.isNativePlatform && cap.isNativePlatform() && cap.isPluginAvailable && cap.isPluginAvailable('CapacitorUpdater')
+    ? (cap.Plugins.CapacitorUpdater || cap.registerPlugin('CapacitorUpdater')) : null;
+  if (Updater) {
+    Updater.notifyAppReady().catch(() => {});
+    const BUILD = window.CSE_BUILD || '';
+    let pending = store.get('cse-ota'), lastCheck = 0;
+    if (pending && pending.version === BUILD) { store.del('cse-ota'); pending = null; } // already switched
+    else if (pending && pending.tried) { store.set('cse-ota-bad', pending.version); store.del('cse-ota'); pending = null; } // did not start: stay on this one
+    const applyWhenSafe = () => {
+      if (!pending || busy()) return;
+      store.set('cse-ota', { ...pending, tried: true }); markUpdated();
+      Updater.set({ id: pending.id }).catch(() => { store.set('cse-ota', pending); store.del('cse-updated'); });
+    };
+    const check = async () => {
+      if (pending || !navigator.onLine || Date.now() - lastCheck < 30 * 60e3) return;
+      lastCheck = Date.now();
+      try {
+        const res = await fetch(API + '/api/app/update', { cache: 'no-store' });
+        const u = res.ok && await res.json();
+        if (!u || !u.version || u.version === BUILD || u.version === store.get('cse-ota-bad')) return;
+        const b = await Updater.download({ url: API + u.url, version: u.version });
+        pending = { id: b.id, version: u.version };
+        store.set('cse-ota', pending);
+      } catch { /* try again later */ }
+    };
+    applyWhenSafe(); // app just opened: switch now if a new version is ready
+    setTimeout(check, 5000);
+    document.addEventListener('visibilitychange', () => { if (document.hidden) applyWhenSafe(); else check(); });
+    document.addEventListener('pause', applyWhenSafe);
   }
 })();
