@@ -24,8 +24,9 @@ function layout(title, bodyHtml) {
   </div></body></html>`;
 }
 
-async function send(to, subject, html, text) {
-  const msg = { to, subject, html, text };
+// attachments: [{ name, content: Buffer }] (optional)
+async function send(to, subject, html, text, attachments = []) {
+  const msg = { to, subject, html, text, attachments: attachments.map((a) => a.name) };
   if (!enabled) {
     outbox.push(msg);
     if (outbox.length > 50) outbox.shift();
@@ -36,12 +37,14 @@ async function send(to, subject, html, text) {
     ? await fetch('https://api.brevo.com/v3/smtp/email', {
       method: 'POST',
       headers: { 'api-key': process.env.BREVO_API_KEY, 'Content-Type': 'application/json', accept: 'application/json' },
-      body: JSON.stringify({ sender: { name: FROM_NAME, email: FROM }, to: [{ email: to }], subject, htmlContent: html, textContent: text }),
+      body: JSON.stringify({ sender: { name: FROM_NAME, email: FROM }, to: [{ email: to }], subject, htmlContent: html, textContent: text,
+        ...(attachments.length ? { attachment: attachments.map((a) => ({ name: a.name, content: a.content.toString('base64') })) } : {}) }),
     })
     : await fetch('https://api.resend.com/emails', {
       method: 'POST',
       headers: { Authorization: `Bearer ${process.env.RESEND_API_KEY}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ from: `${FROM_NAME} <${FROM}>`, to: [to], subject, html, text }),
+      body: JSON.stringify({ from: `${FROM_NAME} <${FROM}>`, to: [to], subject, html, text,
+        ...(attachments.length ? { attachments: attachments.map((a) => ({ filename: a.name, content: a.content.toString('base64') })) } : {}) }),
     });
   if (!res.ok) {
     const detail = await res.text().catch(() => '');
@@ -76,6 +79,21 @@ const templates = {
         <p>${a.score} tama sa ${a.total} na tanong (passing: 80%).</p>
         <table style="width:100%;border-collapse:collapse;font-size:14px">${rows}</table>`),
       `Hi ${name},\n\n${a.title}: ${pct}% (${a.score}/${a.total}) - ${pass ? 'PASADO' : 'Hindi pa pasado'}.`);
+  },
+  // Premium: the result with every question and answer, as an attached PDF.
+  review(to, name, a, subjects, pdf) {
+    const pct = Math.round((a.score / a.total) * 1000) / 10;
+    const practice = a.mode === 'practice';
+    const pass = pct >= (a.passing || 80);
+    const rows = Object.entries(a.breakdown || {}).map(([k, b]) => `<tr><td style="padding:6px 0">${esc(subjects[k]?.name || k)}</td><td style="text-align:right">${b.correct}/${b.total} (${Math.round((b.correct / b.total) * 1000) / 10}%)</td></tr>`).join('');
+    const file = `${a.title.replace(/[^\w ·-]+/g, '').replace(/[ ·]+/g, '-')}-${new Date(a.finished_at || Date.now()).toISOString().slice(0, 10)}.pdf`;
+    return safeSend(to, `Mga tanong at sagot: ${a.title} - ${pct}%`,
+      layout('Resulta na may mga tanong at sagot', `<p>Hi ${esc(name)},</p><p>Narito ang resulta ng <b>${esc(a.title)}</b>.</p>
+        <p style="font-size:24px;font-weight:bold;color:${practice ? '#1e40af' : pass ? '#0f8a5f' : '#c62f3b'};margin:8px 0">${pct}% (${a.score}/${a.total})${practice ? '' : ` · ${pass ? 'PASADO' : 'Hindi pa pasado'}`}</p>
+        <table style="width:100%;border-collapse:collapse;font-size:14px">${rows}</table>
+        <p>Nasa nakalakip na PDF ang lahat ng tanong, ang sagot mo, ang tamang sagot, at ang paliwanag. Para sa personal na review lamang (RA 10173).</p>`),
+      `Hi ${name},\n\n${a.title}: ${pct}% (${a.score}/${a.total}). Nasa nakalakip na PDF ang lahat ng tanong at sagot.`,
+      [{ name: file, content: pdf }]);
   },
   report(to, name, stats, subjects) {
     const rows = Object.entries(stats.subjects).map(([k, b]) => `<tr><td style="padding:6px 0">${esc(subjects[k]?.name || k)}</td><td style="text-align:right">${b.total ? Math.round((b.correct / b.total) * 1000) / 10 : 0}%</td></tr>`).join('');

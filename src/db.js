@@ -119,6 +119,8 @@ const db = {
       'ALTER TABLE payments ADD COLUMN invoice_id TEXT',
       'ALTER TABLE payments ADD COLUMN checkout_url TEXT',
       'ALTER TABLE payments ADD COLUMN days INTEGER',
+      // Manual payments: screenshot of the receipt (data URL), checked by the admin
+      'ALTER TABLE payments ADD COLUMN proof TEXT',
     ]) {
       try { await client.execute(sql); } catch (e) { if (!/duplicate column/i.test(e.message)) throw e; }
     }

@@ -22,6 +22,9 @@ env:
   APP_URL: ${{ vars.APP_URL || 'https://cse-reviewer-7lmg.onrender.com' }}
   # Each build gets a higher version number, so the apps know it is newer.
   APP_VERSION: 1.0.${{ github.run_number }}
+  # Optional: AdMob App ID (ca-app-pub-…~…) for ads in the Android app's free plan. Set it under
+  # Settings → Secrets and variables → Actions → Variables → ADMOB_APP_ID. Without it the APK has no ad SDK.
+  ADMOB_APP_ID: ${{ vars.ADMOB_APP_ID }}
 
 jobs:
   test:
@@ -49,7 +52,16 @@ jobs:
         if: env.KEYSTORE != ''
         run: mkdir -p ~/.android && echo "$KEYSTORE" | base64 -d > ~/.android/debug.keystore
       - run: npm ci
+      - name: Ads plugin (AdMob), only when ADMOB_APP_ID is set
+        # The Google Mobile Ads SDK stops the app at start when there is no App ID, so the plugin is added only with one.
+        if: env.ADMOB_APP_ID != ''
+        run: npm install @capacitor-community/admob@7.2.0
       - run: npm run android
+      - name: AdMob App ID
+        if: env.ADMOB_APP_ID != ''
+        run: |
+          sed -i "s#</application>#    <meta-data android:name=\"com.google.android.gms.ads.APPLICATION_ID\" android:value=\"$ADMOB_APP_ID\"/>\n    </application>#" android/app/src/main/AndroidManifest.xml
+          grep -n APPLICATION_ID android/app/src/main/AndroidManifest.xml
       - name: Block screenshots and screen recording (FLAG_SECURE)
         # Protects the exam questions. Screenshots and recordings of the app come out black,
         # and the app is blank in the recent apps list.
