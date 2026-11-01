@@ -2,7 +2,7 @@
 
 Mga batas at patakaran ng gobyerno na sinusunod ng app, paano ito ginawa, paano ito pinapatakbo, saan ito gumagana, at ang kasaysayan ng bawat bersyon.
 
-- **Kasalukuyang bersyon:** 1.15.0 (Nobyembre 1, 2026)
+- **Kasalukuyang bersyon:** 1.16.0 (Nobyembre 1, 2026)
 - **Huling update ng dokumentong ito:** Nobyembre 1, 2026
 
 > **Panuntunan sa pag-update:** sa bawat pagbabago sa app (bawat pull request), i-update ang dokumentong ito: dagdagan ang [Kasaysayan ng bersyon](#7-kasaysayan-ng-bersyon), palitan ang "Kasalukuyang bersyon" sa itaas, ang `APP_VERSION` sa `public/app.js` at ang `version` sa `package.json`, at baguhin ang anumang bahagi sa ibaba na naapektuhan (hal. bagong data na kinokolekta, bagong batas o patakaran ng gobyerno). Nakasulat din ito sa `CLAUDE.md`.
@@ -38,13 +38,14 @@ Mga batas at patakaran ng gobyerno na sinusunod ng app, paano ito ginawa, paano 
 | Bayad: halaga, paraan, reference number, screenshot ng resibo | `payments` at settings | Pag-check ng manual na bayad. **Walang card number o GCash PIN na dumadaan sa app**; sa PayMongo ito nangyayari |
 | Face/fingerprint login | Sa device lang | Ang device ang nagche-check ng mukha o daliri. **Walang larawan ng mukha o fingerprint na napupunta sa app o server**; isang device secret lang (naka-hash sa `devices`) |
 | Offline na kopya (Premium) | Sa device (localStorage) | Para gumana offline: account, mga tanong, mga resultang hindi pa naka-save online |
+| Pagburang naghihintay (admin) | Sa device (`cse-undo-<user>`) | Ang pagburang nasa Undo bar pa (uri at ID lang, hal. `DELETE /api/admin/sets/7`). Nabubura ito pagkatapos maipadala sa server |
 
 Walang sensitive personal information (hal. edad, relihiyon, kalusugan, government ID) na kinokolekta ang app.
 
 **Paano sumusunod ang app:**
 - **Seguridad:** scrypt para sa password, naka-hash na session token at code, HTTPS (Render), limit sa dami ng subok sa login/register/code, isang device lang kada account (agad nalo-logout ang luma), at nawawala ang face/fingerprint login kapag na-reset ang password.
 - **Proteksyon ng exam screen:** babala ng RA 10173, watermark ng email ng user, naka-block ang screenshot sa Android at Windows app, nakatago ang tanong kapag lumipat sa ibang app.
-- **Pagbura ng data:** kayang burahin ng admin ang account at lahat ng resulta nito (Admin → Users → pindutin ang pangalan → Burahin ang account).
+- **Pagbura ng data:** kayang burahin ng admin ang account at lahat ng resulta nito (Admin → Users → pindutin ang pangalan → Burahin ang account). May 10 segundo para i-undo; pagkalipas nito, tuluyan nang nabubura ang data sa server (walang natitirang kopya).
 - **Paalala sa privacy** bago ang unang exam o practice.
 
 > ⚠️ Tungkol sa watermark na "RA 10173 - bawal kunan ng larawan/video": ang RA 10173 ay tungkol sa personal na impormasyon (dito: ang email ng user na nasa watermark). Ang pagkopya ng mga tanong mismo ay mas sakop ng terms of use ng app at ng Intellectual Property Code (RA 8293). Pareho itong tama bilang paalala, pero huwag sabihing krimen sa ilalim ng RA 10173 ang bawat screenshot.
@@ -108,6 +109,11 @@ Walang sensitive personal information (hal. edad, relihiyon, kalusugan, governme
 
 **Daloy ng data:** ang user ay nagla-login → ang server ay gumagawa ng session (cookie sa website, token sa apps) → ang exam ay ginagawa ng server o (Premium) mula sa mga tanong na naka-save sa device → ang sagot ay naka-save sa device sa bawat pindot → pagsumite, ang score ay kinukuwenta ng server (o ng device kapag offline, saka ise-save online pagbalik ng internet).
 
+**Undo (10 segundo):** `Undo` sa `public/app.js`. May dalawang uri:
+- **Naantalang pagbura** (pagbura ng account, pagtago ng tanong, pagbura ng exam set, pag-alis ng QR, pag-off ng mabilis na login): nawawala agad sa screen, pero sa server ay ipinapadala lang pagkalipas ng 10 segundo. Kaya ang I-undo ay ibinabalik lang ang screen; walang nabura. Naka-save sa device (`cse-undo-<user>`) ang naghihintay na pagbura, kaya kapag naisara ang app o offline, itinutuloy ito pagbukas ulit o pagbalik ng internet (`syncNow`). Bago mag-logout, ipinapadala muna ito.
+- **Naibabalik na pagbabago** (mga aksyon sa user, I-save ang settings, zoom): nase-save agad; ang I-undo ay nagse-save ulit ng dating value. Para sa Premium, ibinabalik ang eksaktong petsa ng pagtatapos (`premium_until` sa `PATCH /api/admin/users/:id`).
+- Isa lang ang bar: kapag may bagong aksyon, tinatapos agad ang nauna. Hindi maa-undo ang pag-approve/reject ng bayad, pag-reset ng password at pagpapadala ng email, dahil may email na agad na naipapadala o hindi na makukuha ang lumang password; may tanong pa rin bago gawin ang mga ito.
+
 **Seguridad:** tingnan ang Seksyon 1.1. Dagdag pa: CORS para sa apps ay token lang (walang cookie), `trust proxy` para sa tamang IP sa limit ng subok, at hindi kailanman naka-cache ng service worker ang `/api`.
 
 ---
@@ -120,6 +126,7 @@ Walang sensitive personal information (hal. edad, relihiyon, kalusugan, governme
 - **Araw-araw:** Admin → Payments, i-check at i-approve o i-reject ang manual na bayad (i-check muna sa sariling GCash/Maya/bangko gamit ang reference number).
 - **Lingguhan:** tingnan ang Admin → Overview (bagong users, passing rate) at Admin → Exam sets (kusang may bagong set bawat linggo).
 - **Kapag may nagreklamo:** Admin → Users → pindutin ang pangalan ng user para sa mga aksyon (Premium, reset password, report, burahin).
+- **Kapag nagkamali ng pindot:** pindutin ang **↶ I-undo** sa bar sa ibaba sa loob ng 10 segundo (pagbura, pagtago, pagbabago sa user, at I-save ang settings). Pagkalipas nito, gawin ulit nang mano-mano ang dating ayos (hal. bigyan ulit ng Premium) o gamitin ang backup ng database.
 
 **Backup:** sa Turso, gamitin ang point-in-time restore o `turso db shell <db> .dump > backup.sql` paminsan-minsan. Sa lokal na SQLite, kopyahin ang file sa `data/`.
 
@@ -171,7 +178,8 @@ Kusang hinahanap at inaayos ng app ang mga karaniwang problema, online man o off
 
 | Bersyon | Petsa | PR | Mga pagbabago |
 |---|---|---|---|
-| **1.15.0** | 2026-11-01 | #15 | Account: inalis ang Logout sa tabi ng pamagat (nasa kanang itaas pa rin); Premium at Tulong ay drop down na rin, kaya drop down na lahat mula Premium hanggang Tungkol sa exam. Admin: dropdown menu ang mga tab; sa Users, ang pangalan ng user ang pinipindot para sa mga aksyon (wala nang "Aksyon"); sa Exam sets, drop down ang Professional at Subprofessional; sa Settings, drop down ang Premium (may on/off at presyo sa pamagat). Bagong **Auto Fix** (online at offline). Bagong dokumentasyong ito. Mga ayos: hindi na humihinto ang server sa error sa logout o paglilinis ng session; mas ligtas na pagsumite ng exam kapag nawala ang kopya nito; tamang default na bilang ng tanong sa libreng practice; mga error sa Admin (paghahanap ng user, mga tanong, exam set) ay may malinaw na mensahe na |
+| **1.16.0** | 2026-11-01 | #PRNUM | Bagong **I-undo sa loob ng 10 segundo**: bar sa ibaba na may ↶ I-undo pagkatapos burahin ang account, itago ang tanong, burahin ang exam set, alisin ang QR o payment account, baguhin ang user (admin, disable, Premium, verified), i-save ang settings, ibalik ang zoom sa 100%, at i-off ang mabilis na login. Ipinapadala lang sa server ang pagbura pagkalipas ng 10 segundo, at itinutuloy ito kahit naisara ang app o offline. Wala nang tanong bago itago ang tanong o burahin ang exam set (may I-undo na) |
+| 1.15.0 | 2026-11-01 | #15 | Account: inalis ang Logout sa tabi ng pamagat (nasa kanang itaas pa rin); Premium at Tulong ay drop down na rin, kaya drop down na lahat mula Premium hanggang Tungkol sa exam. Admin: dropdown menu ang mga tab; sa Users, ang pangalan ng user ang pinipindot para sa mga aksyon (wala nang "Aksyon"); sa Exam sets, drop down ang Professional at Subprofessional; sa Settings, drop down ang Premium (may on/off at presyo sa pamagat). Bagong **Auto Fix** (online at offline). Bagong dokumentasyong ito. Mga ayos: hindi na humihinto ang server sa error sa logout o paglilinis ng session; mas ligtas na pagsumite ng exam kapag nawala ang kopya nito; tamang default na bilang ng tanong sa libreng practice; mga error sa Admin (paghahanap ng user, mga tanong, exam set) ay may malinaw na mensahe na |
 | 1.14.0 | 2026-11-01 | #14 | Premium: pwedeng mag-login offline sa device na nag-login na online dati |
 | 1.13.0 | 2026-11-01 | #13 | Agad na logout sa ibang device (live), exam na parang test paper na may page flip, kitang Logout, tap feedback, mas mabilis na Premium |
 | 1.12.0 | 2026-11-01 | #12 | Isang login kada account, laging may Set 1, gabay at Tulong, drop down sa Admin → Settings, iisang itsura para sa Libre at Premium |

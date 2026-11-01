@@ -536,3 +536,20 @@ body.guard { background: var(--desk); }
 .fix-log { margin: 0 0 10px; padding-left: 18px; }
 .fix-log li { margin: 2px 0; }
 .fix-log li.bad { color: var(--warn-text, #92400e); }
+
+/* ---------- Undo bar: 10 seconds to take back a delete or a change (see Undo in app.js) ---------- */
+#undo { position: fixed; left: 50%; bottom: 90px; z-index: 61; display: flex; align-items: center; gap: 10px; width: max-content; max-width: calc(100% - 32px);
+  padding: 8px 8px 8px 16px; border-radius: 12px; background: #172033; color: #fff; font-size: 14px; line-height: 1.35; box-shadow: 0 6px 24px rgba(16, 24, 40, .25);
+  overflow: hidden; opacity: 0; pointer-events: none; transform: translate(-50%, 12px); transition: opacity .2s, transform .2s; }
+#undo.show { opacity: 1; pointer-events: auto; transform: translate(-50%, 0); }
+#undo .u-msg { flex: 1; min-width: 0; }
+#undo .u-btn { flex: none; min-height: 40px; padding: 8px 14px; border: 0; border-radius: 9px; background: rgba(255, 255, 255, .14); color: var(--accent); font: inherit; font-weight: 800; cursor: pointer; }
+#undo .u-btn:hover, #undo .u-btn:focus-visible { background: rgba(255, 255, 255, .24); }
+#undo .u-time { position: absolute; left: 0; right: 0; bottom: 0; height: 3px; background: var(--accent); transform-origin: left; }
+#undo.show .u-time { animation: undo-time linear forwards; }
+@keyframes undo-time { from { transform: scaleX(1); } to { transform: scaleX(0); } }
+body.has-undo #toast { bottom: 152px; }
+html[data-theme] #undo { background: var(--text); color: var(--card); }
+html[data-theme] #undo .u-btn { background: var(--card); color: var(--primary); }
+html[data-theme] #undo .u-time { background: var(--primary); }
+@media (prefers-reduced-motion: reduce) { #undo { transition: opacity .2s; transform: translate(-50%, 0); } }

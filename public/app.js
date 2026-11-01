@@ -3,7 +3,7 @@
   'use strict';
   const $app = document.getElementById('app');
   const LETTERS = ['A', 'B', 'C', 'D'];
-  const APP_VERSION = '1.15.0'; // keep in step with package.json and docs/DOKUMENTASYON.md
+  const APP_VERSION = '1.16.0'; // keep in step with package.json and docs/DOKUMENTASYON.md
   const S = { user: null, meta: null, exam: null, timer: null, saveT: null };
 
   /* ---------------- helpers ---------------- */
@@ -117,7 +117,7 @@
     return m;
   };
 
-  async function api(method, url, body) {
+  async function api(method, url, body, opts = {}) {
     // Logged in offline: log in online first (in the background), then make the call.
     if (S.offAuth && !url.startsWith('/api/auth/') && url !== '/api/meta') {
       if (navigator.onLine) await OffAuth.resume();
@@ -131,7 +131,7 @@
       if (t) headers.Authorization = 'Bearer ' + t;
     }
     try {
-      res = await fetch(API + url, { method, headers, body: body ? JSON.stringify(body) : undefined, credentials: IS_APP ? 'omit' : 'same-origin' });
+      res = await fetch(API + url, { method, headers, body: body ? JSON.stringify(body) : undefined, credentials: IS_APP ? 'omit' : 'same-origin', keepalive: !!opts.keepalive });
     } catch {
       setOffline(true);
       const e = new Error(L('Walang internet. Kailangan ng internet para dito.', 'No internet. This needs an internet connection.')); e.offline = true; throw e;
@@ -154,6 +154,7 @@
   // Answers given so far stay on this device (saved on every tap), so nothing is lost.
   function endedElsewhere(note = ELSEWHERE()) {
     if (!S.user) return;
+    Undo.drop();
     Live.stop();
     clearTimeout(S.saveT); stopTimer();
     S.exam = null; document.onkeydown = null;
@@ -331,6 +332,7 @@
     if (syncing || !S.user || S.offAuth || (S.config.verify && !S.user.email_verified)) return syncing;
     syncing = (async () => {
       let n = 0;
+      await Undo.replay();
       for (const p of store.get(uk('cse-psub'), [])) {
         try {
           await api('POST', `/api/attempts/${p.id}/submit`, { answers: p.answers });
@@ -361,6 +363,92 @@
     clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove('show'), 2600);
     Sound.play('notify');
   }
+
+  /* ---------------- Undo (10 seconds) ----------------
+     After a delete or a change, a bar at the bottom says what happened and has an "Undo" button for 10 seconds.
+     - Deferred (`req`): the screen changes right away, but the server is told only when the 10 seconds end.
+       Undo just puts the screen back, so nothing is lost. A waiting delete is kept on the device
+       (`cse-undo-<user>`), so it still happens if the app is closed early or the internet is gone:
+       it is sent when the app opens again or the internet is back (syncNow).
+     - Deferred on the device (`commit`): the same, for something the device does (turning off quick login).
+     - Reversible (`undo`): the change is already saved; Undo saves the old value back.
+     One bar at a time: a new action finishes the one before it. Lists hide items waiting to be deleted (Undo.waiting). */
+  const Undo = (() => {
+    const MS = 10000;
+    let cur = null, seq = 0, el = null;
+    const qKey = () => uk('cse-undo');
+    const queue = () => { const q = store.get(qKey(), []); return Array.isArray(q) ? q : []; };
+    const unqueue = (id) => store.set(qKey(), queue().filter((x) => x.id !== id));
+    function hide() {
+      if (el) el.classList.remove('show');
+      document.body.classList.remove('has-undo');
+    }
+    async function send(p, keepalive) {
+      try { await api(p.req[0], p.req[1], p.req[2], { keepalive }); unqueue(p.id); return true; }
+      catch (e) {
+        if (e.offline) { toast(L('Walang internet. Gagawin ito pagbalik ng internet.', 'No internet. It will be done when the internet is back.')); return false; }
+        unqueue(p.id);
+        toast(e.message);
+        if (p.revert) try { p.revert(); } catch { /* screen is gone */ }
+        return false;
+      }
+    }
+    function finish(c, keepalive) {
+      if (!c || c !== cur) return Promise.resolve();
+      clearTimeout(c.t); cur = null; hide();
+      if (c.req) return send(c, keepalive).then((ok) => { if (ok && c.done) c.done(); });
+      if (c.commit) return Promise.resolve().then(c.commit).catch(() => {});
+      return Promise.resolve();
+    }
+    async function undo(c) {
+      if (!c || c !== cur) return;
+      clearTimeout(c.t); cur = null; hide();
+      try {
+        if (c.req) unqueue(c.id);
+        if (c.undo) await c.undo();
+        if (c.revert) c.revert();
+        toast(c.undone || L('Naibalik.', 'Undone.'));
+      } catch (e) { toast(e.message || L('Hindi naibalik.', 'Could not undo.')); }
+    }
+    // show({ msg, key?, req?: [method, url, body], commit?, revert?, undo?, done?, undone? })
+    function show(o) {
+      if (cur) finish(cur);
+      const c = { ...o, id: Date.now().toString(36) + '-' + ++seq };
+      if (c.req) store.set(qKey(), [...queue(), { id: c.id, key: c.key, req: c.req }]);
+      cur = c;
+      if (!el) {
+        el = document.createElement('div');
+        el.id = 'undo'; el.setAttribute('role', 'status'); el.setAttribute('aria-live', 'polite');
+        document.body.appendChild(el);
+      }
+      el.innerHTML = `<span class="u-msg"></span><button type="button" class="u-btn">↶ ${L('I-undo', 'Undo')}</button><span class="u-time" style="animation-duration:${MS}ms"></span>`;
+      $('.u-msg', el).textContent = c.msg;
+      $('.u-btn', el).onclick = () => undo(c);
+      void el.offsetWidth; // restart the slide-in
+      el.classList.add('show'); document.body.classList.add('has-undo');
+      $('#toast').classList.remove('show');
+      Sound.play('notify');
+      c.t = setTimeout(() => finish(c), MS);
+    }
+    return {
+      show,
+      // true while an item is waiting to be deleted (on the bar or saved on the device)
+      waiting: (key) => !!key && ((cur && cur.key === key) || queue().some((x) => x.key === key)),
+      // finish now (before logging out)
+      flush: () => finish(cur),
+      // hide the bar without sending (logged out from another device): the saved delete is sent at the next login
+      drop: () => { if (cur) { clearTimeout(cur.t); cur = null; hide(); } },
+      // send the deletes left on the device by an earlier visit
+      async replay() {
+        for (const p of queue()) {
+          if (cur && cur.id === p.id) continue;
+          try { await api(p.req[0], p.req[1], p.req[2]); unqueue(p.id); } catch (e) { if (e.offline) return; unqueue(p.id); }
+        }
+      },
+      pagehide: () => { if (cur) finish(cur, true); },
+    };
+  })();
+  addEventListener('pagehide', () => Undo.pagehide());
 
   /* ---------------- sounds (all users) ----------------
      Short tunes made by the device itself (Web Audio), so there are no sound files to download
@@ -776,6 +864,10 @@
     async forget(localOnly) {
       const rec = this.saved();
       store.del('cse-bio');
+      return this.drop(rec, localOnly);
+    },
+    // Remove the device secret of a saved quick login (after Undo's 10 seconds when turned off in Account).
+    async drop(rec, localOnly) {
       if (!rec) return;
       let key = rec.kind === 'web' ? rec.data : null;
       if (rec.kind === 'native') { try { key = !localOnly && (await NB.getCredentials({ server: BIO_SERVER })).password; } catch { /* gone */ } NB.deleteCredentials({ server: BIO_SERVER }).catch(() => {}); }
@@ -2075,7 +2167,12 @@
     $('#sndVol').onchange = () => Sound.play('correct');
     $$('#sndTone [data-tone]').forEach((b) => (b.onclick = () => { Sound.set({ theme: b.dataset.tone }); $$('#sndTone button').forEach((x) => x.classList.toggle('active', x === b)); setTimeout(() => Sound.play('finish'), 120); }));
     $('#sndTest').onclick = () => { const seq = ['tap', 'flip', 'correct', 'wrong', 'finish']; seq.forEach((n, i) => setTimeout(() => (n === 'flip' ? Sound.flip() : Sound.play(n)), i * 650)); };
-    if ($('#zreset')) $('#zreset').onclick = (e) => { e.preventDefault(); store.set('cse-look', { ...look(), zoom: 1 }); applyLook(); e.target.parentNode.remove(); };
+    if ($('#zreset')) $('#zreset').onclick = (e) => {
+      e.preventDefault();
+      const was = zoomNow;
+      store.set('cse-look', { ...look(), zoom: 1 }); applyLook(); e.target.parentNode.remove();
+      Undo.show({ msg: L('Ibinalik sa 100% ang zoom.', 'Zoom is back to 100%.'), revert: () => { store.set('cse-look', { ...look(), zoom: was }); applyLook(); if (location.hash === '#/account') route(); } });
+    };
     if ($('#bioCard')) paintBioCard();
     $('#pwf').onsubmit = async (e) => {
       e.preventDefault();
@@ -2109,6 +2206,7 @@
     if (ask && !(await confirmBox(L('Mag-logout?', 'Log out?'), unsaved
       ? L('May mga resulta kang ginawa offline na hindi pa naka-save online. Mase-save pa rin ang mga ito kapag nag-login ka ulit sa device na ito.', 'You have results made offline that are not saved online yet. They will still be saved when you log in again on this device.')
       : L('Kailangan mong mag-login ulit para magamit ang app sa device na ito.', 'You will need to log in again to use the app on this device.'), L('Mag-logout', 'Log out'), true))) return;
+    await Undo.flush(); // a delete still on the Undo bar is saved before the login ends
     Live.stop();
     api('POST', '/api/auth/logout').catch(() => { /* offline: still log out on this device */ });
     store.del('cse-token'); store.del('cse-boot'); store.del('cse-offauth'); S.offAuth = null; S.user = null; S.exam = null; Tour.stop(); go('#/login');
@@ -2146,7 +2244,13 @@
         toast(L(`Naka-on na ang ${METHODS[m][1]} login.`, `${METHODS[m][1]} login is on.`)); paintBioCard();
       } catch (err) { $('#berr').textContent = bioErr(err); $$('#bioCard [data-m]').forEach((x) => (x.disabled = false)); }
     }));
-    if ($('#bioOff')) $('#bioOff').onclick = async () => { await Bio.forget(); toast(L('Naka-off na ang mabilis na login.', 'Quick login is off.')); paintBioCard(); };
+    if ($('#bioOff')) $('#bioOff').onclick = () => {
+      // Off at once on this device; the saved secret is removed only after the 10 seconds, so Undo brings it back.
+      const was = Bio.saved();
+      store.del('cse-bio'); paintBioCard();
+      Undo.show({ msg: L('Naka-off na ang mabilis na login.', 'Quick login is off.'), commit: () => Bio.drop(was),
+        revert: () => { if (!Bio.saved()) store.set('cse-bio', was); paintBioCard(); } });
+    };
   }
 
   /* ---------------- admin ---------------- */
@@ -2197,7 +2301,8 @@
       const my = ++seq;
       const users = await api('GET', '/api/admin/users?q=' + encodeURIComponent(q));
       if (my !== seq || !$('#ut')) return; // a newer search answered first, or the admin left this tab
-      $('#ut').innerHTML = users.map((u) => `
+      // Accounts on the Undo bar (deleted, waiting 10 seconds) are left out.
+      $('#ut').innerHTML = users.filter((u) => !Undo.waiting('user:' + u.id)).map((u) => `
         <tr><td>${u.id === S.user.id ? `<b>${esc(u.name)}</b> <span class="muted small">(${L('Ikaw', 'You')})</span>` : `<button type="button" class="u-link" data-u="${u.id}" title="${L('Pindutin para sa mga aksyon', 'Tap for actions')}">${esc(u.name)}</button>`}<div class="muted small">${esc(u.email)}</div></td>
         <td>${u.role === 'admin' ? '<span class="pill">Admin</span>' : 'User'} ${u.disabled ? '<span class="pill bad">Disabled</span>' : ''} ${u.premium_until > Date.now() ? '<span class="pill ok">Premium</span>' : ''} ${S.config.verify && !u.email_verified ? '<span class="pill warn">Unverified</span>' : ''}</td>
         <td>${u.attempts}</td><td>${u.avg_mock ?? '–'}${u.avg_mock != null ? '%' : ''}</td>
@@ -2224,13 +2329,22 @@
         <button class="btn danger" data-a="del">${L('Burahin ang account', 'Delete account')}</button>
         <button class="btn ghost" data-a="x">${L('Isara', 'Close')}</button>
       </div><div id="extra"></div>`, (bg, close) => {
-      const act = async (fn, msg) => { try { await fn(); toast(msg); close(); refresh(); } catch (e) { toast(e.message); } };
+      // Each change can be undone for 10 seconds: Undo saves the old value back.
+      const patch = (body) => api('PATCH', '/api/admin/users/' + u.id, body);
+      const act = async (fn, msg, back, undone) => {
+        try { await fn(); } catch (e) { return toast(e.message); }
+        close(); refresh();
+        if (back) Undo.show({ msg, undo: async () => { await back(); refresh(); }, undone }); else toast(msg);
+      };
       $('[data-a=x]', bg).onclick = close;
-      $('[data-a=role]', bg).onclick = () => act(() => api('PATCH', '/api/admin/users/' + u.id, { role: u.role === 'admin' ? 'user' : 'admin' }), L('Na-update ang role.', 'Role updated.'));
-      $('[data-a=disable]', bg).onclick = () => act(() => api('PATCH', '/api/admin/users/' + u.id, { disabled: !u.disabled }), u.disabled ? L('Na-enable.', 'Enabled.') : L('Na-disable.', 'Disabled.'));
-      $('[data-a=prem]', bg).onclick = () => act(() => api('PATCH', '/api/admin/users/' + u.id, { premium_days: 30 }), L('Nabigyan ng 30 araw na Premium.', 'Gave 30 days of Premium.'));
-      if ($('[data-a=unprem]', bg)) $('[data-a=unprem]', bg).onclick = () => act(() => api('PATCH', '/api/admin/users/' + u.id, { premium_days: 0 }), L('Inalis ang Premium.', 'Premium removed.'));
-      if ($('[data-a=ver]', bg)) $('[data-a=ver]', bg).onclick = () => act(() => api('PATCH', '/api/admin/users/' + u.id, { email_verified: true }), L('Na-verify.', 'Verified.'));
+      $('[data-a=role]', bg).onclick = () => act(() => patch({ role: u.role === 'admin' ? 'user' : 'admin' }), L('Na-update ang role.', 'Role updated.'), () => patch({ role: u.role }));
+      $('[data-a=disable]', bg).onclick = () => act(() => patch({ disabled: !u.disabled }), u.disabled ? L('Na-enable.', 'Enabled.') : L('Na-disable.', 'Disabled.'), () => patch({ disabled: !!u.disabled }),
+        u.disabled ? undefined : L('Naibalik. Kailangang mag-login ulit ng user.', 'Undone. The user needs to log in again.'));
+      // Premium: Undo puts back the exact end date it had before.
+      const premBack = () => patch({ premium_until: u.premium_until || 0 });
+      $('[data-a=prem]', bg).onclick = () => act(() => patch({ premium_days: 30 }), L('Nabigyan ng 30 araw na Premium.', 'Gave 30 days of Premium.'), premBack);
+      if ($('[data-a=unprem]', bg)) $('[data-a=unprem]', bg).onclick = () => act(() => patch({ premium_days: 0 }), L('Inalis ang Premium.', 'Premium removed.'), premBack);
+      if ($('[data-a=ver]', bg)) $('[data-a=ver]', bg).onclick = () => act(() => patch({ email_verified: true }), L('Na-verify.', 'Verified.'), () => patch({ email_verified: false }));
       $('[data-a=report]', bg).onclick = () => act(() => api('POST', `/api/admin/users/${u.id}/report`), L('Naipadala ang report sa email ng user.', 'The report was sent to the user\'s email.'));
       $('[data-a=pw]', bg).onclick = () => {
         $('#extra', bg).innerHTML = `<label>${L('Bagong password', 'New password')}</label><input type="text" id="np" placeholder="${L('8 characters o higit pa', '8 characters or more')}"><button class="btn" id="sp" style="margin-top:8px">${L('I-save', 'Save')}</button>`;
@@ -2238,8 +2352,10 @@
       };
       $('[data-a=del]', bg).onclick = async () => {
         close();
-        if (await confirmBox(L('Burahin ang account?', 'Delete the account?'), L(`Mabubura ang account ni <b>${esc(u.name)}</b> at lahat ng resulta niya. Hindi na ito maibabalik.`, `The account of <b>${esc(u.name)}</b> and all their results will be deleted. This cannot be undone.`), L('Burahin', 'Delete'), true)) {
-          try { await api('DELETE', '/api/admin/users/' + u.id); toast(L('Nabura ang account.', 'Account deleted.')); refresh(); } catch (e) { toast(e.message); }
+        // Asked first because it is big; then the delete waits 10 seconds on the Undo bar before it reaches the server.
+        if (await confirmBox(L('Burahin ang account?', 'Delete the account?'), L(`Mabubura ang account ni <b>${esc(u.name)}</b> at lahat ng resulta niya. May 10 segundo ka pa para i-undo.`, `The account of <b>${esc(u.name)}</b> and all their results will be deleted. You have 10 seconds to undo.`), L('Burahin', 'Delete'), true)) {
+          Undo.show({ msg: L(`Nabura ang account ni ${u.name}.`, `${u.name}'s account was deleted.`), key: 'user:' + u.id, req: ['DELETE', '/api/admin/users/' + u.id], revert: refresh });
+          refresh();
         }
       };
       $('[data-a=hist]', bg).onclick = async () => {
@@ -2263,6 +2379,8 @@
       <div class="row" style="justify-content:center;margin-top:12px"><button class="btn ghost small" id="qprev">‹ ${L('Nakaraan', 'Previous')}</button><button class="btn ghost small" id="qnext">${L('Susunod', 'Next')} ›</button></div>`;
     const paint = async () => {
       const r = await api('GET', `/api/admin/questions?subject=${st.subject}&q=${encodeURIComponent(st.q)}&page=${st.page}`);
+      const shown = r.rows.filter((q) => !Undo.waiting('q:' + q.id)); // hidden ones on the Undo bar are left out
+      r.total -= r.rows.length - shown.length; r.rows = shown;
       $('#qcount').textContent = L(`${r.total} tanong · pahina ${st.page + 1} sa ${Math.max(1, Math.ceil(r.total / 50))}`, `${r.total} questions · page ${st.page + 1} of ${Math.max(1, Math.ceil(r.total / 50))}`);
       $('#ql').innerHTML = r.rows.map((q) => `
         <div class="review-item">
@@ -2274,8 +2392,11 @@
       $('#qprev').disabled = st.page === 0;
       $('#qnext').disabled = (st.page + 1) * 50 >= r.total;
       $$('[data-e]').forEach((b) => (b.onclick = () => qForm(r.rows.find((x) => x.id === +b.dataset.e), paint)));
-      $$('[data-d]').forEach((b) => (b.onclick = async () => {
-        if (await confirmBox(L('Itago ang tanong?', 'Hide the question?'), L('Hindi na ito lalabas sa mga bagong exam.', 'It will no longer appear in new exams.'), L('Itago', 'Hide'), true)) { try { await api('DELETE', '/api/admin/questions/' + b.dataset.d); toast(L('Naitago.', 'Hidden.')); await paint(); } catch (e) { toast(e.message); } }
+      // Hide: gone from the list at once, sent to the server after Undo's 10 seconds.
+      $$('[data-d]').forEach((b) => (b.onclick = () => {
+        Undo.show({ msg: L('Naitago ang tanong. Hindi na ito lalabas sa mga bagong exam.', 'Question hidden. It will no longer appear in new exams.'), key: 'q:' + b.dataset.d,
+          req: ['DELETE', '/api/admin/questions/' + b.dataset.d], revert: () => { if ($('#ql')) repaint(); } });
+        repaint();
       }));
     };
     const repaint = () => paint().catch((e) => toast(e.message));
@@ -2359,7 +2480,7 @@
     })));
   }
   async function admSets(el) {
-    const rows = await api('GET', '/api/admin/sets');
+    const rows = (await api('GET', '/api/admin/sets')).filter((r) => !Undo.waiting('set:' + r.id)); // deleted ones on the Undo bar are left out
     const by = (m) => rows.filter((r) => r.mode === m);
     // Professional and Subprofessional each open and close (drop down / up). They stay open while the admin works.
     el.innerHTML = `<p class="muted small">${L('Awtomatikong may bagong set bawat linggo. Pwede ka ring gumawa ng bagong set ngayon. Laging naka-on ang Set 1 (libre at nasa Home ng lahat).', 'A new set is made every week by itself. You can also make a new set now. Set 1 is always on (free and on everyone\'s Home).')}</p>
@@ -2368,14 +2489,23 @@
         <div class="list" style="margin-top:8px">${by(m).map((r) => `<div class="list-item"><div class="grow"><b>Set ${r.number}</b><div class="muted small">${fmtDate(r.created_at)} · ${L(`${r.taken} beses nasubukan`, `taken ${r.taken} time(s)`)}</div></div>${r.number === 1 ? `<span class="pill" title="${L('Libreng set na nasa Home ng lahat. Hindi ito nabubura.', 'The free set on everyone\'s Home. It cannot be deleted.')}">${L('Laging naka-on', 'Always on')}</span>` : `<button class="btn ghost small" data-del="${r.id}">${L('Burahin', 'Delete')}</button>`}</div>`).join('') || `<p class="muted small">${L('Wala pang set.', 'No sets yet.')}</p>`}</div>`, { stay: true })).join('')}</div>`;
     foldSync();
     $$('[data-new]', el).forEach((b) => (b.onclick = async () => { b.disabled = true; try { const r = await api('POST', '/api/admin/sets', { mode: b.dataset.new }); toast(L(`Nagawa ang Set ${r.number}.`, `Set ${r.number} made.`)); await admSets(el); } catch (e) { toast(e.message); b.disabled = false; } }));
-    $$('[data-del]', el).forEach((b) => (b.onclick = async () => {
-      if (!(await confirmBox(L('Burahin ang set?', 'Delete the set?'), L('Hindi na ito makikita ng mga user. Mananatili ang mga resulta ng mga nakasubok na.', 'Users will no longer see it. Results of those who took it stay.'), L('Burahin', 'Delete'), true))) return;
-      try { await api('DELETE', '/api/admin/sets/' + b.dataset.del); toast(L('Nabura.', 'Deleted.')); await admSets(el); } catch (e) { toast(e.message); }
+    // Delete: gone from the list at once, sent to the server after Undo's 10 seconds.
+    $$('[data-del]', el).forEach((b) => (b.onclick = () => {
+      const r = rows.find((x) => String(x.id) === b.dataset.del);
+      const again = () => { if (el.isConnected) admSets(el).catch((e) => toast(e.message)); };
+      Undo.show({ msg: L(`Nabura ang Set ${r.number}. Mananatili ang mga resulta ng mga nakasubok na.`, `Set ${r.number} deleted. Results of those who took it stay.`), key: 'set:' + r.id,
+        req: ['DELETE', '/api/admin/sets/' + r.id], revert: again });
+      again();
     }));
   }
   async function admSettings(el) {
     const st = await api('GET', '/api/admin/settings');
     let methods = st.pay_methods;
+    // The saved values, so "Undo" after Save can put them all back.
+    const KEYS = ['premium_required', 'price', 'plan_days', 'pay_note', 'pay_online_on', 'pay_manual_on', 'pay_methods', 'free_practice_daily', 'free_practice_items',
+      'free_mock_daily', 'free_sets', 'ads_on', 'adsense_client', 'adsense_slot', 'admob_banner', 'exam_watermark', 'exam_privacy_strip'];
+    const snap = (o) => Object.fromEntries(KEYS.filter((k) => o[k] !== undefined).map((k) => [k, o[k]]));
+    let before = snap(st);
     const check = (id, on, text) => `<label class="check"><input type="checkbox" id="${id}" ${on ? 'checked' : ''}> ${text}</label>`;
     const TYPES = [['gcash', 'GCash'], ['maya', 'Maya'], ['paypal', 'PayPal'], ['bank', L('Bangko', 'Bank')], ['gotyme', 'GoTyme'], ['shopeepay', 'ShopeePay'], ['other', L('Iba pa', 'Other')]];
     // The name users see comes from the type (GCash, Maya…), the bank's name, or the service's name for "Other".
@@ -2443,16 +2573,26 @@
       ...Object.fromEntries($$('input[type=text][data-k]', c).map((i) => [i.dataset.k, i.value.trim()])),
     }));
     const paintPm = () => {
-      $('#pmList').innerHTML = methods.map(pmCard).join('');
-      $$('#pmList [data-pmdel]').forEach((b) => (b.onclick = () => { methods = collect().filter((m) => m.id !== b.closest('.pm-card').dataset.id); paintPm(); }));
+      if (!$('#pmList')) return; // the admin left this tab
+      $('#pmList').innerHTML = methods.map((m) => ({ ...m, has_qr: m.has_qr && !Undo.waiting('qr:' + m.id) })).map(pmCard).join('');
+      // Remove an account from the form; Undo puts it back in the same place (it is saved only with "Save settings").
+      $$('#pmList [data-pmdel]').forEach((b) => (b.onclick = () => {
+        const all = collect(), at = all.findIndex((m) => m.id === b.closest('.pm-card').dataset.id), gone = all[at];
+        methods = all.filter((m) => m !== gone); paintPm();
+        Undo.show({ msg: L(`Inalis ang ${typeName(gone)}. I-save ang settings para tuluyang maalis.`, `${typeName(gone)} removed. Save the settings to remove it for good.`),
+          revert: () => { if (!$('#pmList')) return; methods = collect(); methods.splice(Math.min(at, methods.length), 0, gone); paintPm(); } });
+      }));
       $$('#pmList [data-qrup]').forEach((inp) => (inp.onchange = async () => {
         const id = inp.closest('.pm-card').dataset.id, file = inp.files[0];
         if (!file) return;
         try { await api('PUT', '/api/admin/pay-qr/' + id, { data: await readImage(file, 800, true) }); methods = collect().map((m) => (m.id === id ? { ...m, has_qr: true } : m)); paintPm(); toast(L('Na-upload ang QR.', 'QR uploaded.')); } catch (e) { toast(e.message); }
       }));
-      $$('#pmList [data-qrdel]').forEach((b) => (b.onclick = async () => {
+      // Remove QR: gone from the form at once, removed on the server after Undo's 10 seconds.
+      $$('#pmList [data-qrdel]').forEach((b) => (b.onclick = () => {
         const id = b.closest('.pm-card').dataset.id;
-        try { await api('PUT', '/api/admin/pay-qr/' + id, { data: '' }); methods = collect().map((m) => (m.id === id ? { ...m, has_qr: false } : m)); paintPm(); } catch (e) { toast(e.message); }
+        methods = collect().map((m) => (m.id === id ? { ...m, has_qr: false } : m)); paintPm();
+        Undo.show({ msg: L('Inalis ang QR.', 'QR removed.'), key: 'qr:' + id, req: ['PUT', '/api/admin/pay-qr/' + id, { data: '' }],
+          revert: () => { if (!$('#pmList')) return; methods = collect().map((m) => (m.id === id ? { ...m, has_qr: true } : m)); paintPm(); } });
       }));
     };
     paintPm();
@@ -2482,7 +2622,13 @@
         });
         methods = saved.pay_methods; paintPm();
         await refreshMe().catch(() => {});
-        toast(L('Na-save ang settings.', 'Settings saved.'));
+        const old = before; before = snap(saved);
+        Undo.show({ msg: L('Na-save ang settings.', 'Settings saved.'), undo: async () => {
+          const back = await api('PUT', '/api/admin/settings', old);
+          before = snap(back);
+          await refreshMe().catch(() => {});
+          if (el.isConnected) await admSettings(el);
+        }, undone: L('Naibalik ang dating settings.', 'The earlier settings are back.') });
       } catch (err) { toast(err.message); }
       btn.disabled = false;
     };
@@ -2646,7 +2792,7 @@
       [/^cse-look$/, isObj], [/^cse-offauth$/, (v) => isObj(v) && !!v.email], [/^cse-bio$/, (v) => isObj(v) && !!v.email],
       [/^cse-ota$/, (v) => isObj(v) && !!v.id], [/^cse-token$/, (v) => typeof v === 'string'],
       [/^cse-pack-\d+$/, (v) => isObj(v) && isObj(v.practice)], [/^cse-map-\d+$/, isObj],
-      [/^cse-mailq-\d+$/, Array.isArray], [/^cse-local-\d+$/, Array.isArray], [/^cse-psub-\d+$/, Array.isArray],
+      [/^cse-mailq-\d+$/, Array.isArray], [/^cse-local-\d+$/, Array.isArray], [/^cse-psub-\d+$/, Array.isArray], [/^cse-undo-\d+$/, Array.isArray],
       [/^cse-fixlog$/, Array.isArray],
     ];
     // Results waiting to be saved: keep the good ones, back up the broken ones (never deleted).
