@@ -145,15 +145,76 @@
      (the server ends the old session) and the login screen says why. */
   const ELSEWHERE = () => L('Na-logout ka dahil nag-login ang account mo sa ibang device. Isang device lang ang pwedeng naka-login sa isang account.',
     'You were logged out because your account logged in on another device. Only one device can be logged in to an account.');
-  function endedElsewhere() {
+  // Answers given so far stay on this device (saved on every tap), so nothing is lost.
+  function endedElsewhere(note = ELSEWHERE()) {
     if (!S.user) return;
+    Live.stop();
     clearTimeout(S.saveT); stopTimer();
     S.exam = null; document.onkeydown = null;
     store.del('cse-token'); store.del('cse-boot');
-    S.user = null; S.authNote = ELSEWHERE();
+    S.user = null; S.authNote = note;
     Tour.stop();
+    document.querySelectorAll('.modal-bg').forEach((m) => m.remove());
     setTimeout(() => go('#/login'));
   }
+  /* Live logout: while logged in, the screen keeps one open line to the server (/api/session/live).
+     When the account logs in on another device, the server tells this screen at once and it logs out
+     within a second. As a backup (the line can drop on mobile data or while the app sleeps), the screen
+     also asks /api/session when it comes back to the front, when the internet comes back, and every
+     20 seconds while it is open. Same speed for Free and Premium: this is about account safety. */
+  const Live = (() => {
+    let ctl = null, retry = 0, retryT = 0, pollT = 0, lastCheck = 0, on = false;
+    const headers = () => { const h = {}; if (IS_APP) { h['X-App'] = '1'; const t = store.get('cse-token'); if (t) h.Authorization = 'Bearer ' + t; } return h; };
+    async function check(force) {
+      if (!S.user || S.offline && !force) return;
+      if (!force && Date.now() - lastCheck < 1500) return;
+      lastCheck = Date.now();
+      try {
+        const res = await fetch(API + '/api/session', { headers: headers(), credentials: IS_APP ? 'omit' : 'same-origin', cache: 'no-store' });
+        if (res.status === 401) { const d = await res.json().catch(() => ({})); endedElsewhere(d.code === 'replaced' ? ELSEWHERE() : L('Na-logout ka. Mag-login ulit.', 'You were logged out. Please log in again.')); }
+      } catch { /* offline: try again later */ }
+    }
+    async function connect() {
+      clearTimeout(retryT);
+      if (!on || ctl || !S.user || !window.ReadableStream) return;
+      const me = ctl = new AbortController();
+      try {
+        const res = await fetch(API + '/api/session/live', { headers: headers(), credentials: IS_APP ? 'omit' : 'same-origin', cache: 'no-store', signal: me.signal });
+        if (res.status === 401) { ctl = null; return check(true); }
+        if (!res.ok || !res.body) throw new Error('no stream');
+        retry = 0;
+        const rd = res.body.getReader(), dec = new TextDecoder();
+        let buf = '';
+        for (;;) {
+          const { value, done } = await rd.read();
+          if (done) break;
+          buf += dec.decode(value, { stream: true });
+          const m = /event: (\w+)/.exec(buf);
+          if (m) { ctl = null; if (m[1] === 'replaced') endedElsewhere(); else check(true); return; }
+          if (buf.length > 4096) buf = buf.slice(-200);
+        }
+      } catch { /* dropped or offline */ }
+      if (ctl !== me) return; // stopped on purpose
+      ctl = null;
+      if (!on) return;
+      check(true);
+      retryT = setTimeout(connect, Math.min(30e3, 1000 * 2 ** retry++));
+    }
+    function start() {
+      if (on) return;
+      on = true; connect();
+      clearInterval(pollT); pollT = setInterval(() => { if (!document.hidden) check(); }, 20e3);
+    }
+    function stop() { on = false; clearTimeout(retryT); clearInterval(pollT); if (ctl) { const c = ctl; ctl = null; c.abort(); } }
+    const wake = () => { if (!on || document.hidden) return; check(); if (!ctl) connect(); };
+    document.addEventListener('visibilitychange', wake);
+    window.addEventListener('focus', wake);
+    window.addEventListener('online', wake);
+    window.addEventListener('pageshow', wake);
+    document.addEventListener('resume', wake); // phone app back from the background
+    return { sync: () => (S.user ? start() : stop()), stop, check };
+  })();
+
   // GET that remembers the last answer, so the screen still works offline.
   async function cachedGet(url) {
     const key = uk('cse-c') + url;
@@ -184,6 +245,31 @@
       throw e;
     }
   }
+
+  /* Premium is faster: the data behind the main screens is fetched ahead of time (when the app opens,
+     comes back to the front, or a finger touches a menu link), so those screens open with fresh data
+     and no "Loading…". Free uses the same saved copies, just without fetching ahead. */
+  const PREFETCH = {
+    home: () => ['/api/attempts', '/api/stats'], history: () => ['/api/attempts', '/api/stats'],
+    sets: () => ['/api/sets?mode=' + myLevel()],
+  };
+  const warmAt = {};
+  function prefetch(names) {
+    if (!S.premium || !S.user || S.offline || document.hidden) return;
+    const urls = [...new Set(names.flatMap((n) => (PREFETCH[n] ? PREFETCH[n]() : [])))];
+    urls.forEach((u) => {
+      if (Date.now() - (warmAt[u] || 0) < 15e3) return;
+      warmAt[u] = Date.now();
+      api('GET', u).then((d) => store.set(uk('cse-c') + u, d)).catch(() => { warmAt[u] = 0; });
+    });
+  }
+  const linkScreen = (href) => (href === '#/' ? 'home' : /^#\/history/.test(href) ? 'history' : /^#\/sets\//.test(href) ? 'sets' : null);
+  document.addEventListener('pointerdown', (e) => {
+    const a = e.target.closest && e.target.closest('a[href^="#/"]');
+    const n = a && linkScreen(a.getAttribute('href'));
+    if (n) prefetch([n]);
+  }, { passive: true, capture: true });
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) prefetch(['home', 'sets']); });
 
   /* Offline: a small banner on top. Practice and downloaded exam sets keep working. */
   function setOffline(on) {
@@ -307,13 +393,66 @@
         }
       } catch { /* no sound on this device */ }
     }
-    return { get, set: (v) => store.set(KEY, { ...get(), ...v }), play, TONES };
+    // A page of paper being turned: a short rustle of noise that sweeps up, then a soft landing.
+    // Made on the device like the other sounds, so it works offline. Follows the Sounds on/off and volume.
+    let noise = null;
+    function flip() {
+      const st = get();
+      if (!st.on || !(st.vol > 0)) return;
+      try {
+        ctx = ctx || new (window.AudioContext || window.webkitAudioContext)();
+        if (ctx.state === 'suspended') ctx.resume();
+        if (!noise) {
+          noise = ctx.createBuffer(1, Math.floor(ctx.sampleRate * 0.4), ctx.sampleRate);
+          const d = noise.getChannelData(0);
+          for (let i = 0; i < d.length; i++) d[i] = (Math.random() * 2 - 1) * (0.6 + 0.4 * Math.sin(i / 37)); // a little grain
+        }
+        const t0 = ctx.currentTime + 0.005, v = Math.max(0.0002, st.vol * 0.5);
+        const burst = (at, len, f0, f1, q, peak) => {
+          const src = ctx.createBufferSource(), bp = ctx.createBiquadFilter(), g = ctx.createGain();
+          src.buffer = noise; bp.type = 'bandpass'; bp.Q.value = q;
+          bp.frequency.setValueAtTime(f0, t0 + at); bp.frequency.exponentialRampToValueAtTime(f1, t0 + at + len);
+          g.gain.setValueAtTime(0.0001, t0 + at);
+          g.gain.exponentialRampToValueAtTime(peak, t0 + at + len * 0.25);
+          g.gain.exponentialRampToValueAtTime(0.0001, t0 + at + len);
+          src.connect(bp); bp.connect(g); g.connect(ctx.destination);
+          src.start(t0 + at, Math.random() * 0.1); src.stop(t0 + at + len + 0.02);
+        };
+        burst(0, 0.17, 1400, 4200, 0.9, v);          // the page sweeping over
+        burst(0.12, 0.12, 900, 500, 0.7, v * 0.45);  // and landing
+      } catch { /* no sound on this device */ }
+    }
+    // A very short buzz on Android phones when something is tapped (Account → Sounds → Vibrate).
+    const buzz = (ms = 8) => { if (get().buzz !== false && navigator.vibrate) try { navigator.vibrate(ms); } catch { /* not allowed */ } };
+    return { get, set: (v) => store.set(KEY, { ...get(), ...v }), play, flip, buzz, TONES };
   })();
   // A soft tap for buttons and menus. Exam choices have their own sounds (see choose()).
+  const PRESS = '.btn, .seg button, .tabs button, .bottomnav a, .topbar a, .topbar button, .subject-btn, details.fold > summary, .navgrid button, .lvl-opt, .lang-flag, .choice, .list-item, .exam-card, .logout-btn';
   document.addEventListener('click', (e) => {
-    const el = e.target.closest && e.target.closest('.btn, .seg button, .tabs button, .bottomnav a, .topbar a, .topbar button, .subject-btn, details.fold > summary, .navgrid button, .lvl-opt, .lang-flag');
-    if (el && !el.disabled) Sound.play('tap');
+    const el = e.target.closest && e.target.closest(PRESS);
+    if (el && !el.disabled && !el.classList.contains('choice')) Sound.play('tap');
   }, true);
+  /* Every button and choice shows the tap: it dips and darkens while pressed, a ripple spreads from the
+     finger, and Android phones give a tiny buzz. A quick tap still shows for a moment, so you can see it. */
+  document.addEventListener('pointerdown', (e) => {
+    if (e.button > 0) return;
+    const el = e.target.closest && e.target.closest(PRESS);
+    if (!el || el.disabled || el.getAttribute('aria-disabled') === 'true') return;
+    el.classList.add('pressed'); el._pt = Date.now();
+    const r = el.getBoundingClientRect(), size = Math.max(r.width, r.height) * 2.2;
+    const rp = document.createElement('span');
+    rp.className = 'ripple';
+    rp.style.cssText = `width:${size}px;height:${size}px;left:${e.clientX - r.left - size / 2}px;top:${e.clientY - r.top - size / 2}px`;
+    el.appendChild(rp);
+    setTimeout(() => rp.remove(), 520);
+    if (e.pointerType === 'touch') Sound.buzz();
+    const up = () => {
+      setTimeout(() => el.classList.remove('pressed'), Math.max(0, 130 - (Date.now() - el._pt)));
+      removeEventListener('pointerup', up, true); removeEventListener('pointercancel', up, true);
+    };
+    addEventListener('pointerup', up, true); addEventListener('pointercancel', up, true);
+  }, { passive: true });
+  document.addEventListener('touchstart', () => {}, { passive: true }); // lets iPhone show :active
 
   /* ---------------- level: Professional or Subprofessional (shown everywhere, for every user) ----------------
      Free and Premium users have the same screens. What differs is what is open (all exam sets, full review,
@@ -720,24 +859,22 @@
   new MutationObserver(() => eyes()).observe(document.body, { childList: true, subtree: true });
 
   /* ---------------- shell ---------------- */
+  const LOGOUT_ICON = '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="M16 17l5-5-5-5"/><path d="M21 12H9"/></svg>';
   function shell(active, body) {
     const isAdmin = S.user && S.user.role === 'admin';
     const links = [['home', '#/', 'Home', '🏠'], ['practice', '#/practice', 'Practice', '📝'], ['history', '#/history', L('Resulta', 'Results'), '📊'], ...(isAdmin ? [['admin', '#/admin', 'Admin', '🛠️']] : []), ['account', '#/account', 'Account', '👤']];
     // "CSE Reviewer" at the top left, the menu in the center (computer; on phones it is the bottom menu, also centered),
-    // and on the right the level (Premium) and the language flag.
-    const lv = myLevel();
+    // and on the right the language flag and a red "Log out" button that is easy to find.
+    // (Level is chosen on Home, Practice and Account; Help is in Account.)
     $app.innerHTML = `
       <header class="topbar">
         <a class="brand" href="#/"><img src="icons/icon.svg" alt="">CSE Reviewer</a>
         <nav class="nav-desktop">${links.map(([k, h, l]) => `<a class="link ${active === k ? 'active' : ''}" href="${h}">${l}</a>`).join('')}</nav>
-        <div class="top-right">${showLevel() ? `<button type="button" class="lvl-chip ${lv} top" id="topLvl" title="${L('Level mo: ', 'Your level: ')}${LEVELS[lv][1]} (${L('pindutin para palitan', 'tap to change')})">${LEVELS[lv][0]}</button>` : ''}<a class="help-btn" id="helpBtn" href="#/help" title="${L('Tulong at gabay', 'Help and guide')}" aria-label="${L('Tulong at gabay', 'Help and guide')}">?</a>${flagBtn()}</div>
+        <div class="top-right">${flagBtn()}${S.user ? `<button type="button" class="logout-btn" id="topLogout" title="${L('Mag-logout', 'Log out')}" aria-label="${L('Mag-logout', 'Log out')}">${LOGOUT_ICON}<span>${L('Logout', 'Log out')}</span></button>` : ''}</div>
       </header>
-      <main class="wrap">${body}${Ads.slot(active)}</main>
+      <main class="wrap${S.keepScroll ? '' : ' page-in'}">${body}${Ads.slot(active)}</main>
       <nav class="bottomnav">${links.map(([k, h, l, ic]) => `<a class="${active === k ? 'active' : ''}" href="${h}"><span class="ic">${ic}</span>${l}</a>`).join('')}</nav>`;
-    if ($('#topLvl')) $('#topLvl').onclick = () => {
-      const next = myLevel() === 'pro' ? 'subpro' : 'pro';
-      setLevel(next); toast(L(`Level: ${LEVELS[next][1]}`, `Level: ${LEVELS[next][1]}`)); route();
-    };
+    if ($('#topLogout')) $('#topLogout').onclick = () => logout();
     Ads.mount();
     foldSync();
     if (!S.keepScroll) window.scrollTo(0, 0);
@@ -873,7 +1010,7 @@
       try { await api('POST', '/api/auth/verify', { code: $('#code').value }); await refreshMe(); toast(L('Na-verify na ang email mo!', 'Your email is verified!')); go('#/'); setTimeout(offerBio, 700); } catch (err) { $('#err').textContent = err.message; }
     };
     $('#resend').onclick = async () => { try { await api('POST', '/api/auth/resend'); toast(codeSent()); } catch (err) { $('#err').textContent = err.message; } };
-    $('#out').onclick = async () => { await api('POST', '/api/auth/logout'); store.del('cse-token'); store.del('cse-boot'); S.user = null; go('#/login'); };
+    $('#out').onclick = () => logout(false);
   }
 
   function viewForgot() {
@@ -1288,19 +1425,20 @@
       </div></div>
       <div class="progress"><i id="prog"></i></div>
       ${S.config.privacy_strip === false ? '' : `<div class="privacy-strip">🔒 ${esc(PRIVACY_LINE())}</div>`}
-      <main class="wrap" id="qwrap" style="padding-bottom:120px"></main>
-      <div class="exam-actions"><div class="inner">
-        <button class="btn ghost" id="prev">‹ ${L('Bumalik', 'Back')}</button>
-        <button class="btn ghost flag-btn" id="flag" title="${L('Markahan para balikan', 'Mark to come back to')}">⚑</button>
-        <button class="btn" id="next">${L('Susunod', 'Next')} ›</button>
+      <main class="paper-desk" id="desk"><div class="paper-stack"><article class="paper" id="qwrap"></article></div></main>
+      <div class="paper-foot"><div class="inner">
+        <button class="btn ghost flag-btn" id="flag" title="${L('Markahan para balikan', 'Mark to come back to')}" aria-label="${L('Markahan para balikan', 'Mark to come back to')}">⚑</button>
+        <button class="page-ind" id="pageInd" type="button" title="${L('Lahat ng tanong', 'All questions')}"><b id="pageNo"></b><small>${matchMedia('(hover: hover) and (pointer: fine)').matches ? L('← → o pindutin ang kanto', '← → or click the corner') : `‹ ${L('i-swipe para mag-flip', 'swipe to turn')} ›`}</small></button>
+        <button class="btn" id="submitBtn">${L('Isumite', 'Submit')} ✓</button>
       </div></div>`;
 
     $('#quit').onclick = async () => {
       await saveAnswers(true);
       if (await confirmBox(L('Lumabas muna?', 'Leave for now?'), L('Naka-save ang mga sagot mo. Maaari mo itong ituloy mamaya mula sa Home.', 'Your answers are saved. You can continue later from Home.') + (ex.deadline ? L(' <b>Tuloy pa rin ang takbo ng oras.</b>', ' <b>The timer keeps running.</b>') : ''), L('Lumabas', 'Leave'))) { stopTimer(); go('#/'); }
     };
-    $('#prev').onclick = () => { if (ex.idx > 0) { ex.idx--; paintQ(); } };
-    $('#next').onclick = () => { if (ex.idx < a.items.length - 1) { ex.idx++; paintQ(); } else submitFlow(); };
+    $('#submitBtn').onclick = submitFlow;
+    $('#pageInd').onclick = openNav;
+    paperSwipe($('#desk'));
     $('#flag').onclick = () => {
       ex.flags.has(ex.idx) ? ex.flags.delete(ex.idx) : ex.flags.add(ex.idx);
       try { localStorage.setItem('cse-flag-' + id, JSON.stringify([...ex.flags])); } catch { /* ignore */ }
@@ -1312,8 +1450,8 @@
       if (!S.exam || document.querySelector('.modal-bg')) return;
       const k = e.key.toUpperCase();
       if (LETTERS.includes(k)) choose(LETTERS.indexOf(k));
-      else if (e.key === 'ArrowRight') $('#next').click();
-      else if (e.key === 'ArrowLeft') $('#prev').click();
+      else if (e.key === 'ArrowRight' || e.key === 'PageDown') turn(1);
+      else if (e.key === 'ArrowLeft' || e.key === 'PageUp') turn(-1);
     };
 
     if (ex.deadline) {
@@ -1334,34 +1472,125 @@
   function sectionStart(items, i) {
     return i === 0 || items[i - 1].subject !== items[i].subject;
   }
-  function paintQ() {
+  /* ---------------- the exam is a test paper ----------------
+     One question per page. No Next/Back buttons: turn the page by swiping left or right, by tapping
+     the folded corner at the bottom of the page, or with the arrow keys. Each turn is a page-flip
+     animation with a paper sound (Account → Sounds). ☰ Lahat / the page number opens every question.
+     Answers are saved on every tap, as before. Premium turns pages a little faster. */
+  const reduceMotion = () => window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const flipMs = () => (S.premium ? 300 : 420);
+  function turn(d, to) {
+    const ex = S.exam; if (!ex || document.querySelector('.modal-bg')) return;
+    const n = ex.a.items.length, next = to ?? ex.idx + d;
+    if (next >= n) { bump(1); return submitFlow(); } // past the last page: hand in the paper
+    if (next < 0) return bump(-1);
+    if (next === ex.idx) return;
+    const dir = next > ex.idx ? 1 : -1;
+    ex.idx = next; paintQ(dir);
+  }
+  // At the first page, a swipe back just nudges the paper.
+  function bump(d) {
+    const p = $('#qwrap'); if (!p || reduceMotion()) return;
+    p.animate([{ transform: 'translateX(0)' }, { transform: `translateX(${d * -10}px)` }, { transform: 'translateX(0)' }], { duration: 220, easing: 'ease-out' });
+  }
+  function paperSwipe(desk) {
+    let x0 = 0, y0 = 0, t0 = 0, id = null, drag = false;
+    const page = () => $('#qwrap');
+    desk.addEventListener('pointerdown', (e) => {
+      if (e.button > 0 || id !== null || e.target.closest('.passage')) return;
+      id = e.pointerId; x0 = e.clientX; y0 = e.clientY; t0 = Date.now(); drag = false;
+    });
+    desk.addEventListener('pointermove', (e) => {
+      if (e.pointerId !== id) return;
+      const dx = e.clientX - x0, dy = e.clientY - y0;
+      if (!drag && Math.abs(dx) > 14 && Math.abs(dx) > Math.abs(dy) * 1.4) drag = true;
+      if (drag && page() && !reduceMotion()) {
+        // The page follows the finger a little, like lifting a sheet.
+        const w = desk.clientWidth || 360, k = Math.max(-1, Math.min(1, dx / w));
+        page().style.transform = k < 0 ? `perspective(1600px) rotateY(${k * 28}deg)` : `translateX(${k * 36}px)`;
+      }
+    });
+    const end = (e) => {
+      if (e.pointerId !== id) return;
+      id = null;
+      const dx = e.clientX - x0, fast = Math.abs(dx) / Math.max(1, Date.now() - t0) > 0.45;
+      const p = page(); if (p) p.style.transform = '';
+      if (!drag) return;
+      drag = false;
+      // Don't count the swipe as a tap on a choice.
+      const stop = (ev) => { ev.stopPropagation(); ev.preventDefault(); };
+      addEventListener('click', stop, { capture: true, once: true }); setTimeout(() => removeEventListener('click', stop, true), 50);
+      if (e.type === 'pointerup' && (Math.abs(dx) > 60 || (fast && Math.abs(dx) > 25))) turn(dx < 0 ? 1 : -1);
+    };
+    desk.addEventListener('pointerup', end);
+    desk.addEventListener('pointercancel', end);
+  }
+  function flip(page, ghost, dir) {
+    const stack = page.parentNode, dur = flipMs();
+    if (S.flipAnim) S.flipAnim.finish();
+    ghost.removeAttribute('id'); ghost.classList.add('paper-ghost'); ghost.setAttribute('aria-hidden', 'true'); ghost.inert = true;
+    Sound.flip();
+    if (reduceMotion()) { page.animate([{ opacity: 0.3 }, { opacity: 1 }], { duration: 120 }); return; }
+    const shade = document.createElement('div'); shade.className = 'flip-shade';
+    let anim;
+    if (dir > 0) {
+      // Forward: the old page lifts from the right edge and turns over to the left.
+      ghost.classList.add('top'); ghost.appendChild(shade); stack.appendChild(ghost);
+      anim = ghost.animate([{ transform: 'perspective(1800px) rotateY(0deg)' }, { transform: 'perspective(1800px) rotateY(-96deg)' }], { duration: dur, easing: 'cubic-bezier(.35,.05,.3,1)' });
+      shade.animate([{ opacity: 0 }, { opacity: 0.55 }], { duration: dur, easing: 'ease-in' });
+    } else {
+      // Back: the previous page turns back over the current one.
+      ghost.classList.add('under'); stack.insertBefore(ghost, page); page.appendChild(shade);
+      anim = page.animate([{ transform: 'perspective(1800px) rotateY(-96deg)' }, { transform: 'perspective(1800px) rotateY(0deg)' }], { duration: dur, easing: 'cubic-bezier(.35,.05,.3,1)' });
+      shade.animate([{ opacity: 0.55 }, { opacity: 0 }], { duration: dur, easing: 'ease-out' });
+    }
+    S.flipAnim = anim;
+    const done = () => { ghost.remove(); shade.remove(); if (S.flipAnim === anim) S.flipAnim = null; };
+    anim.onfinish = done; anim.oncancel = done;
+  }
+  function paintQ(dir = 0) {
     const ex = S.exam; const { a, idx } = ex; const it = a.items[idx];
+    const page = $('#qwrap'); if (!page) return;
+    const ghost = dir && page.firstElementChild ? page.cloneNode(true) : null;
     const chosen = ex.answers[idx];
     const reveal = ex.practice && chosen !== undefined;
     const parts = [...new Set(a.items.map((x) => x.subject))];
     const partNo = parts.indexOf(it.subject) + 1;
     const roman = ['I', 'II', 'III', 'IV', 'V'][partNo - 1] || partNo;
-    const showPassage = it.passage && (idx === 0 || a.items[idx - 1].passage !== it.passage || true);
-    $('#qwrap').innerHTML = `
+    const last = idx === a.items.length - 1;
+    page.innerHTML = `
       <div class="q-section">${a.mode === 'practice' ? esc(subjName(it.subject)) : `Part ${roman}: ${esc(subjName(it.subject))}`}${sectionStart(a.items, idx) && a.mode !== 'practice' ? ` <span class="pill">${L('Bagong bahagi', 'New part')}</span>` : ''}</div>
       <div class="row between"><div class="q-num">${L(`Tanong ${idx + 1} sa ${a.items.length}`, `Question ${idx + 1} of ${a.items.length}`)} · ${esc(it.topic)}</div>${ex.flags.has(idx) ? `<span class="pill warn">⚑ ${L('Minarkahan', 'Marked')}</span>` : ''}</div>
-      ${showPassage ? `<div class="passage">${esc(it.passage)}</div>` : ''}
-      <div class="q-text">${esc(it.question)}</div>
+      ${it.passage ? `<div class="passage">${esc(it.passage)}</div>` : ''}
+      <div class="q-text"><span class="q-no">${idx + 1}.</span> ${esc(it.question)}</div>
       <div class="choices">${it.choices.map((c, i) => {
         let cls = '';
         if (reveal) { if (i === it.answer) cls = 'correct'; else if (i === chosen) cls = 'wrong'; } else if (i === chosen) cls = 'selected';
         return `<button class="choice ${cls}" data-c="${i}" ${reveal ? 'disabled' : ''}><span class="letter">${LETTERS[i]}</span><span>${esc(c)}</span></button>`;
       }).join('')}</div>
       ${reveal ? `<div class="explain"><b>${chosen === it.answer ? L('✅ Tama!', '✅ Correct!') : L(`❌ Mali. Ang tamang sagot ay ${LETTERS[it.answer]}.`, `❌ Wrong. The correct answer is ${LETTERS[it.answer]}.`)}</b><br>${esc(it.explanation || '')}</div>` : ''}
+      ${last ? `<div class="paper-end"><p>${L('— Katapusan ng exam —', '— End of the exam —')}</p><button class="btn" type="button" data-end>${L('Isumite ang exam', 'Submit the exam')} ✓</button></div>` : ''}
+      <div class="page-no">— ${idx + 1} —</div>
+      ${idx > 0 ? `<button class="corner prev" type="button" data-turn="-1" aria-label="${L('Nakaraang pahina', 'Previous page')}"></button>` : ''}
+      ${last ? '' : `<button class="corner next" type="button" data-turn="1" aria-label="${L('Susunod na pahina', 'Next page')}"></button>`}
     `;
-    $$('#qwrap [data-c]').forEach((b) => (b.onclick = () => choose(+b.dataset.c)));
+    $$('[data-c]', page).forEach((b) => (b.onclick = () => choose(+b.dataset.c)));
+    $$('[data-turn]', page).forEach((b) => (b.onclick = () => turn(+b.dataset.turn)));
+    if ($('[data-end]', page)) $('[data-end]', page).onclick = submitFlow;
     const n = Object.keys(ex.answers).length;
     $('#answered').textContent = L(`${n}/${a.items.length} nasagutan`, `${n}/${a.items.length} answered`);
     $('#prog').style.width = pct(n, a.items.length) + '%';
-    $('#prev').disabled = idx === 0;
-    $('#next').textContent = idx === a.items.length - 1 ? L('Isumite ✓', 'Submit ✓') : L('Susunod ›', 'Next ›');
+    $('#pageNo').textContent = `${idx + 1} / ${a.items.length}`;
     $('#flag').classList.toggle('on', ex.flags.has(idx));
-    window.scrollTo(0, 0);
+    if (dir) window.scrollTo(0, 0);
+    if (ghost) flip(page, ghost, dir);
+    // First exam on this device: show once how to turn the page.
+    if (!store.get('cse-flip-hint') && !document.querySelector('.modal-bg')) {
+      store.set('cse-flip-hint', 1);
+      const h = document.createElement('div'); h.className = 'flip-hint'; h.setAttribute('aria-hidden', 'true');
+      h.innerHTML = `<span>👆</span>${L('I-swipe pakaliwa o pindutin ang kanto para mag-flip ng pahina', 'Swipe left or tap the corner to turn the page')}`;
+      $('#desk').appendChild(h); setTimeout(() => h.remove(), 3200);
+    }
   }
   function choose(i) {
     const ex = S.exam; if (!ex) return;
@@ -1371,9 +1600,16 @@
     try { localStorage.setItem('cse-ans-' + ex.a.id, JSON.stringify(ex.answers)); } catch { /* ignore */ }
     ex.dirty = true;
     clearTimeout(S.saveT); S.saveT = setTimeout(() => saveAnswers(), 1500);
-    paintQ();
-    // Auto-advance in mock exams for faster answering.
-    if (!ex.practice && ex.idx < ex.a.items.length - 1) setTimeout(() => { if (S.exam === ex && ex.answers[ex.idx] === i) { ex.idx++; paintQ(); } }, 280);
+    // Only the choices change (no redraw), so the tap shows right away.
+    $$('#qwrap [data-c]').forEach((b) => {
+      const c = +b.dataset.c, it = ex.a.items[ex.idx];
+      b.classList.toggle('selected', !ex.practice && c === i);
+      if (ex.practice) { b.disabled = true; b.classList.toggle('correct', c === it.answer); b.classList.toggle('wrong', c === i && i !== it.answer); }
+    });
+    if (ex.practice) paintQ(); // shows the explanation
+    else { const n = Object.keys(ex.answers).length; $('#answered').textContent = L(`${n}/${ex.a.items.length} nasagutan`, `${n}/${ex.a.items.length} answered`); $('#prog').style.width = pct(n, ex.a.items.length) + '%'; }
+    // Mock exam: the page turns by itself after an answer, for faster answering.
+    if (!ex.practice && ex.idx < ex.a.items.length - 1) { const at = ex.idx; clearTimeout(ex.autoT); ex.autoT = setTimeout(() => { if (S.exam === ex && ex.idx === at && ex.answers[at] === i && !document.querySelector('.modal-bg')) turn(1); }, S.premium ? 320 : 420); }
   }
   async function saveAnswers(force) {
     const ex = S.exam; if (!ex || (!ex.dirty && !force)) return;
@@ -1391,7 +1627,7 @@
         `<button data-i="${i}" class="${ex.answers[i] !== undefined ? 'ans' : ''} ${ex.flags.has(i) ? 'flag' : ''} ${i === ex.idx ? 'cur' : ''}">${i + 1}</button>`).join('')}</div>`).join('')}
       <button class="btn block" data-submit style="margin-top:18px">${L('Isumite ang exam', 'Submit exam')}</button>`, (bg, cl) => {
       $('[data-x]', bg).onclick = cl;
-      $$('[data-i]', bg).forEach((b) => (b.onclick = () => { ex.idx = +b.dataset.i; cl(); paintQ(); }));
+      $$('[data-i]', bg).forEach((b) => (b.onclick = () => { cl(); turn(0, +b.dataset.i); }));
       $('[data-submit]', bg).onclick = () => { cl(); submitFlow(); };
     });
     return close;
@@ -1613,10 +1849,10 @@
   }
 
   /* ---------------- account ----------------
-     Log out is on the right of the "Account" title. The language choice is always visible (not in a drop down). */
+     Log out (red) is on the right of the "Account" title, and also at the top right of every screen. The language choice is always visible (not in a drop down). */
   function viewAccount() {
     shell('account', `
-      <div class="row between page-head"><h1>Account</h1><button class="btn ghost small" id="logout" type="button">🚪 ${L('Mag-logout', 'Log out')}</button></div>
+      <div class="row between page-head"><h1>Account</h1><button class="btn danger-outline small" id="logout" type="button">${LOGOUT_ICON} ${L('Mag-logout', 'Log out')}</button></div>
       <div class="card">
         <div class="row between"><div><b>${esc(S.user.name)}</b><div class="muted small">${esc(S.user.email)}</div></div>
         <span class="pill">${S.user.role === 'admin' ? 'Admin' : 'Reviewer'}</span></div>
@@ -1636,8 +1872,9 @@
         ? `<div id="bioCard"><p class="muted small" style="margin:0">${L('Tinitingnan…', 'Checking…')}</p></div>`
         : `<p class="muted small" style="margin:0 0 10px">${L('Mag-login gamit ang face, fingerprint o Windows Hello, walang password. Para sa Premium ito. Pwede ka pa ring mag-login gamit ang <b>code sa email</b>.', 'Log in with your face, fingerprint or Windows Hello, no password. This is for Premium. You can still log in with an <b>email code</b>.')}</p><a class="btn secondary" href="#/premium">⭐ ${L('Kumuha ng Premium', 'Get Premium')}</a>`)}
       ${fold('acc-sound', `<h3>🔊 ${L('Tunog', 'Sounds')}</h3><span class="pill" id="sndPill">${Sound.get().on ? L('Naka-on', 'On') : L('Naka-off', 'Off')}</span>`, `
-        <p class="muted small" style="margin:0 0 10px">${L('Maiikling tunog kapag pumindot, tama o mali sa practice, natapos ang exam, at 5 minutong natitira. Gumagana offline.', 'Short sounds when you tap, for right or wrong in practice, when an exam ends, and at 5 minutes left. Works offline.')}</p>
+        <p class="muted small" style="margin:0 0 10px">${L('Maiikling tunog kapag pumindot, pag-flip ng pahina sa exam, tama o mali sa practice, natapos ang exam, at 5 minutong natitira. Gumagana offline.', 'Short sounds when you tap, a page turn in the exam, right or wrong in practice, when an exam ends, and at 5 minutes left. Works offline.')}</p>
         <label class="check"><input type="checkbox" id="sndOn" ${Sound.get().on ? 'checked' : ''}> ${L('Naka-on ang tunog', 'Sounds on')}</label>
+        ${navigator.vibrate ? `<label class="check"><input type="checkbox" id="sndBuzz" ${Sound.get().buzz !== false ? 'checked' : ''}> ${L('Bahagyang vibrate kapag pumindot', 'Light vibration when you tap')}</label>` : ''}
         <label for="sndVol">${L('Lakas', 'Volume')}</label><input type="range" id="sndVol" min="0" max="100" step="5" value="${Math.round(Sound.get().vol * 100)}">
         <label>${L('Tono', 'Tone')}</label>
         <div class="seg" id="sndTone">${[['soft', L('Malambing', 'Soft')], ['marimba', 'Marimba'], ['retro', 'Retro']].map(([k, n]) => `<button type="button" data-tone="${k}" class="${Sound.get().theme === k ? 'active' : ''}">${n}</button>`).join('')}</div>
@@ -1661,22 +1898,31 @@
     }));
     $$('[data-level]').forEach((b) => (b.onclick = () => { setLevel(b.dataset.level); route(); }));
     $('#sndOn').onchange = (e) => { Sound.set({ on: e.target.checked }); $('#sndPill').textContent = e.target.checked ? L('Naka-on', 'On') : L('Naka-off', 'Off'); Sound.play('notify'); };
+    if ($('#sndBuzz')) $('#sndBuzz').onchange = (e) => { Sound.set({ buzz: e.target.checked }); if (e.target.checked) Sound.buzz(20); };
     $('#sndVol').oninput = (e) => Sound.set({ vol: Number(e.target.value) / 100 });
     $('#sndVol').onchange = () => Sound.play('correct');
     $$('#sndTone [data-tone]').forEach((b) => (b.onclick = () => { Sound.set({ theme: b.dataset.tone }); $$('#sndTone button').forEach((x) => x.classList.toggle('active', x === b)); setTimeout(() => Sound.play('finish'), 120); }));
-    $('#sndTest').onclick = () => { const seq = ['tap', 'correct', 'wrong', 'finish']; seq.forEach((n, i) => setTimeout(() => Sound.play(n), i * 650)); };
+    $('#sndTest').onclick = () => { const seq = ['tap', 'flip', 'correct', 'wrong', 'finish']; seq.forEach((n, i) => setTimeout(() => (n === 'flip' ? Sound.flip() : Sound.play(n)), i * 650)); };
     if ($('#zreset')) $('#zreset').onclick = (e) => { e.preventDefault(); store.set('cse-look', { ...look(), zoom: 1 }); applyLook(); e.target.parentNode.remove(); };
     if ($('#bioCard')) paintBioCard();
     $('#pwf').onsubmit = async (e) => {
       e.preventDefault();
       try { await api('POST', '/api/me/password', { current: $('#cur').value, password: $('#npw').value }); toast(L('Napalitan na ang password.', 'Password changed.')); e.target.reset(); $('#err').textContent = ''; } catch (err) { $('#err').textContent = err.message; }
     };
-    $('#logout').onclick = async () => {
-      if (local.all().some((a) => a.finished_at) && !(await confirmBox(L('Mag-logout?', 'Log out?'), L('May mga resulta kang ginawa offline na hindi pa naka-save online. Mase-save pa rin ang mga ito kapag nag-login ka ulit sa device na ito.', 'You have results made offline that are not saved online yet. They will still be saved when you log in again on this device.'), L('Mag-logout', 'Log out')))) return;
-      try { await api('POST', '/api/auth/logout'); } catch { /* offline: still log out on this device */ }
-      store.del('cse-token'); store.del('cse-boot'); S.user = null; go('#/login');
-    };
+    $('#logout').onclick = () => logout();
     if (window._installPrompt) { const b = $('#install'); b.hidden = false; b.onclick = () => window._installPrompt.prompt(); }
+  }
+
+  /* Log out: the red "Log out" button at the top right of every screen, and at the top of Account.
+     It always asks first, so a stray tap does not log you out. */
+  async function logout(ask = true) {
+    const unsaved = local.all().some((a) => a.finished_at);
+    if (ask && !(await confirmBox(L('Mag-logout?', 'Log out?'), unsaved
+      ? L('May mga resulta kang ginawa offline na hindi pa naka-save online. Mase-save pa rin ang mga ito kapag nag-login ka ulit sa device na ito.', 'You have results made offline that are not saved online yet. They will still be saved when you log in again on this device.')
+      : L('Kailangan mong mag-login ulit para magamit ang app sa device na ito.', 'You will need to log in again to use the app on this device.'), L('Mag-logout', 'Log out'), true))) return;
+    Live.stop();
+    api('POST', '/api/auth/logout').catch(() => { /* offline: still log out on this device */ });
+    store.del('cse-token'); store.del('cse-boot'); S.user = null; S.exam = null; Tour.stop(); go('#/login');
   }
 
   async function paintBioCard() {
@@ -2053,23 +2299,22 @@
 
   /* ---------------- guide for new Premium users, and Help ----------------
      The first time a Premium user opens Home, a short guide points at each part of the screen
-     (level, Set 1, all exam sets, Practice, Results, Account, Help, language) one at a time.
+     (level, Set 1, all exam sets, Practice, Results, Account, Log out, language) one at a time.
      It shows once per account (saved on the server and on the device). It can be skipped, and
-     replayed any time from Help (the "?" at the top right, or Account → Help and guide). */
+     replayed any time from Account → Help and guide. */
   const Tour = (() => {
     let box = null, i = 0, steps = [], tick = 0, wait = 0;
     const visible = (sel) => $$(sel).find((el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0 && getComputedStyle(el).visibility !== 'hidden'; });
     const STEPS = () => [
-      { sel: null, t: L('Maligayang pagdating sa Premium! ⭐', 'Welcome to Premium! ⭐'), x: L('Ipapakita namin kung saan makikita ang lahat. Mga 1 minuto lang ito. Pwede mo itong laktawan at ulitin anumang oras sa <b>?</b> (Tulong).', 'We will show you where everything is. It takes about a minute. You can skip it and replay it any time from <b>?</b> (Help).') },
+      { sel: null, t: L('Maligayang pagdating sa Premium! ⭐', 'Welcome to Premium! ⭐'), x: L('Ipapakita namin kung saan makikita ang lahat. Mga 1 minuto lang ito. Pwede mo itong laktawan at ulitin anumang oras sa <b>Account → Tulong</b>.', 'We will show you where everything is. It takes about a minute. You can skip it and replay it any time from <b>Account → Help</b>.') },
       { sel: '.level-switch', t: L('1. Piliin ang level mo', '1. Choose your level'), x: L('<b>PRO</b> para sa Professional, <b>SUBPRO</b> para sa Subprofessional. Nasa ibaba agad ang mock exam ng napili mo.', '<b>PRO</b> for Professional, <b>SUBPRO</b> for Subprofessional. Its mock exam is right below.') },
       { sel: '[data-set1]', t: L('2. Simulan ang mock exam', '2. Start a mock exam'), x: L('Pindutin para simulan ang <b>Set 1</b>. Kapareho ng totoong CSE ang dami ng tanong at oras. Naka-save ang sagot mo kahit isara ang app.', 'Tap to start <b>Set 1</b>. Same number of questions and time as the real CSE. Your answers are saved even if you close the app.') },
       { sel: '.level-card a[href^="#/sets/"]', t: L('3. Lahat ng exam set', '3. All exam sets'), x: L('Dito ang Set 1, 2, 3… (may bago bawat linggo) at ang <b>Bagong halo</b> na bagong random na exam.', 'Set 1, 2, 3… are here (a new one every week), plus <b>New mix</b>, a new random exam.') },
       { sel: '.bottomnav a[href="#/practice"], .nav-desktop a[href="#/practice"]', t: L('4. Practice kada subject', '4. Practice by subject'), x: L('Pumili ng subject at ilang tanong. Agad makikita kung tama o mali, kasama ang paliwanag.', 'Pick a subject and how many questions. You see right away if you are right or wrong, with an explanation.') },
       { sel: '.bottomnav a[href="#/history"], .nav-desktop a[href="#/history"]', t: L('5. Mga resulta', '5. Results'), x: L('Lahat ng exam mo, score kada subject, at buong review. Sa resulta ng exam: <b>PDF, email at print</b>.', 'All your exams, score by subject, and the full review. On an exam result: <b>PDF, email and print</b>.') },
       { sel: '.bottomnav a[href="#/account"], .nav-desktop a[href="#/account"]', t: L('6. Account', '6. Account'), x: L('Itsura ng screen (Malambot, Sepia, Madilim), <b>mabilis na login</b> gamit ang face o fingerprint, tunog, password, at Premium.', 'Screen look (Soft, Sepia, Dark), <b>quick login</b> with face or fingerprint, sounds, password, and Premium.') },
-      { sel: '#topLvl', t: L('7. Mabilis na palit ng level', '7. Switch level quickly'), x: L('Pindutin ang PRO / SUBPRO dito sa itaas para magpalit ng level kahit nasaang screen ka.', 'Tap PRO / SUBPRO up here to switch level from any screen.') },
-      { sel: '#helpBtn', t: L('8. Tulong', '8. Help'), x: L('Nakalimutan kung saan o paano? Pindutin ang <b>?</b> para sa mga sagot sa madalas itanong at para ulitin ang gabay na ito.', 'Forgot where or how? Tap <b>?</b> for answers to common questions and to replay this guide.') },
-      { sel: '.topbar .lang-flag', t: L('9. Wika', '9. Language'), x: L('Pindutin ang flag para magpalit sa English o Tagalog.', 'Tap the flag to switch between English and Tagalog.') },
+      { sel: '#topLogout', t: L('7. Mag-logout', '7. Log out'), x: L('Ang pulang <b>Logout</b> sa kanang itaas. Magtatanong muna ito bago ka i-logout. Isang device lang ang pwedeng naka-login: kapag nag-login ka sa iba, kusang malo-logout ang device na ito.', 'The red <b>Log out</b> at the top right. It asks first before logging you out. Only one device can be logged in: when you log in on another one, this device logs out by itself.') },
+      { sel: '.topbar .lang-flag', t: L('8. Wika', '8. Language'), x: L('Pindutin ang flag para magpalit sa English o Tagalog. Ang <b>Tulong</b> at ang gabay na ito ay nasa <b>Account</b>.', 'Tap the flag to switch between English and Tagalog. <b>Help</b> and this guide are in <b>Account</b>.') },
       { sel: null, t: L('Handa ka na! 🎉', 'You are ready! 🎉'), x: L('Gumagana ang app kahit offline. Good luck sa exam mo!', 'The app works even offline. Good luck on your exam!') },
     ];
     function place() {
@@ -2159,16 +2404,16 @@
       </div>
       <h2>${L('Mga madalas itanong', 'Common questions')}</h2>
       <div class="stack">
-      ${Q('mock', L('Paano mag-mock exam?', 'How do I take a mock exam?'), L(`<ol><li>Sa <a href="#/">Home</a>, piliin ang <b>PRO</b> (Professional) o <b>SUBPRO</b> (Subprofessional).</li><li>Pindutin ang <b>▶ Simulan ang Set 1</b>, o <b>Lahat ng exam set</b> para pumili ng ibang set o <b>Bagong halo</b>.</li><li>Habang nag-e-exam: <b>☰ Lahat</b> para makita ang lahat ng tanong, <b>⚑</b> para markahan at balikan, at <b>Isumite ✓</b> sa dulo.</li></ol>Tuloy-tuloy ang timer kahit isara ang app, pero naka-save ang mga sagot mo. Ituloy ito mula sa Home.`,
-        `<ol><li>On <a href="#/">Home</a>, choose <b>PRO</b> (Professional) or <b>SUBPRO</b> (Subprofessional).</li><li>Tap <b>▶ Start Set 1</b>, or <b>All exam sets</b> to pick another set or <b>New mix</b>.</li><li>During the exam: <b>☰ All</b> shows every question, <b>⚑</b> marks one to come back to, and <b>Submit ✓</b> is at the end.</li></ol>The timer keeps running even if you close the app, but your answers are saved. Continue it from Home.`))}
+      ${Q('mock', L('Paano mag-mock exam?', 'How do I take a mock exam?'), L(`<ol><li>Sa <a href="#/">Home</a>, piliin ang <b>PRO</b> (Professional) o <b>SUBPRO</b> (Subprofessional).</li><li>Pindutin ang <b>▶ Simulan ang Set 1</b>, o <b>Lahat ng exam set</b> para pumili ng ibang set o <b>Bagong halo</b>.</li><li>Parang papel ang exam: <b>i-swipe</b> pakaliwa o pakanan (o pindutin ang nakatiklop na kanto) para ilipat ang pahina. <b>☰ Lahat</b> para makita ang lahat ng tanong, <b>⚑</b> para markahan at balikan, at <b>Isumite ✓</b> kapag tapos na.</li></ol>Tuloy-tuloy ang timer kahit isara ang app, pero naka-save ang mga sagot mo. Ituloy ito mula sa Home.`,
+        `<ol><li>On <a href="#/">Home</a>, choose <b>PRO</b> (Professional) or <b>SUBPRO</b> (Subprofessional).</li><li>Tap <b>▶ Start Set 1</b>, or <b>All exam sets</b> to pick another set or <b>New mix</b>.</li><li>The exam is like a paper test: <b>swipe</b> left or right (or tap the folded corner) to turn the page. <b>☰ All</b> shows every question, <b>⚑</b> marks one to come back to, and <b>Submit ✓</b> when you are done.</li></ol>The timer keeps running even if you close the app, but your answers are saved. Continue it from Home.`))}
       ${Q('set1', L('Ano ang Set 1 at ang mga exam set?', 'What are Set 1 and the exam sets?'), L('Ang <b>Set 1</b> ay laging nasa Home at bukas sa lahat. May bagong set bawat linggo (Set 2, 3…), makikita sa <b>Lahat ng exam set</b>, pinakabago muna. Ang <b>Bagong halo</b> ay bagong random na exam tuwing pipindutin.',
         '<b>Set 1</b> is always on Home and open to everyone. A new set comes every week (Set 2, 3…), listed in <b>All exam sets</b>, newest first. <b>New mix</b> is a new random exam every time.'))}
       ${Q('practice', L('Paano mag-practice kada subject?', 'How do I practice by subject?'), L('Pumunta sa <a href="#/practice">Practice</a>, pumili ng level, subject, ilang tanong at timer, tapos <b>Simulan ang practice</b>. Agad makikita kung tama o mali, kasama ang paliwanag.', 'Go to <a href="#/practice">Practice</a>, pick the level, subject, number of questions and timer, then <b>Start practice</b>. You see right away if you are right or wrong, with an explanation.'))}
       ${Q('results', L('Saan ang resulta, PDF, email at print?', 'Where are results, PDF, email and print?'), L('Sa <a href="#/history">Resulta</a> ang lahat ng exam mo at ang score kada subject. Buksan ang isang exam para sa review. Sa Premium, may <b>I-save bilang PDF</b>, <b>Ipadala sa email</b> at <b>Print</b> sa itaas ng resulta (gumagana offline ang PDF at Print).', '<a href="#/history">Results</a> has all your exams and your score by subject. Open an exam for the review. With Premium, <b>Save as PDF</b>, <b>Send to email</b> and <b>Print</b> are at the top of the result (PDF and Print work offline).'))}
-      ${Q('look', L('Paano palitan ang level, wika, itsura at tunog?', 'How do I change the level, language, look and sounds?'), L('<b>Level:</b> pindutin ang PRO / SUBPRO sa kanang itaas o sa Home.<br><b>Wika:</b> pindutin ang flag sa kanang itaas.<br><b>Itsura at Tunog:</b> sa <a href="#/account">Account</a>. Para mag-zoom, i-pinch ang screen gamit ang dalawang daliri.', '<b>Level:</b> tap PRO / SUBPRO at the top right or on Home.<br><b>Language:</b> tap the flag at the top right.<br><b>Look and Sounds:</b> in <a href="#/account">Account</a>. To zoom, pinch the screen with two fingers.'))}
+      ${Q('look', L('Paano palitan ang level, wika, itsura at tunog?', 'How do I change the level, language, look and sounds?'), L('<b>Level:</b> pindutin ang PRO / SUBPRO sa Home, Practice o Account.<br><b>Wika:</b> pindutin ang flag sa kanang itaas.<br><b>Itsura at Tunog:</b> sa <a href="#/account">Account</a>. Para mag-zoom, i-pinch ang screen gamit ang dalawang daliri.', '<b>Level:</b> tap PRO / SUBPRO on Home, Practice or Account.<br><b>Language:</b> tap the flag at the top right.<br><b>Look and Sounds:</b> in <a href="#/account">Account</a>. To zoom, pinch the screen with two fingers.'))}
       ${Q('bio', L('Paano mag-login gamit ang face o fingerprint?', 'How do I log in with face or fingerprint?'), L('Sa <a href="#/account">Account</a> → <b>Mabilis na login</b>, piliin ang Face o Fingerprint (Premium). Sa susunod, pindutin lang ito sa login screen. Pwede ka ring mag-login gamit ang <b>code sa email</b>, walang password.', 'In <a href="#/account">Account</a> → <b>Quick login</b>, choose Face or Fingerprint (Premium). Next time, just tap it on the login screen. You can also log in with an <b>email code</b>, no password.'))}
       ${Q('offline', L('Gumagana ba kahit walang internet?', 'Does it work without internet?'), L('Oo, sa Premium: lahat ng practice, mock exam at naka-save na exam set. Ise-save online ang mga resulta kapag may internet na. Kailangang mag-online kahit isang beses bawat 30 araw. Kailangan ng internet sa libreng plan.', 'Yes, with Premium: all practice, mock exams and saved exam sets. Results are saved online when the internet is back. Go online at least once every 30 days. The free plan needs internet.'))}
-      ${Q('logout', L('Bakit ako na-logout?', 'Why was I logged out?'), L('<b>Isang device lang ang pwedeng naka-login</b> sa isang account. Kapag nag-login ka sa ibang phone o computer, malo-logout ang nauna. Kung hindi ikaw ang nag-login, mag-login ulit at palitan agad ang password sa <a href="#/account">Account</a>.', '<b>Only one device can be logged in</b> to an account. When you log in on another phone or computer, the first one is logged out. If it was not you, log in again and change your password right away in <a href="#/account">Account</a>.'))}
+      ${Q('logout', L('Bakit ako na-logout?', 'Why was I logged out?'), L('<b>Isang device lang ang pwedeng naka-login</b> sa isang account. Kapag nag-login ka sa ibang phone o computer, malo-logout agad ang nauna (sa loob ng ilang segundo). Kung hindi ikaw ang nag-login, mag-login ulit at palitan agad ang password sa <a href="#/account">Account</a>.', '<b>Only one device can be logged in</b> to an account. When you log in on another phone or computer, the first one is logged out within seconds. If it was not you, log in again and change your password right away in <a href="#/account">Account</a>.'))}
       ${Q('pay', L('Paano magbayad o i-extend ang Premium?', 'How do I pay or extend Premium?'), L('Sa <a href="#/premium">Account → Premium</a>. Magbayad online (bukas agad ang Premium), o manual: magpadala sa account na nakalista, tapos ilagay ang reference number at screenshot ng resibo. May email kapag na-approve na.', 'In <a href="#/premium">Account → Premium</a>. Pay online (Premium opens right away), or manually: send to a listed account, then enter the reference number and a screenshot of the receipt. You get an email once it is approved.'))}
       </div>`);
     $('#tourAgain').onclick = () => Tour.replay();
@@ -2224,7 +2469,7 @@
   document.addEventListener('visibilitychange', () => { if (document.hidden) saveAnswers(); });
   window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); window._installPrompt = e; });
 
-  function applyMe(me) { S.user = me.user; S.config = me.config; S.premium = me.premium; S.practiceToday = me.practice_today || 0; S.mockToday = me.mock_today || 0; }
+  function applyMe(me) { S.user = me.user; S.config = me.config; S.premium = me.premium; S.practiceToday = me.practice_today || 0; S.mockToday = me.mock_today || 0; Live.sync(); document.documentElement.classList.toggle('premium', !!S.premium); }
   async function refreshMe() {
     const me = await api('GET', '/api/me');
     if (!me.user && me.ended === 'replaced') { S.authNote = ELSEWHERE(); S.exam = null; stopTimer(); }
@@ -2253,7 +2498,7 @@
         : `<div class="boot">${L('Hindi makakonekta sa server. I-refresh ang page.', 'Cannot connect to the server. Please refresh the page.')}</div>`;
       return;
     }
-    if (!S.offline) syncNow();
+    if (!S.offline) { syncNow(); setTimeout(() => prefetch(['sets']), 1200); }
   }
   init();
 

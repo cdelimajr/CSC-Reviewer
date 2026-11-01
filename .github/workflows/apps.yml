@@ -86,6 +86,8 @@ jobs:
           cat "$f"
       - name: Fingerprint / face login permission
         run: grep -q USE_BIOMETRIC android/app/src/main/AndroidManifest.xml || sed -i 's#</manifest>#    <uses-permission android:name="android.permission.USE_BIOMETRIC" />\n</manifest>#' android/app/src/main/AndroidManifest.xml
+      - name: Light vibration when tapping (VIBRATE)
+        run: grep -q 'permission.VIBRATE' android/app/src/main/AndroidManifest.xml || sed -i 's#</manifest>#    <uses-permission android:name="android.permission.VIBRATE" />\n</manifest>#' android/app/src/main/AndroidManifest.xml
       - name: Version number
         run: sed -i -E "s/versionCode [0-9]+/versionCode ${{ github.run_number }}/; s/versionName \"[^\"]*\"/versionName \"$APP_VERSION\"/" android/app/build.gradle
       - name: App icons and splash screen
