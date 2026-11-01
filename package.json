@@ -1,6 +1,6 @@
 {
   "name": "cse-reviewer",
-  "version": "1.17.0",
+  "version": "1.17.1",
   "description": "CSE Reviewer: libreng reviewer at mock exam para sa Philippine Civil Service Exam (Professional at Subprofessional).",
   "main": "src/server.js",
   "scripts": {

@@ -3,7 +3,7 @@
   'use strict';
   const $app = document.getElementById('app');
   const LETTERS = ['A', 'B', 'C', 'D'];
-  const APP_VERSION = '1.17.0'; // keep in step with package.json and docs/DOKUMENTASYON.md
+  const APP_VERSION = '1.17.1'; // keep in step with package.json and docs/DOKUMENTASYON.md
   const S = { user: null, meta: null, exam: null, timer: null, saveT: null };
 
   /* ---------------- helpers ---------------- */
@@ -617,7 +617,9 @@
     const h = bg.querySelector('h1, h2, h3'); if (h) h.id = id;
     const onKey = (e) => { if (e.key === 'Escape') { e.stopPropagation(); bg.dispatchEvent(new Event('esc')); } };
     const close = () => { bg.remove(); document.removeEventListener('keydown', onKey, true); if (back && back.isConnected && back.focus) back.focus({ preventScroll: true }); };
-    bg.addEventListener('click', (e) => { if (e.target === bg) close(); });
+    // A tap outside the window works like its Back/Close button, so a question that waits for an answer gets "no"
+    // (before, the window closed but the question stayed open, and the button that asked it stayed disabled).
+    bg.addEventListener('click', (e) => { if (e.target === bg) bg.dispatchEvent(new Event('esc')); });
     bg.addEventListener('esc', () => { const x = bg.querySelector('[data-x]'); if (x) x.click(); else close(); });
     document.addEventListener('keydown', onKey, true);
     document.body.appendChild(bg);
@@ -1719,6 +1721,12 @@
   }
 
   async function startExam(mode, opts = {}) {
+    // Free plan: today's limit is already used, so say it now instead of after the privacy and start windows.
+    if (isFree() && !S.offline && S.countDay === phDay()) { // counts from today (a new day: the server decides)
+      const f = S.config.free;
+      if (mode !== 'practice' && (S.mockToday || 0) >= f.mock_daily) { toast(serverText('Isang mock exam lang kada araw sa libreng plan. Bumalik bukas o kumuha ng Premium para walang limit.')); return go('#/premium'); }
+      if (mode === 'practice' && (S.practiceToday || 0) >= f.practice_daily) { toast(serverText(`Naubos mo na ang ${f.practice_daily} libreng practice ngayong araw. Bumalik bukas o kumuha ng Premium para walang limit.`)); return go('#/premium'); }
+    }
     if (!(await privacyNotice())) return;
     if (mode !== 'practice') {
       const e = S.meta.exams[mode];
@@ -2507,7 +2515,12 @@
     if ($('#bioCard')) paintBioCard();
     $('#pwf').onsubmit = async (e) => {
       e.preventDefault();
-      try { await api('POST', '/api/me/password', { current: $('#cur').value, password: $('#npw').value }); toast(L('Napalitan na ang password.', 'Password changed.')); e.target.reset(); $('#err').textContent = ''; } catch (err) { $('#err').textContent = err.message; }
+      const npw = $('#npw').value;
+      try {
+        await api('POST', '/api/me/password', { current: $('#cur').value, password: npw });
+        OffAuth.remember(npw).catch(() => {}); // offline login on this device takes the new password, not the old one
+        toast(L('Napalitan na ang password.', 'Password changed.')); e.target.reset(); $('#err').textContent = '';
+      } catch (err) { $('#err').textContent = err.message; }
     };
     if ($('#accTour')) $('#accTour').onclick = () => Tour.replay();
     paintFixCard();
@@ -3330,7 +3343,7 @@
   document.addEventListener('visibilitychange', () => { if (document.hidden) saveAnswers(); });
   window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); window._installPrompt = e; });
 
-  function applyMe(me) { S.user = me.user; S.config = me.config; S.premium = me.premium; S.practiceToday = me.practice_today || 0; S.mockToday = me.mock_today || 0; Live.sync(); document.documentElement.classList.toggle('premium', !!S.premium); }
+  function applyMe(me) { S.user = me.user; S.config = me.config; S.premium = me.premium; S.practiceToday = me.practice_today || 0; S.mockToday = me.mock_today || 0; S.countDay = phDay(); Live.sync(); document.documentElement.classList.toggle('premium', !!S.premium); }
   async function refreshMe() {
     const me = await api('GET', '/api/me');
     if (!me.user && me.ended === 'replaced') { S.authNote = ELSEWHERE(); S.exam = null; stopTimer(); }
