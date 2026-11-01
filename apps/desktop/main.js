@@ -20,20 +20,32 @@ function createWindow() {
   });
 }
 
-// Automatic updates from GitHub Releases: a new version downloads quietly in the background and is
-// installed when the user closes the app, so it never interrupts an exam. The next start is the new version.
+// Updates from GitHub Releases: a new version downloads quietly in the background. Then the screens ask
+// "Update now?" (never during an exam). Update: it installs and the app opens again on the new version,
+// with "Updating the app…" on screen and a soft chime after (see public/app.js). Later: it asks again later.
 // Only the installed app (Setup.exe) can update itself; the portable .exe cannot.
 // Checks: Premium every 15 minutes (and on coming back to the window, at most once a minute);
 // Free every hour (on coming back, at most once every 10 minutes). The screens say which (see app.js).
-let fast = false;
+let fast = false, ready = false, install = null;
 ipcMain.on('update:speed', (e, on) => { fast = !!on; });
+ipcMain.handle('update:ready', () => ready);
+ipcMain.handle('update:install', () => {
+  if (!ready || !install) throw new Error('no update');
+  setTimeout(install, 300);
+  return true;
+});
 function autoUpdate() {
   if (!app.isPackaged || process.env.PORTABLE_EXECUTABLE_DIR) return;
   let updater;
   try { ({ autoUpdater: updater } = require('electron-updater')); } catch { return; }
+  install = () => updater.quitAndInstall(true, true); // silent install, then open the app again
   updater.autoDownload = true;
-  updater.autoInstallOnAppQuit = true;
+  updater.autoInstallOnAppQuit = false; // only when the user says yes
   updater.on('error', () => {}); // offline or no release yet: try again later
+  updater.on('update-downloaded', () => {
+    ready = true;
+    for (const w of BrowserWindow.getAllWindows()) w.webContents.send('update:ready');
+  });
   let last = 0;
   const check = (min) => {
     if (Date.now() - last < min) return;

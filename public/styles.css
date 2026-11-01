@@ -603,3 +603,8 @@ html[data-theme] #undo { background: var(--text); color: var(--card); }
 html[data-theme] #undo .u-btn { background: var(--card); color: var(--primary); }
 html[data-theme] #undo .u-time { background: var(--primary); }
 @media (prefers-reduced-motion: reduce) { #undo { transition: opacity .2s; transform: translate(-50%, 0); } }
+/* "Updating the app…" screen while a new version is switched in */
+#updating { position: fixed; inset: 0; z-index: 90; display: grid; place-items: center; text-align: center; background: var(--bg); padding: 24px; }
+#updating b { display: block; font-size: 1.125rem; margin-top: 14px; }
+.upd-spin { width: 44px; height: 44px; margin: 0 auto; border-radius: 50%; border: 4px solid var(--line); border-top-color: var(--primary); animation: updspin .9s linear infinite; }
+@keyframes updspin { to { transform: rotate(360deg); } }

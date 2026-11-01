@@ -468,6 +468,7 @@
       finish: [[523, 0, 0.1], [659, 0.1, 0.1], [784, 0.2, 0.1], [1047, 0.3, 0.3]],
       notify: [[988, 0, 0.06], [1319, 0.06, 0.12]],
       warn: [[880, 0, 0.12], [880, 0.22, 0.12]],
+      updated: [[1047, 0, 0.22], [1319, 0.12, 0.26], [1568, 0.24, 0.5]], // soft chime: the app was updated
     };
     let ctx = null;
     function play(name) {
@@ -476,7 +477,7 @@
       try {
         ctx = ctx || new (window.AudioContext || window.webkitAudioContext)();
         if (ctx.state === 'suspended') ctx.resume();
-        const tone = TONES[st.theme] || TONES.soft, t0 = ctx.currentTime + 0.01;
+        const tone = name === 'updated' ? TONES.soft : TONES[st.theme] || TONES.soft, t0 = ctx.currentTime + 0.01;
         const peak = Math.max(0.0002, st.vol * 0.22 * tone.gain * (name === 'tap' ? 0.45 : name === 'notify' ? 0.6 : 1));
         for (const [f, at, len] of TUNES[name]) {
           const o = ctx.createOscillator(), g = ctx.createGain();
@@ -489,6 +490,19 @@
           o.start(start); o.stop(end + 0.02);
         }
       } catch { /* no sound on this device */ }
+    }
+    // Play as soon as the device lets it: right away, or at the first tap or key if the phone or browser
+    // blocks sound until the user touches the app (after an update the app has just restarted).
+    function playSoon(name) {
+      try { ctx = ctx || new (window.AudioContext || window.webkitAudioContext)(); } catch { return; }
+      if (ctx.state === 'running') return play(name);
+      const EV = ['pointerdown', 'touchstart', 'keydown'];
+      let done = false;
+      const off = () => EV.forEach((e) => document.removeEventListener(e, now, true));
+      const now = () => { if (done) return; done = true; off(); play(name); };
+      EV.forEach((e) => document.addEventListener(e, now, true));
+      ctx.resume().then(() => { if (ctx.state === 'running') now(); }).catch(() => {});
+      setTimeout(() => { done = true; off(); }, 120e3); // too late to mean "updated"
     }
     // A page of paper being turned: a short rustle of noise that sweeps up, then a soft landing.
     // Made on the device like the other sounds, so it works offline. Follows the Sounds on/off and volume.
@@ -521,7 +535,7 @@
     }
     // A very short buzz on Android phones when something is tapped (Account → Sounds → Vibrate).
     const buzz = (ms = 8) => { if (get().buzz !== false && navigator.vibrate) try { navigator.vibrate(ms); } catch { /* not allowed */ } };
-    return { get, set: (v) => { store.set(KEY, { ...get(), ...v }); Prefs.touched(); }, play, flip, buzz, TONES };
+    return { playSoon, get, set: (v) => { store.set(KEY, { ...get(), ...v }); Prefs.touched(); }, play, flip, buzz, TONES };
   })();
   // A soft tap for buttons and menus. Exam choices have their own sounds (see choose()).
   const PRESS = '.btn, .seg button, .tabs button, .bottomnav a, .topbar a, .topbar button, .subject-btn, details.fold > summary, .navgrid button, .lvl-opt, .lang-flag, .choice, .list-item, .exam-card, .logout-btn';
@@ -3509,44 +3523,89 @@
   init();
   setTimeout(() => { try { sessionStorage.removeItem('cse-fix-boot'); } catch { /* ignore */ } AutoFix.run('start'); }, 6000);
 
-  /* ---------------- automatic updates ----------------
-     New screens download in the background. They are switched in only at a safe moment: when the app
-     opens, or when it is in the background and the user is not in the middle of anything
-     (no exam or practice, no open window, nothing typed).
-     Premium gets new versions much sooner than Free:
+  /* ---------------- updates: download quietly, then ask ----------------
+     New screens download in the background. When one is ready, the app asks (every user and admin):
+     "Update now?" with "Later" and "Update". It asks only at a safe moment: no exam or practice, no open
+     window, nothing typed. Update: an "Updating the app…" screen, the new version opens, and a soft chime
+     plays with "The app is updated!" (the chime follows Account → Sounds on/off and volume).
+     Later: it asks again after an hour, or the next time the app opens.
+     Premium finds new versions much sooner than Free:
      - checks: every 5 minutes while the app is open, and on coming back to it (at most once a minute);
-       Free: every 30 minutes, and on coming back at most once every 10 minutes
-     - switching in: also on the next change of screen (Free: only when the app opens or is in the background) */
+       Free: every 30 minutes, and on coming back at most once every 10 minutes */
   const updEvery = () => (S.premium ? 5 * 60e3 : 30 * 60e3); // while the app is open
   const updGap = () => (S.premium ? 60e3 : 10 * 60e3); // on coming back to the app
   const busy = () => !!S.exam || !!document.querySelector('.modal-bg')
     || $$('input, textarea').some((el) => (el.type === 'checkbox' || el.type === 'radio' ? el.checked !== el.defaultChecked : el.value !== el.defaultValue));
   const markUpdated = () => store.set('cse-updated', 1);
-  if (store.get('cse-updated')) { store.del('cse-updated'); setTimeout(() => toast(L('Na-update ang app sa bagong bersyon.', 'The app was updated to a new version.')), 600); }
+  if (store.get('cse-updated')) {
+    store.del('cse-updated');
+    setTimeout(() => { toast(L('✅ Updated na ang app!', '✅ The app is updated!')); Sound.playSoon('updated'); }, 600);
+  }
+  const UpdAsk = (() => {
+    let asking = false, later = 0;
+    function updating(on) {
+      let el = document.getElementById('updating');
+      if (!on) { if (el) el.remove(); return; }
+      if (el) return;
+      el = document.createElement('div'); el.id = 'updating'; el.setAttribute('role', 'status'); el.setAttribute('aria-live', 'assertive');
+      el.innerHTML = `<div><div class="upd-spin" aria-hidden="true"></div><b>${L('Ina-update ang app…', 'Updating the app…')}</b><p class="muted small">${L('Huwag munang isara. Ilang segundo lang ito.', 'Please do not close it. It takes a few seconds.')}</p></div>`;
+      document.body.appendChild(el);
+    }
+    // apply(): switch to the new version (the app restarts by itself).
+    function ask(apply) {
+      if (asking || busy() || Date.now() - later < 3600e3 || document.getElementById('updating')) return;
+      asking = true;
+      modal(`<h2 style="margin-top:0">🔄 ${L('May bagong bersyon ng app', 'A new version of the app is ready')}</h2>
+        <p class="muted">${L('I-update na ngayon? Ilang segundo lang ito. Naka-save ang lahat ng resulta at settings mo.', 'Update now? It takes a few seconds. All your results and settings are saved.')}</p>
+        <div class="row" style="justify-content:flex-end;margin-top:16px"><button class="btn ghost" data-x>${L('Mamaya', 'Later')}</button><button class="btn" data-ok>${L('I-update', 'Update')}</button></div>`,
+      (bg, close) => {
+        $('[data-x]', bg).onclick = () => { close(); asking = false; later = Date.now(); };
+        $('[data-ok]', bg).onclick = async () => {
+          close(); asking = false; updating(true); markUpdated();
+          await new Promise((r) => setTimeout(r, 1200)); // let "Updating the app…" show
+          try { await apply(); } catch {
+            updating(false); store.del('cse-updated'); later = Date.now();
+            toast(L('Hindi natuloy ang update. Susubukan ulit mamaya.', 'The update did not go through. It will try again later.'));
+          }
+        };
+      });
+    }
+    return { ask, updating };
+  })();
 
   // Website (and the app installed from the website): the service worker keeps the files on the device.
   if (!IS_APP && 'serviceWorker' in navigator && location.protocol.startsWith('http')) {
     window.addEventListener('load', async () => {
       let reg;
       try { reg = await navigator.serviceWorker.register('/sw.js', { updateViaCache: 'none' }); } catch { return; }
-      let controlled = !!navigator.serviceWorker.controller, reloadWhenSafe = false, switching = false, last = Date.now();
-      // now: switch even though the app is on screen (Premium, right after a change of screen).
-      const applyWhenSafe = (now) => {
-        if ((!now && !document.hidden) || busy()) return;
-        if (reloadWhenSafe) { markUpdated(); location.reload(); return; }
-        if (reg.waiting && navigator.serviceWorker.controller) { switching = !!now; reg.waiting.postMessage('skip-waiting'); }
+      let controlled = !!navigator.serviceWorker.controller, accepted = false, otherTab = false, last = Date.now();
+      // A new version is downloaded and waiting: ask.
+      const offer = () => {
+        if (!reg.waiting || !navigator.serviceWorker.controller || document.hidden) return;
+        UpdAsk.ask(() => new Promise((ok, fail) => {
+          if (!reg.waiting) return fail(new Error('gone'));
+          accepted = true; reg.waiting.postMessage('skip-waiting');
+          setTimeout(() => fail(new Error('slow')), 20000); // the reload below normally comes first
+        }));
       };
       navigator.serviceWorker.addEventListener('controllerchange', () => {
         if (!controlled) { controlled = true; return; } // first visit: nothing to refresh
-        reloadWhenSafe = true; applyWhenSafe(switching);
+        if (accepted) { location.reload(); return; }
+        otherTab = true; // the update was accepted in another tab: switch here too when it is safe
+      });
+      const otherTabSafe = () => { if (otherTab && !busy()) { markUpdated(); location.reload(); } };
+      reg.addEventListener('updatefound', () => {
+        const w = reg.installing;
+        if (w) w.addEventListener('statechange', () => { if (w.state === 'installed') offer(); });
       });
       const look = (min) => {
         if (!navigator.onLine || Date.now() - last < min) return;
         last = Date.now(); reg.update().catch(() => {});
       };
-      document.addEventListener('visibilitychange', () => { if (document.hidden) applyWhenSafe(); else look(updGap()); });
-      setInterval(() => { if (!document.hidden) look(updEvery()); }, 60e3);
-      window.addEventListener('hashchange', () => { if (S.premium) applyWhenSafe(true); });
+      document.addEventListener('visibilitychange', () => { if (document.hidden) otherTabSafe(); else { look(updGap()); offer(); } });
+      setInterval(() => { if (!document.hidden) { look(updEvery()); offer(); } }, 60e3);
+      window.addEventListener('hashchange', () => { otherTabSafe(); setTimeout(offer, 400); });
+      setTimeout(offer, 1500); // the app just opened with a new version waiting
     });
   }
 
@@ -3561,10 +3620,14 @@
     let pending = store.get('cse-ota'), lastCheck = 0;
     if (pending && pending.version === BUILD) { store.del('cse-ota'); pending = null; } // already switched
     else if (pending && pending.tried) { store.set('cse-ota-bad', pending.version); store.del('cse-ota'); pending = null; } // did not start: stay on this one
+    // A new version is downloaded: ask (see UpdAsk). Update: the plugin restarts the screens on the new one.
     const applyWhenSafe = () => {
-      if (!pending || busy()) return;
-      store.set('cse-ota', { ...pending, tried: true }); markUpdated();
-      Updater.set({ id: pending.id }).catch(() => { store.set('cse-ota', pending); store.del('cse-updated'); });
+      if (!pending || document.hidden) return;
+      const p = pending;
+      UpdAsk.ask(async () => {
+        store.set('cse-ota', { ...p, tried: true });
+        try { await Updater.set({ id: p.id }); } catch (e) { store.set('cse-ota', p); throw e; }
+      });
     };
     const check = async (min = updGap()) => {
       if (pending || !navigator.onLine || Date.now() - lastCheck < min) return;
@@ -3576,13 +3639,24 @@
         const b = await Updater.download({ url: API + u.url, version: u.version });
         pending = { id: b.id, version: u.version };
         store.set('cse-ota', pending);
+        applyWhenSafe();
       } catch { /* try again later */ }
     };
-    applyWhenSafe(); // app just opened: switch now if a new version is ready
+    setTimeout(applyWhenSafe, 1500); // app just opened: ask now if a new version is ready
     setTimeout(() => check(0), S.premium ? 1500 : 5000);
-    document.addEventListener('visibilitychange', () => { if (document.hidden) applyWhenSafe(); else check(); });
-    document.addEventListener('pause', applyWhenSafe);
-    setInterval(() => { if (!document.hidden) check(updEvery()); }, 60e3);
-    window.addEventListener('hashchange', () => { if (S.premium) applyWhenSafe(); }); // Premium: on the next change of screen
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) { check(); applyWhenSafe(); } });
+    setInterval(() => { if (!document.hidden) { check(updEvery()); applyWhenSafe(); } }, 60e3);
+    window.addEventListener('hashchange', () => setTimeout(applyWhenSafe, 400));
+  }
+
+  // Windows app: the new version downloads in the background (apps/desktop/main.js); ask, then install and restart.
+  const desk = window.cseDesktop && window.cseDesktop.updates;
+  if (desk && desk.onReady) {
+    const offer = () => { if (!document.hidden) UpdAsk.ask(() => desk.install()); };
+    desk.onReady(() => setTimeout(offer, 400));
+    window.addEventListener('hashchange', () => desk.ready().then((r) => { if (r) setTimeout(offer, 400); }).catch(() => {}));
+    setInterval(() => desk.ready().then((r) => { if (r) offer(); }).catch(() => {}), 60e3);
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) desk.ready().then((r) => { if (r) offer(); }).catch(() => {}); });
+    desk.ready().then((r) => { if (r) setTimeout(offer, 1500); }).catch(() => {});
   }
 })();
