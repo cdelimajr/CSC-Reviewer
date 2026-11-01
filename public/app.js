@@ -3,7 +3,7 @@
   'use strict';
   const $app = document.getElementById('app');
   const LETTERS = ['A', 'B', 'C', 'D'];
-  const APP_VERSION = '1.20.0'; // keep in step with package.json and docs/DOKUMENTASYON.md
+  const APP_VERSION = '1.21.0'; // keep in step with package.json and docs/DOKUMENTASYON.md
   const S = { user: null, meta: null, exam: null, timer: null, saveT: null };
 
   /* ---------------- helpers ---------------- */
@@ -1661,7 +1661,7 @@
       ? L(`⏳ <b>Matatapos ang Premium mo ${d <= 1 ? 'bukas' : `sa ${d} araw`}</b> (${esc(day)}). I-extend para tuloy ang lahat ng exam set at offline →`, `⏳ <b>Your Premium ends ${d <= 1 ? 'tomorrow' : `in ${d} days`}</b> (${esc(day)}). Extend it to keep all exam sets and offline →`)
       : L(`⌛ <b>Natapos na ang Premium mo</b> noong ${esc(day)}. Naka-save pa rin ang lahat ng resulta mo. I-extend →`, `⌛ <b>Your Premium ended</b> on ${esc(day)}. All your results are still saved. Extend →`)}</a>`;
   }
-  // Streak strip on Home: days in a row, the last 7 days, and the reminder.
+  // Streak strip on Results (Premium only): days in a row, the last 7 days, and the reminder.
   function streakCard() {
     const days = studyDays(), st = streakOf(days), set = new Set(days), today = phDay(), r = Reminders.get();
     const names = lang === 'en' ? ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'] : ['Li', 'Lu', 'Ma', 'Mi', 'Hu', 'Bi', 'Sa'];
@@ -1680,8 +1680,6 @@
     const { list, stats } = withLocal(l0, s0);
     const open = list.filter((a) => !a.finished_at);
     const done = list.filter((a) => a.finished_at);
-    const mocks = stats.mocks;
-    const best = mocks.length ? Math.max(...mocks.map((m) => m.pct)) : null;
     const ex = S.meta.exams;
     // The level is big and always on screen (every user). Pick PRO or SUBPRO, and its mock exam is right below.
     const lv = myLevel(), le = ex[lv];
@@ -1709,17 +1707,6 @@
       ${open.length ? `<div class="notice" style="margin:12px 0">${L('May hindi ka pa natatapos na exam:', 'You have an unfinished exam:')} <b>${esc(open[0].title)}</b>. <a href="#/exam/${open[0].id}">${L('Ituloy ito →', 'Continue →')}</a></div>` : ''}
       ${list.some((a) => a.pending && a.finished_at) ? `<p class="muted small">${L('⏳ May mga resulta kang ginawa offline. Ise-save ang mga ito online kapag may internet na.', '⏳ You have results made offline. They will be saved online when the internet is back.')}</p>` : ''}
       ${levelHome()}
-      ${streakCard()}
-      <a class="card review-link" href="#/review"><span class="ic" aria-hidden="true">🎯</span><span class="grow"><b>${L('Balikan ang mga mali', 'Go over your mistakes')}</b><span class="muted small">${L('Sagutan ulit ang mga namali mo at alamin ang pinakamahinang topic mo.', 'Answer your mistakes again and see your weakest topics.')}</span></span><span aria-hidden="true">›</span></a>
-      ${fold('home-progress', `<h2>${L('Ang progress mo', 'Your progress')}</h2>`, `
-      <div class="grid stats">
-        <div class="card stat"><div class="v">${stats.attempts}</div><div class="l">${L('Natapos na exam/practice', 'Exams/practice finished')}</div></div>
-        <div class="card stat"><div class="v">${mocks.length}</div><div class="l">${L('Mock exam na natapos', 'Mock exams finished')}</div></div>
-        <div class="card stat"><div class="v">${best === null ? '–' : best + '%'}</div><div class="l">${L('Pinakamataas na mock score', 'Highest mock score')}</div></div>
-        <div class="card stat"><div class="v">${mocks.filter((m) => m.pct >= 80).length}</div><div class="l">${L('Pasado (80% pataas)', 'Passed (80% and up)')}</div></div>
-      </div>
-      <div class="card" style="margin-top:12px"><h3>${L('Score kada subject', 'Score by subject')}</h3>${Object.keys(stats.subjects).length ? subjectBars(stats.subjects)
-        : `<p class="muted small" style="margin:6px 0 0">${L('Lalabas dito ang score mo kada subject pagkatapos ng unang exam o practice.', 'Your score by subject shows here after your first exam or practice.')}</p>`}</div>`, { card: false })}
       ${fold('home-recent', `<h2>${L('Mga huling exam', 'Recent exams')}</h2>`, done.length ? `<div class="list">${done.slice(0, 5).map(attemptRow).join('')}</div><p><a href="#/history">${L('Tingnan lahat →', 'See all →')}</a></p>` : `<div class="card empty">${L('Wala ka pang natatapos na exam. Subukan ang isang mock exam!', 'You have not finished an exam yet. Try a mock exam!')}</div>`, { card: false })}
     `);
     $$('.level-switch [data-level]').forEach((b) => (b.onclick = () => { if (b.dataset.level !== myLevel()) { setLevel(b.dataset.level); paintHome(l0, s0); } }));
@@ -1758,29 +1745,18 @@
      So it protects the questions in the ways it can:
      - Android app: screenshots and screen recording are blocked (FLAG_SECURE, see .github/workflows/apps.yml).
        Windows app: same (content protection, see apps/desktop/main.js).
-     - A light watermark with the user's email and a Data Privacy Act (RA 10173) warning covers the questions,
-       so a photo or video of the screen carries the warning and shows which account it came from.
+     - A Data Privacy Act (RA 10173) warning line sits above the questions (no watermark over the page, so the paper stays clean).
      - The questions are hidden while the app is in the background or not in focus,
        and cannot be selected, copied or printed. */
   const PRIVACY_LINE = () => L('Protektado ng Data Privacy Act of 2012 (RA 10173). Bawal kopyahin, kunan ng larawan o i-video.', 'Protected by the Data Privacy Act of 2012 (RA 10173). Do not copy, photograph or record.');
-  function watermark(who) {
-    const x = (t) => esc(t).replace(/[^\x20-\x7e]/g, ''); // plain text only inside the image
-    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="340" height="200"><g transform="rotate(-24 170 100)" fill="#808080" font-family="Arial,sans-serif" text-anchor="middle">`
-      + `<text x="170" y="88" font-size="15" font-weight="700">${L('RA 10173 - BAWAL KUNAN NG LARAWAN/VIDEO', 'RA 10173 - NO PHOTOS/VIDEOS')}</text>`
-      + `<text x="170" y="112" font-size="14">${x(who)}</text></g></svg>`;
-    return 'data:image/svg+xml,' + encodeURIComponent(svg);
-  }
   function guardOn() {
     document.body.classList.add('guard');
-    let wm = document.getElementById('wm'), sh = document.getElementById('shield');
-    if (!wm) {
-      wm = document.createElement('div'); wm.id = 'wm'; wm.setAttribute('aria-hidden', 'true');
+    let sh = document.getElementById('shield');
+    if (!sh) {
       sh = document.createElement('div'); sh.id = 'shield'; sh.setAttribute('aria-hidden', 'true');
-      document.body.append(wm, sh);
+      document.body.append(sh);
     }
     sh.innerHTML = `<div><div style="font-size:40px">🔒</div><b>${L('Nakatago ang tanong', 'The question is hidden')}</b><p class="muted small">${esc(PRIVACY_LINE())}</p></div>`;
-    // The admin can turn the watermark off (Admin → Settings → Exam screen). On by default.
-    wm.style.backgroundImage = S.config && S.config.watermark === false ? 'none' : `url("${watermark(S.user ? S.user.email : '')}")`;
     Ads.hide(); // never ads during an exam
   }
   function guardOff() { document.body.classList.remove('guard', 'away'); }
@@ -1803,10 +1779,10 @@
     if (store.get(uk('cse-privacy-ok'))) return true;
     const ok = await confirmBox(L('Paalala sa privacy', 'Privacy reminder'), L(`Ang mga tanong at ang account mo ay <b>protektado ng Data Privacy Act of 2012 (RA 10173)</b>.
       Bawal kopyahin, i-screenshot, kunan ng larawan, o i-video ang screen habang nag-e-exam.<br><br>
-      May malabong watermark ng email mo at babala ng RA 10173 sa screen, kaya makikita ito sa anumang larawan o video na kukunin ng iba.
+      May babala ng RA 10173 sa itaas ng exam.
       Sa Android at Windows app, naka-block ang screenshot at screen recording.`, `The questions and your account are <b>protected by the Data Privacy Act of 2012 (RA 10173)</b>.
       Do not copy, screenshot, photograph, or record the screen during an exam.<br><br>
-      A faint watermark of your email and an RA 10173 warning are on the screen, so they show in any photo or video someone takes.
+      An RA 10173 warning is shown above the exam.
       In the Android and Windows apps, screenshots and screen recording are blocked.`), L('Naiintindihan ko', 'I understand'));
     if (ok) store.set(uk('cse-privacy-ok'), 1);
     return ok;
@@ -2012,28 +1988,20 @@
     $app.innerHTML = `
       <div class="exam-top"><div class="inner">
         <button class="btn ghost small" id="quit" aria-label="${L('Lumabas', 'Exit')}">✕</button>
-        <div class="grow" style="flex:1;min-width:0">
-          <div class="exam-title">${showLevel() ? levelChip(levelOf(a)) : ''}${setChip(a)}<b class="ellipsis small">${esc(a.title.replace(/ Mock Exam/, '').replace(/ · Set \d+$/, ''))}</b></div>
-          <div class="muted small" id="answered"></div></div>
+        <div class="grow exam-count"><b id="pageNo"></b><span class="muted small" id="answered"></span></div>
         ${ex.deadline ? `<div class="timer" id="timer" role="timer" aria-label="${L('Natitirang oras', 'Time left')}">--:--</div>` : ''}
-        <button class="btn secondary small" id="navBtn" aria-label="${L('Lahat ng tanong', 'All questions')}">☰ ${L('Lahat', 'All')}</button>
+        <button class="btn ghost small flag-btn" id="flag" title="${L('Markahan para balikan', 'Mark to come back to')}" aria-label="${L('Markahan para balikan', 'Mark to come back to')}">⚑</button>
+        <button class="btn secondary small" id="navBtn" title="${L('Lahat ng tanong at Isumite', 'All questions and Submit')}" aria-label="${L('Lahat ng tanong at Isumite', 'All questions and Submit')}">☰</button>
       </div></div>
       <div class="progress"><i id="prog"></i></div>
       ${ex.deadline && !practice ? '<div class="pace-bar small"><span id="pace" class="pace"></span></div>' : ''}
       ${S.config.privacy_strip === false ? '' : `<div class="privacy-strip">🔒 ${esc(PRIVACY_LINE())}</div>`}
-      <main class="paper-desk" id="desk"><div class="paper-stack"><article class="paper" id="qwrap" aria-live="polite"></article></div></main>
-      <div class="paper-foot"><div class="inner">
-        <button class="btn ghost flag-btn" id="flag" title="${L('Markahan para balikan', 'Mark to come back to')}" aria-label="${L('Markahan para balikan', 'Mark to come back to')}">⚑</button>
-        <button class="page-ind" id="pageInd" type="button" title="${L('Lahat ng tanong', 'All questions')}" aria-label="${L('Lahat ng tanong', 'All questions')}"><b id="pageNo"></b><small>${matchMedia('(hover: hover) and (pointer: fine)').matches ? L('← → o pindutin ang kanto', '← → or click the corner') : `‹ ${L('i-swipe para mag-flip', 'swipe to turn')} ›`}</small></button>
-        <button class="btn" id="submitBtn">${L('Isumite', 'Submit')} ✓</button>
-      </div></div>`;
+      <main class="paper-desk" id="desk"><div class="paper-stack"><article class="paper" id="qwrap" aria-live="polite"></article></div></main>`;
 
     $('#quit').onclick = async () => {
       await saveAnswers(true);
       if (await confirmBox(L('Lumabas muna?', 'Leave for now?'), L('Naka-save ang mga sagot mo. Maaari mo itong ituloy mamaya mula sa Home.', 'Your answers are saved. You can continue later from Home.') + (ex.deadline ? L(' <b>Tuloy pa rin ang takbo ng oras.</b>', ' <b>The timer keeps running.</b>') : ''), L('Lumabas', 'Leave'))) { stopTimer(); go('#/'); }
     };
-    $('#submitBtn').onclick = submitFlow;
-    $('#pageInd').onclick = openNav;
     paperSwipe($('#desk'));
     $('#flag').onclick = () => {
       ex.flags.has(ex.idx) ? ex.flags.delete(ex.idx) : ex.flags.add(ex.idx);
@@ -2214,7 +2182,7 @@
     const n = Object.keys(ex.answers).length;
     $('#answered').textContent = L(`${n}/${a.items.length} nasagutan`, `${n}/${a.items.length} answered`);
     $('#prog').style.width = pct(n, a.items.length) + '%';
-    $('#pageNo').textContent = `${idx + 1} / ${a.items.length}`;
+    $('#pageNo').textContent = L(`Tanong ${idx + 1} / ${a.items.length}`, `Question ${idx + 1} / ${a.items.length}`);
     $('#flag').classList.toggle('on', ex.flags.has(idx));
     if (dir) window.scrollTo(0, 0);
     if (ghost) flip(page, ghost, dir);
@@ -2486,9 +2454,21 @@
   function paintHistory(l0, s0) {
     if (s0 && Array.isArray(s0.days)) store.set(uk('cse-days'), s0.days);
     const { list, stats } = withLocal(l0, s0);
-    const trend = stats.mocks.slice(-10);
+    const trend = stats.mocks.slice(-10), mocks = stats.mocks;
+    const best = mocks.length ? Math.max(...mocks.map((m) => m.pct)) : null;
+    // Premium only: the streak and "Go over your mistakes" cards (Home stays clean for every user).
+    const prem = S.premium ? `${streakCard()}
+      <a class="card review-link" href="#/review"><span class="ic" aria-hidden="true">🎯</span><span class="grow"><b>${L('Balikan ang mga mali', 'Go over your mistakes')}</b><span class="muted small">${L('Sagutan ulit ang mga namali mo at alamin ang pinakamahinang topic mo.', 'Answer your mistakes again and see your weakest topics.')}</span></span><span aria-hidden="true">›</span></a>` : '';
     shell('history', `
       <h1>${L('Mga resulta', 'Results')}</h1>
+      ${prem}
+      ${fold('history-progress', `<h2>${L('Ang progress mo', 'Your progress')}</h2>`, `
+      <div class="grid stats">
+        <div class="card stat"><div class="v">${stats.attempts}</div><div class="l">${L('Natapos na exam/practice', 'Exams/practice finished')}</div></div>
+        <div class="card stat"><div class="v">${mocks.length}</div><div class="l">${L('Mock exam na natapos', 'Mock exams finished')}</div></div>
+        <div class="card stat"><div class="v">${best === null ? '–' : best + '%'}</div><div class="l">${L('Pinakamataas na mock score', 'Highest mock score')}</div></div>
+        <div class="card stat"><div class="v">${mocks.filter((m) => m.pct >= 80).length}</div><div class="l">${L('Pasado (80% pataas)', 'Passed (80% and up)')}</div></div>
+      </div>`, { card: false })}
       ${trend.length ? `<div class="card"><h3>${L('Huling mga mock exam', 'Recent mock exams')}</h3>
         <div style="display:flex;align-items:flex-end;gap:6px;height:140px;padding-top:10px;border-bottom:1px dashed var(--line);position:relative">
           <div style="position:absolute;left:0;right:0;bottom:${80 * 1.3}px;border-top:1px dashed var(--ok)"></div>
@@ -3053,7 +3033,6 @@
       <p class="muted small">${L('Para sa Android: ilagay din ang AdMob <b>App ID</b> sa GitHub (Settings → Secrets and variables → Actions → Variables → <code>ADMOB_APP_ID</code>) bago i-build ang APK.', 'For Android: also set the AdMob <b>App ID</b> in GitHub (Settings → Secrets and variables → Actions → Variables → <code>ADMOB_APP_ID</code>) before building the APK.')}</p>`)}
 
       ${sec('exam', `🔒 ${L('Screen habang nag-e-exam', 'Exam screen')}`, `
-      ${check('wmon', st.exam_watermark !== '0', L('Watermark na "RA 10173" at email ng user sa buong screen', '"RA 10173" watermark with the user\'s email across the screen'))}
       ${check('stripon', st.exam_privacy_strip !== '0', L('Babala ng Data Privacy Act of 2012 (RA 10173) sa itaas ng exam', 'Data Privacy Act of 2012 (RA 10173) warning above the exam'))}
       <p class="muted small" style="margin:4px 0 0">${L('Naka-block pa rin ang screenshot sa Android at Windows app kahit naka-off ang mga ito.', 'Screenshots stay blocked in the Android and Windows apps even when these are off.')}</p>`)}
       <button class="btn block" type="submit">${L('I-save ang settings', 'Save settings')}</button></form>`;
@@ -3108,7 +3087,7 @@
           pay_online_on: on('payon'), pay_manual_on: on('payman'), pay_methods: collect(),
           free_practice_daily: v('fdaily'), free_practice_items: v('fitems'), free_mock_daily: v('fmock'), free_sets: v('fsets'),
           ads_on: on('adson'), adsense_client: v('asc').trim(), adsense_slot: v('ass').trim(), admob_banner: v('amb').trim(),
-          exam_watermark: on('wmon'), exam_privacy_strip: on('stripon'),
+          exam_privacy_strip: on('stripon'),
         });
         methods = saved.pay_methods; paintPm();
         await refreshMe().catch(() => {});
