@@ -100,6 +100,29 @@ CREATE TABLE IF NOT EXISTS devices (
   last_used_at INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_devices_user ON devices(user_id);
+-- Settings and study data of each account (backup and sync between devices), and the study reminder.
+CREATE TABLE IF NOT EXISTS user_prefs (
+  user_id INTEGER PRIMARY KEY,
+  data TEXT NOT NULL DEFAULT '{}',
+  updated_at INTEGER NOT NULL DEFAULT 0,
+  remind_email INTEGER NOT NULL DEFAULT 0,
+  remind_min INTEGER NOT NULL DEFAULT 1200,
+  reminded_day INTEGER NOT NULL DEFAULT 0
+);
+-- Audit log: logins, failed logins, and admin changes. Kept 180 days.
+CREATE TABLE IF NOT EXISTS audit_log (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  at INTEGER NOT NULL,
+  user_id INTEGER,
+  actor_id INTEGER,
+  action TEXT NOT NULL,
+  detail TEXT NOT NULL DEFAULT '',
+  ip TEXT NOT NULL DEFAULT '',
+  device TEXT NOT NULL DEFAULT '',
+  alert INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_audit_at ON audit_log(at);
+CREATE INDEX IF NOT EXISTS idx_audit_user ON audit_log(user_id, at);
 `;
 
 // Convert libSQL rows into plain objects.
@@ -126,6 +149,13 @@ const db = {
       'ALTER TABLE sessions ADD COLUMN replaced_at INTEGER',
       // The guided tour for new Premium users was shown (or skipped).
       'ALTER TABLE users ADD COLUMN tour_done INTEGER NOT NULL DEFAULT 0',
+      // Seconds spent on each subject during an exam (shown on the result).
+      'ALTER TABLE attempts ADD COLUMN times TEXT',
+      // Receipt: the Premium period a payment paid for.
+      'ALTER TABLE payments ADD COLUMN period_from INTEGER',
+      'ALTER TABLE payments ADD COLUMN period_to INTEGER',
+      // Premium expiry emails already sent ("<premium_until>:<days before>").
+      `ALTER TABLE users ADD COLUMN expiry_notice TEXT NOT NULL DEFAULT ''`,
     ]) {
       try { await client.execute(sql); } catch (e) { if (!/duplicate column/i.test(e.message)) throw e; }
     }
