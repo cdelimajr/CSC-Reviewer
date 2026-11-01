@@ -54,6 +54,9 @@ const SETTING_DEFAULTS = {
   biz_name: '', biz_contact: '',
 };
 const LONG_SETTINGS = { pay_methods: 20000 };
+// [key, smallest, largest] for the settings that are numbers (Admin → Settings).
+const NUM_SETTINGS = [['price', 0, 100000], ['plan_days', 1, 3650], ['free_practice_daily', 0, 100], ['free_practice_items', 5, 100],
+  ['free_sets', 1, 1000], ['free_mock_daily', 0, 100]];
 async function getSettings() {
   const rows = await db.all(`SELECT key, value FROM meta WHERE key LIKE 'set:%'`);
   const out = { ...SETTING_DEFAULTS };
@@ -174,6 +177,11 @@ function limited(key, max = 10, windowMs = 10 * 60 * 1000) {
   h.push(now); hits.set(key, h);
   return h.length > max;
 }
+// Forget old tries every 10 minutes, so the list does not keep growing while the server runs.
+setInterval(() => {
+  const now = Date.now();
+  for (const [k, h] of hits) if (!h.length || now - h[h.length - 1] > 60 * 60 * 1000) hits.delete(k);
+}, 10 * 60 * 1000).unref();
 
 /* ------------------------------ app ------------------------------ */
 const app = express();
@@ -722,7 +730,9 @@ function offlineItems(items, max = 100) {
   return out;
 }
 
-app.post('/api/offline/sync', auth, verified, premiumOnly, wrap(async (req, res) => {
+// No premiumOnly here: results made offline while the user had Premium are still saved after Premium ends
+// (each one is checked below against the time it was taken).
+app.post('/api/offline/sync', auth, verified, wrap(async (req, res) => {
   const list = Array.isArray(req.body.attempts) ? req.body.attempts.slice(0, 50) : [];
   const st = await getSettings();
   const saved = {}, rejected = {};
@@ -734,15 +744,19 @@ app.post('/api/offline/sync', auth, verified, premiumOnly, wrap(async (req, res)
     const mode = EXAMS[x.mode] ? x.mode : 'practice';
     const started = Math.min(Number(x.started_at) || Date.now(), Date.now());
     let items, title, setId = null, limit = Math.max(0, Number(x.time_limit_sec) || 0);
+    // Offline use is Premium: it counts only if the user had Premium when they took it.
+    const allowed = hasPremium(req.user, st) || (req.user.premium_until || 0) >= started;
+    if (!allowed) { rejected[cid] = 'premium'; continue; }
     if (mode !== 'practice') {
-      // Mock exams count only if the user had Premium when they took it.
-      const allowed = hasPremium(req.user, st) || (req.user.premium_until || 0) >= started;
-      if (!allowed) { rejected[cid] = 'premium'; continue; }
       limit = EXAMS[mode].minutes * 60;
-      if (x.set_id) {
-        const set = await db.get('SELECT * FROM exam_sets WHERE id = ? AND mode = ?', Number(x.set_id), mode);
-        if (!set) { rejected[cid] = 'set'; continue; }
+      const set = x.set_id ? await db.get('SELECT * FROM exam_sets WHERE id = ? AND mode = ?', Number(x.set_id), mode) : null;
+      if (set) {
         items = JSON.parse(set.items); title = set.title; setId = set.id;
+      } else if (x.set_id) {
+        // The set was deleted by the admin after it was saved on the device: keep the result with the questions the user saw.
+        items = offlineItems(x.items, EXAMS[mode].items);
+        if (!items) { rejected[cid] = 'set'; continue; }
+        title = String(x.title || EXAMS[mode].title).slice(0, 120);
       } else {
         // "Bagong halo" mock exam made on the device from the saved questions.
         items = offlineItems(x.items, EXAMS[mode].items);
@@ -917,7 +931,8 @@ app.post('/api/payments', auth, verified, wrap(async (req, res) => {
   if (await db.get(`SELECT 1 FROM payments WHERE user_id = ? AND status = 'pending'`, req.user.id)) {
     return res.status(409).json({ error: 'May nakabinbin ka pang bayad na hinihintay ma-check.' });
   }
-  const p = { amount: String(req.body.amount || st.price).slice(0, 20), method: m.name, reference };
+  // The amount is the current price (not what the app sends), so the admin sees what the user should have paid.
+  const p = { amount: String(st.price).slice(0, 20), method: m.name, reference };
   await db.run('INSERT INTO payments (user_id, amount, method, reference, created_at, proof) VALUES (?, ?, ?, ?, ?, ?)', req.user.id, p.amount, p.method, p.reference, Date.now(), proof);
   const admins = await db.all(`SELECT email FROM users WHERE role = 'admin' AND disabled = 0`);
   admins.forEach((a) => mail.newPayment(a.email, req.user, p));
@@ -1047,6 +1062,12 @@ app.get('/api/admin/settings', admin, wrap(async (req, res) => res.json(await ad
 app.put('/api/admin/settings', admin, wrap(async (req, res) => {
   const body = { ...req.body };
   const before = await getSettings();
+  // Numbers must be whole numbers within range; a blank or wrong value keeps the old one.
+  for (const [k, min, max] of NUM_SETTINGS) {
+    if (body[k] === undefined) continue;
+    const n = Number(String(body[k]).trim());
+    body[k] = String(body[k]).trim() !== '' && Number.isFinite(n) ? String(Math.min(max, Math.max(min, Math.round(n)))) : before[k];
+  }
   if (body.pay_methods !== undefined) {
     const qr = new Set((await db.all(`SELECT key FROM meta WHERE key LIKE 'qr:%'`)).map((r) => r.key.slice(3)));
     const list = payMethods({ pay_methods: JSON.stringify(Array.isArray(body.pay_methods) ? body.pay_methods : []) }).map((m) => ({ ...m, has_qr: qr.has(m.id) }));
