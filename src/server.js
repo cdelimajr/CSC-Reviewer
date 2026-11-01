@@ -144,6 +144,8 @@ async function newSession(res, userId) {
     ['INSERT INTO sessions (token, user_id, expires_at) VALUES (?, ?, ?)', [sha(token), userId, now + SESSION_DAYS * 864e5]],
   ]);
   res.locals.others = ended.rowsAffected || 0;
+  // Tell the account's other open screens right away (see "live session channel" below).
+  if (res.locals.others) liveEnd(userId, 'replaced', sha(token));
   res.cookie('sid', token, { httpOnly: true, sameSite: 'lax', secure: res.req.secure, maxAge: SESSION_DAYS * 864e5, path: '/' });
   // The phone and desktop apps can't use the cookie, so they get the token and send it as "Authorization: Bearer".
   if (res.req.get('X-App')) res.locals.token = token;
@@ -204,6 +206,39 @@ const admin = (req, res, next) => (req.user && req.user.role === 'admin' ? next(
 const verified = (req, res, next) => (!REQUIRE_VERIFY || req.user.email_verified ? next()
   : res.status(403).json({ error: 'I-verify muna ang iyong email.', code: 'unverified' }));
 const wrap = (fn) => async (req, res, next) => { try { await fn(req, res, next); } catch (e) { console.error(e); if (!res.headersSent) res.status(500).json({ error: 'May nangyaring error. Subukan ulit.' }); } };
+
+/* Live session channel: every logged-in screen keeps one open request here (Server-Sent Events).
+   When the account logs in on another device, the old screen is told within a second and logs out,
+   instead of finding out on its next click. The screens also check /api/session when they come
+   back to the front, so it still works where a network cuts long requests. */
+const live = new Map(); // user id -> Set of { res, tok }
+function liveEnd(userId, why, keepTok) {
+  const set = live.get(userId);
+  if (!set) return;
+  for (const c of [...set]) {
+    if (keepTok && c.tok === keepTok) continue;
+    try { c.res.write(`event: ${why}\ndata: {}\n\n`); c.res.end(); } catch { /* already closed */ }
+    set.delete(c);
+  }
+  if (!set.size) live.delete(userId);
+}
+const sessionGone = (req, res) => res.status(401).json(req.replaced ? { error: REPLACED, code: 'replaced' } : { error: 'Kailangan mong mag-login.' });
+// Quick check (no other database work): is this device still logged in?
+app.get('/api/session', (req, res) => (req.user ? res.json({ ok: true }) : sessionGone(req, res)));
+app.get('/api/session/live', (req, res) => {
+  if (!req.user) return sessionGone(req, res);
+  // "no-transform" keeps compression from holding the events back.
+  res.set({ 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache, no-transform', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' });
+  res.flushHeaders();
+  res.write('retry: 3000\n: ok\n\n');
+  const c = { res, tok: sha(sessionToken(req)) }, uid = req.user.id;
+  if (!live.has(uid)) live.set(uid, new Set());
+  live.get(uid).add(c);
+  // A small comment every 20 seconds keeps proxies from closing a quiet connection.
+  const beat = setInterval(() => { try { res.write(': ping\n\n'); } catch { /* closed */ } }, 20e3);
+  beat.unref();
+  req.on('close', () => { clearInterval(beat); const set = live.get(uid); if (set) { set.delete(c); if (!set.size) live.delete(uid); } });
+});
 
 /* ------------------------------ auth ------------------------------ */
 app.post('/api/auth/register', wrap(async (req, res) => {
@@ -278,6 +313,7 @@ app.post('/api/auth/reset', wrap(async (req, res) => {
     ['DELETE FROM sessions WHERE user_id = ?', [u.id]],
     ['DELETE FROM devices WHERE user_id = ?', [u.id]],
   ]);
+  liveEnd(u.id, 'ended');
   res.json({ ok: true });
 }));
 
@@ -781,7 +817,7 @@ app.patch('/api/admin/users/:id', admin, wrap(async (req, res) => {
   if (req.body.role !== undefined) await db.run('UPDATE users SET role = ? WHERE id = ?', req.body.role === 'admin' ? 'admin' : 'user', id);
   if (req.body.disabled !== undefined) {
     await db.run('UPDATE users SET disabled = ? WHERE id = ?', req.body.disabled ? 1 : 0, id);
-    if (req.body.disabled) await db.run('DELETE FROM sessions WHERE user_id = ?', id);
+    if (req.body.disabled) { await db.run('DELETE FROM sessions WHERE user_id = ?', id); liveEnd(id, 'ended'); }
   }
   if (req.body.premium_days !== undefined) {
     const days = Number(req.body.premium_days);
@@ -799,6 +835,7 @@ app.post('/api/admin/users/:id/password', admin, wrap(async (req, res) => {
   const { salt, hash } = hashPassword(pw);
   await db.run('UPDATE users SET pass_hash = ?, salt = ? WHERE id = ?', hash, salt, Number(req.params.id));
   await db.batch([['DELETE FROM sessions WHERE user_id = ?', [Number(req.params.id)]], ['DELETE FROM devices WHERE user_id = ?', [Number(req.params.id)]]]);
+  liveEnd(Number(req.params.id), 'ended');
   res.json({ ok: true });
 }));
 
@@ -806,6 +843,7 @@ app.delete('/api/admin/users/:id', admin, wrap(async (req, res) => {
   const id = Number(req.params.id);
   if (id === req.user.id) return res.status(400).json({ error: 'Hindi mo mabubura ang sarili mong account.' });
   await db.batch([['DELETE FROM payments WHERE user_id = ?', [id]], ['DELETE FROM attempts WHERE user_id = ?', [id]], ['DELETE FROM sessions WHERE user_id = ?', [id]], ['DELETE FROM devices WHERE user_id = ?', [id]], ['DELETE FROM users WHERE id = ?', [id]]]);
+  liveEnd(id, 'ended');
   res.json({ ok: true });
 }));
 

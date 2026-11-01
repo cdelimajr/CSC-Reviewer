@@ -275,6 +275,24 @@ const lastCode = (to) => {
   ar = await fetch(base + '/api/me', { headers: { Authorization: 'Bearer ' + tok } });
   assert.equal((await ar.json()).ended, 'replaced', 'app logged out after the website login');
 
+  // Live session channel: the old device hears about a new login right away (no click needed).
+  ar = await fetch(base + '/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-App': '1' }, body: JSON.stringify({ email: 'juan@test.ph', password: 'newpass123' }) });
+  const tok2 = (await ar.json()).token;
+  assert.equal((await (await fetch(base + '/api/session', { headers: { Authorization: 'Bearer ' + tok2 } })).json()).ok, true);
+  const ctl = new AbortController();
+  const lr = await fetch(base + '/api/session/live', { headers: { Authorization: 'Bearer ' + tok2 }, signal: ctl.signal });
+  assert.equal(lr.status, 200); assert.match(lr.headers.get('content-type'), /text\/event-stream/);
+  const reader = lr.body.getReader();
+  const heard = (async () => { let txt = ''; for (;;) { const { value, done } = await reader.read(); if (done) return txt; txt += Buffer.from(value).toString(); if (txt.includes('event:')) return txt; } })();
+  const t0 = Date.now();
+  await U('POST', '/api/auth/login', { email: 'juan@test.ph', password: 'newpass123' });
+  const ev = await Promise.race([heard, new Promise((r) => setTimeout(() => r('timeout'), 3000))]);
+  ctl.abort();
+  assert.match(ev, /event: replaced/, 'old device told at once');
+  assert.ok(Date.now() - t0 < 2000, 'within seconds');
+  const sr = await fetch(base + '/api/session', { headers: { Authorization: 'Bearer ' + tok2 } });
+  assert.equal(sr.status, 401); assert.equal((await sr.json()).code, 'replaced');
+
   // Guided tour for new Premium users: shown once per account
   assert.equal((await U('GET', '/api/me')).data.user.tour_done, false);
   await U('POST', '/api/me/tour', { done: true });
