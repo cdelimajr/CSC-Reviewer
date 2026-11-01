@@ -3,7 +3,7 @@
   'use strict';
   const $app = document.getElementById('app');
   const LETTERS = ['A', 'B', 'C', 'D'];
-  const APP_VERSION = '1.20.0'; // keep in step with package.json and docs/DOKUMENTASYON.md
+  const APP_VERSION = '1.21.0'; // keep in step with package.json and docs/DOKUMENTASYON.md
   const S = { user: null, meta: null, exam: null, timer: null, saveT: null };
 
   /* ---------------- helpers ---------------- */
@@ -468,6 +468,7 @@
       finish: [[523, 0, 0.1], [659, 0.1, 0.1], [784, 0.2, 0.1], [1047, 0.3, 0.3]],
       notify: [[988, 0, 0.06], [1319, 0.06, 0.12]],
       warn: [[880, 0, 0.12], [880, 0.22, 0.12]],
+      updated: [[1047, 0, 0.22], [1319, 0.12, 0.26], [1568, 0.24, 0.5]], // soft chime: the app was updated
     };
     let ctx = null;
     function play(name) {
@@ -476,7 +477,7 @@
       try {
         ctx = ctx || new (window.AudioContext || window.webkitAudioContext)();
         if (ctx.state === 'suspended') ctx.resume();
-        const tone = TONES[st.theme] || TONES.soft, t0 = ctx.currentTime + 0.01;
+        const tone = name === 'updated' ? TONES.soft : TONES[st.theme] || TONES.soft, t0 = ctx.currentTime + 0.01;
         const peak = Math.max(0.0002, st.vol * 0.22 * tone.gain * (name === 'tap' ? 0.45 : name === 'notify' ? 0.6 : 1));
         for (const [f, at, len] of TUNES[name]) {
           const o = ctx.createOscillator(), g = ctx.createGain();
@@ -489,6 +490,19 @@
           o.start(start); o.stop(end + 0.02);
         }
       } catch { /* no sound on this device */ }
+    }
+    // Play as soon as the device lets it: right away, or at the first tap or key if the phone or browser
+    // blocks sound until the user touches the app (after an update the app has just restarted).
+    function playSoon(name) {
+      try { ctx = ctx || new (window.AudioContext || window.webkitAudioContext)(); } catch { return; }
+      if (ctx.state === 'running') return play(name);
+      const EV = ['pointerdown', 'touchstart', 'keydown'];
+      let done = false;
+      const off = () => EV.forEach((e) => document.removeEventListener(e, now, true));
+      const now = () => { if (done) return; done = true; off(); play(name); };
+      EV.forEach((e) => document.addEventListener(e, now, true));
+      ctx.resume().then(() => { if (ctx.state === 'running') now(); }).catch(() => {});
+      setTimeout(() => { done = true; off(); }, 120e3); // too late to mean "updated"
     }
     // A page of paper being turned: a short rustle of noise that sweeps up, then a soft landing.
     // Made on the device like the other sounds, so it works offline. Follows the Sounds on/off and volume.
@@ -521,7 +535,7 @@
     }
     // A very short buzz on Android phones when something is tapped (Account → Sounds → Vibrate).
     const buzz = (ms = 8) => { if (get().buzz !== false && navigator.vibrate) try { navigator.vibrate(ms); } catch { /* not allowed */ } };
-    return { get, set: (v) => { store.set(KEY, { ...get(), ...v }); Prefs.touched(); }, play, flip, buzz, TONES };
+    return { playSoon, get, set: (v) => { store.set(KEY, { ...get(), ...v }); Prefs.touched(); }, play, flip, buzz, TONES };
   })();
   // A soft tap for buttons and menus. Exam choices have their own sounds (see choose()).
   const PRESS = '.btn, .seg button, .tabs button, .bottomnav a, .topbar a, .topbar button, .subject-btn, details.fold > summary, .navgrid button, .lvl-opt, .lang-flag, .choice, .list-item, .exam-card, .logout-btn';
@@ -1661,7 +1675,7 @@
       ? L(`⏳ <b>Matatapos ang Premium mo ${d <= 1 ? 'bukas' : `sa ${d} araw`}</b> (${esc(day)}). I-extend para tuloy ang lahat ng exam set at offline →`, `⏳ <b>Your Premium ends ${d <= 1 ? 'tomorrow' : `in ${d} days`}</b> (${esc(day)}). Extend it to keep all exam sets and offline →`)
       : L(`⌛ <b>Natapos na ang Premium mo</b> noong ${esc(day)}. Naka-save pa rin ang lahat ng resulta mo. I-extend →`, `⌛ <b>Your Premium ended</b> on ${esc(day)}. All your results are still saved. Extend →`)}</a>`;
   }
-  // Streak strip on Home: days in a row, the last 7 days, and the reminder.
+  // Streak strip on Results (Premium only): days in a row, the last 7 days, and the reminder.
   function streakCard() {
     const days = studyDays(), st = streakOf(days), set = new Set(days), today = phDay(), r = Reminders.get();
     const names = lang === 'en' ? ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'] : ['Li', 'Lu', 'Ma', 'Mi', 'Hu', 'Bi', 'Sa'];
@@ -1680,8 +1694,6 @@
     const { list, stats } = withLocal(l0, s0);
     const open = list.filter((a) => !a.finished_at);
     const done = list.filter((a) => a.finished_at);
-    const mocks = stats.mocks;
-    const best = mocks.length ? Math.max(...mocks.map((m) => m.pct)) : null;
     const ex = S.meta.exams;
     // The level is big and always on screen (every user). Pick PRO or SUBPRO, and its mock exam is right below.
     const lv = myLevel(), le = ex[lv];
@@ -1709,17 +1721,6 @@
       ${open.length ? `<div class="notice" style="margin:12px 0">${L('May hindi ka pa natatapos na exam:', 'You have an unfinished exam:')} <b>${esc(open[0].title)}</b>. <a href="#/exam/${open[0].id}">${L('Ituloy ito →', 'Continue →')}</a></div>` : ''}
       ${list.some((a) => a.pending && a.finished_at) ? `<p class="muted small">${L('⏳ May mga resulta kang ginawa offline. Ise-save ang mga ito online kapag may internet na.', '⏳ You have results made offline. They will be saved online when the internet is back.')}</p>` : ''}
       ${levelHome()}
-      ${streakCard()}
-      <a class="card review-link" href="#/review"><span class="ic" aria-hidden="true">🎯</span><span class="grow"><b>${L('Balikan ang mga mali', 'Go over your mistakes')}</b><span class="muted small">${L('Sagutan ulit ang mga namali mo at alamin ang pinakamahinang topic mo.', 'Answer your mistakes again and see your weakest topics.')}</span></span><span aria-hidden="true">›</span></a>
-      ${fold('home-progress', `<h2>${L('Ang progress mo', 'Your progress')}</h2>`, `
-      <div class="grid stats">
-        <div class="card stat"><div class="v">${stats.attempts}</div><div class="l">${L('Natapos na exam/practice', 'Exams/practice finished')}</div></div>
-        <div class="card stat"><div class="v">${mocks.length}</div><div class="l">${L('Mock exam na natapos', 'Mock exams finished')}</div></div>
-        <div class="card stat"><div class="v">${best === null ? '–' : best + '%'}</div><div class="l">${L('Pinakamataas na mock score', 'Highest mock score')}</div></div>
-        <div class="card stat"><div class="v">${mocks.filter((m) => m.pct >= 80).length}</div><div class="l">${L('Pasado (80% pataas)', 'Passed (80% and up)')}</div></div>
-      </div>
-      <div class="card" style="margin-top:12px"><h3>${L('Score kada subject', 'Score by subject')}</h3>${Object.keys(stats.subjects).length ? subjectBars(stats.subjects)
-        : `<p class="muted small" style="margin:6px 0 0">${L('Lalabas dito ang score mo kada subject pagkatapos ng unang exam o practice.', 'Your score by subject shows here after your first exam or practice.')}</p>`}</div>`, { card: false })}
       ${fold('home-recent', `<h2>${L('Mga huling exam', 'Recent exams')}</h2>`, done.length ? `<div class="list">${done.slice(0, 5).map(attemptRow).join('')}</div><p><a href="#/history">${L('Tingnan lahat →', 'See all →')}</a></p>` : `<div class="card empty">${L('Wala ka pang natatapos na exam. Subukan ang isang mock exam!', 'You have not finished an exam yet. Try a mock exam!')}</div>`, { card: false })}
     `);
     $$('.level-switch [data-level]').forEach((b) => (b.onclick = () => { if (b.dataset.level !== myLevel()) { setLevel(b.dataset.level); paintHome(l0, s0); } }));
@@ -1758,29 +1759,18 @@
      So it protects the questions in the ways it can:
      - Android app: screenshots and screen recording are blocked (FLAG_SECURE, see .github/workflows/apps.yml).
        Windows app: same (content protection, see apps/desktop/main.js).
-     - A light watermark with the user's email and a Data Privacy Act (RA 10173) warning covers the questions,
-       so a photo or video of the screen carries the warning and shows which account it came from.
+     - A Data Privacy Act (RA 10173) warning line sits above the questions (no watermark over the page, so the paper stays clean).
      - The questions are hidden while the app is in the background or not in focus,
        and cannot be selected, copied or printed. */
   const PRIVACY_LINE = () => L('Protektado ng Data Privacy Act of 2012 (RA 10173). Bawal kopyahin, kunan ng larawan o i-video.', 'Protected by the Data Privacy Act of 2012 (RA 10173). Do not copy, photograph or record.');
-  function watermark(who) {
-    const x = (t) => esc(t).replace(/[^\x20-\x7e]/g, ''); // plain text only inside the image
-    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="340" height="200"><g transform="rotate(-24 170 100)" fill="#808080" font-family="Arial,sans-serif" text-anchor="middle">`
-      + `<text x="170" y="88" font-size="15" font-weight="700">${L('RA 10173 - BAWAL KUNAN NG LARAWAN/VIDEO', 'RA 10173 - NO PHOTOS/VIDEOS')}</text>`
-      + `<text x="170" y="112" font-size="14">${x(who)}</text></g></svg>`;
-    return 'data:image/svg+xml,' + encodeURIComponent(svg);
-  }
   function guardOn() {
     document.body.classList.add('guard');
-    let wm = document.getElementById('wm'), sh = document.getElementById('shield');
-    if (!wm) {
-      wm = document.createElement('div'); wm.id = 'wm'; wm.setAttribute('aria-hidden', 'true');
+    let sh = document.getElementById('shield');
+    if (!sh) {
       sh = document.createElement('div'); sh.id = 'shield'; sh.setAttribute('aria-hidden', 'true');
-      document.body.append(wm, sh);
+      document.body.append(sh);
     }
     sh.innerHTML = `<div><div style="font-size:40px">🔒</div><b>${L('Nakatago ang tanong', 'The question is hidden')}</b><p class="muted small">${esc(PRIVACY_LINE())}</p></div>`;
-    // The admin can turn the watermark off (Admin → Settings → Exam screen). On by default.
-    wm.style.backgroundImage = S.config && S.config.watermark === false ? 'none' : `url("${watermark(S.user ? S.user.email : '')}")`;
     Ads.hide(); // never ads during an exam
   }
   function guardOff() { document.body.classList.remove('guard', 'away'); }
@@ -1803,10 +1793,10 @@
     if (store.get(uk('cse-privacy-ok'))) return true;
     const ok = await confirmBox(L('Paalala sa privacy', 'Privacy reminder'), L(`Ang mga tanong at ang account mo ay <b>protektado ng Data Privacy Act of 2012 (RA 10173)</b>.
       Bawal kopyahin, i-screenshot, kunan ng larawan, o i-video ang screen habang nag-e-exam.<br><br>
-      May malabong watermark ng email mo at babala ng RA 10173 sa screen, kaya makikita ito sa anumang larawan o video na kukunin ng iba.
+      May babala ng RA 10173 sa itaas ng exam.
       Sa Android at Windows app, naka-block ang screenshot at screen recording.`, `The questions and your account are <b>protected by the Data Privacy Act of 2012 (RA 10173)</b>.
       Do not copy, screenshot, photograph, or record the screen during an exam.<br><br>
-      A faint watermark of your email and an RA 10173 warning are on the screen, so they show in any photo or video someone takes.
+      An RA 10173 warning is shown above the exam.
       In the Android and Windows apps, screenshots and screen recording are blocked.`), L('Naiintindihan ko', 'I understand'));
     if (ok) store.set(uk('cse-privacy-ok'), 1);
     return ok;
@@ -2012,28 +2002,20 @@
     $app.innerHTML = `
       <div class="exam-top"><div class="inner">
         <button class="btn ghost small" id="quit" aria-label="${L('Lumabas', 'Exit')}">✕</button>
-        <div class="grow" style="flex:1;min-width:0">
-          <div class="exam-title">${showLevel() ? levelChip(levelOf(a)) : ''}${setChip(a)}<b class="ellipsis small">${esc(a.title.replace(/ Mock Exam/, '').replace(/ · Set \d+$/, ''))}</b></div>
-          <div class="muted small" id="answered"></div></div>
+        <div class="grow exam-count"><b id="pageNo"></b><span class="muted small" id="answered"></span></div>
         ${ex.deadline ? `<div class="timer" id="timer" role="timer" aria-label="${L('Natitirang oras', 'Time left')}">--:--</div>` : ''}
-        <button class="btn secondary small" id="navBtn" aria-label="${L('Lahat ng tanong', 'All questions')}">☰ ${L('Lahat', 'All')}</button>
+        <button class="btn ghost small flag-btn" id="flag" title="${L('Markahan para balikan', 'Mark to come back to')}" aria-label="${L('Markahan para balikan', 'Mark to come back to')}">⚑</button>
+        <button class="btn secondary small" id="navBtn" title="${L('Lahat ng tanong at Isumite', 'All questions and Submit')}" aria-label="${L('Lahat ng tanong at Isumite', 'All questions and Submit')}">☰</button>
       </div></div>
       <div class="progress"><i id="prog"></i></div>
       ${ex.deadline && !practice ? '<div class="pace-bar small"><span id="pace" class="pace"></span></div>' : ''}
       ${S.config.privacy_strip === false ? '' : `<div class="privacy-strip">🔒 ${esc(PRIVACY_LINE())}</div>`}
-      <main class="paper-desk" id="desk"><div class="paper-stack"><article class="paper" id="qwrap" aria-live="polite"></article></div></main>
-      <div class="paper-foot"><div class="inner">
-        <button class="btn ghost flag-btn" id="flag" title="${L('Markahan para balikan', 'Mark to come back to')}" aria-label="${L('Markahan para balikan', 'Mark to come back to')}">⚑</button>
-        <button class="page-ind" id="pageInd" type="button" title="${L('Lahat ng tanong', 'All questions')}" aria-label="${L('Lahat ng tanong', 'All questions')}"><b id="pageNo"></b><small>${matchMedia('(hover: hover) and (pointer: fine)').matches ? L('← → o pindutin ang kanto', '← → or click the corner') : `‹ ${L('i-swipe para mag-flip', 'swipe to turn')} ›`}</small></button>
-        <button class="btn" id="submitBtn">${L('Isumite', 'Submit')} ✓</button>
-      </div></div>`;
+      <main class="paper-desk" id="desk"><div class="paper-stack"><article class="paper" id="qwrap" aria-live="polite"></article></div></main>`;
 
     $('#quit').onclick = async () => {
       await saveAnswers(true);
       if (await confirmBox(L('Lumabas muna?', 'Leave for now?'), L('Naka-save ang mga sagot mo. Maaari mo itong ituloy mamaya mula sa Home.', 'Your answers are saved. You can continue later from Home.') + (ex.deadline ? L(' <b>Tuloy pa rin ang takbo ng oras.</b>', ' <b>The timer keeps running.</b>') : ''), L('Lumabas', 'Leave'))) { stopTimer(); go('#/'); }
     };
-    $('#submitBtn').onclick = submitFlow;
-    $('#pageInd').onclick = openNav;
     paperSwipe($('#desk'));
     $('#flag').onclick = () => {
       ex.flags.has(ex.idx) ? ex.flags.delete(ex.idx) : ex.flags.add(ex.idx);
@@ -2214,7 +2196,7 @@
     const n = Object.keys(ex.answers).length;
     $('#answered').textContent = L(`${n}/${a.items.length} nasagutan`, `${n}/${a.items.length} answered`);
     $('#prog').style.width = pct(n, a.items.length) + '%';
-    $('#pageNo').textContent = `${idx + 1} / ${a.items.length}`;
+    $('#pageNo').textContent = L(`Tanong ${idx + 1} / ${a.items.length}`, `Question ${idx + 1} / ${a.items.length}`);
     $('#flag').classList.toggle('on', ex.flags.has(idx));
     if (dir) window.scrollTo(0, 0);
     if (ghost) flip(page, ghost, dir);
@@ -2486,9 +2468,21 @@
   function paintHistory(l0, s0) {
     if (s0 && Array.isArray(s0.days)) store.set(uk('cse-days'), s0.days);
     const { list, stats } = withLocal(l0, s0);
-    const trend = stats.mocks.slice(-10);
+    const trend = stats.mocks.slice(-10), mocks = stats.mocks;
+    const best = mocks.length ? Math.max(...mocks.map((m) => m.pct)) : null;
+    // Premium only: the streak and "Go over your mistakes" cards (Home stays clean for every user).
+    const prem = S.premium ? `${streakCard()}
+      <a class="card review-link" href="#/review"><span class="ic" aria-hidden="true">🎯</span><span class="grow"><b>${L('Balikan ang mga mali', 'Go over your mistakes')}</b><span class="muted small">${L('Sagutan ulit ang mga namali mo at alamin ang pinakamahinang topic mo.', 'Answer your mistakes again and see your weakest topics.')}</span></span><span aria-hidden="true">›</span></a>` : '';
     shell('history', `
       <h1>${L('Mga resulta', 'Results')}</h1>
+      ${prem}
+      ${fold('history-progress', `<h2>${L('Ang progress mo', 'Your progress')}</h2>`, `
+      <div class="grid stats">
+        <div class="card stat"><div class="v">${stats.attempts}</div><div class="l">${L('Natapos na exam/practice', 'Exams/practice finished')}</div></div>
+        <div class="card stat"><div class="v">${mocks.length}</div><div class="l">${L('Mock exam na natapos', 'Mock exams finished')}</div></div>
+        <div class="card stat"><div class="v">${best === null ? '–' : best + '%'}</div><div class="l">${L('Pinakamataas na mock score', 'Highest mock score')}</div></div>
+        <div class="card stat"><div class="v">${mocks.filter((m) => m.pct >= 80).length}</div><div class="l">${L('Pasado (80% pataas)', 'Passed (80% and up)')}</div></div>
+      </div>`, { card: false })}
       ${trend.length ? `<div class="card"><h3>${L('Huling mga mock exam', 'Recent mock exams')}</h3>
         <div style="display:flex;align-items:flex-end;gap:6px;height:140px;padding-top:10px;border-bottom:1px dashed var(--line);position:relative">
           <div style="position:absolute;left:0;right:0;bottom:${80 * 1.3}px;border-top:1px dashed var(--ok)"></div>
@@ -3053,7 +3047,6 @@
       <p class="muted small">${L('Para sa Android: ilagay din ang AdMob <b>App ID</b> sa GitHub (Settings → Secrets and variables → Actions → Variables → <code>ADMOB_APP_ID</code>) bago i-build ang APK.', 'For Android: also set the AdMob <b>App ID</b> in GitHub (Settings → Secrets and variables → Actions → Variables → <code>ADMOB_APP_ID</code>) before building the APK.')}</p>`)}
 
       ${sec('exam', `🔒 ${L('Screen habang nag-e-exam', 'Exam screen')}`, `
-      ${check('wmon', st.exam_watermark !== '0', L('Watermark na "RA 10173" at email ng user sa buong screen', '"RA 10173" watermark with the user\'s email across the screen'))}
       ${check('stripon', st.exam_privacy_strip !== '0', L('Babala ng Data Privacy Act of 2012 (RA 10173) sa itaas ng exam', 'Data Privacy Act of 2012 (RA 10173) warning above the exam'))}
       <p class="muted small" style="margin:4px 0 0">${L('Naka-block pa rin ang screenshot sa Android at Windows app kahit naka-off ang mga ito.', 'Screenshots stay blocked in the Android and Windows apps even when these are off.')}</p>`)}
       <button class="btn block" type="submit">${L('I-save ang settings', 'Save settings')}</button></form>`;
@@ -3108,7 +3101,7 @@
           pay_online_on: on('payon'), pay_manual_on: on('payman'), pay_methods: collect(),
           free_practice_daily: v('fdaily'), free_practice_items: v('fitems'), free_mock_daily: v('fmock'), free_sets: v('fsets'),
           ads_on: on('adson'), adsense_client: v('asc').trim(), adsense_slot: v('ass').trim(), admob_banner: v('amb').trim(),
-          exam_watermark: on('wmon'), exam_privacy_strip: on('stripon'),
+          exam_privacy_strip: on('stripon'),
         });
         methods = saved.pay_methods; paintPm();
         await refreshMe().catch(() => {});
@@ -3530,44 +3523,89 @@
   init();
   setTimeout(() => { try { sessionStorage.removeItem('cse-fix-boot'); } catch { /* ignore */ } AutoFix.run('start'); }, 6000);
 
-  /* ---------------- automatic updates ----------------
-     New screens download in the background. They are switched in only at a safe moment: when the app
-     opens, or when it is in the background and the user is not in the middle of anything
-     (no exam or practice, no open window, nothing typed).
-     Premium gets new versions much sooner than Free:
+  /* ---------------- updates: download quietly, then ask ----------------
+     New screens download in the background. When one is ready, the app asks (every user and admin):
+     "Update now?" with "Later" and "Update". It asks only at a safe moment: no exam or practice, no open
+     window, nothing typed. Update: an "Updating the app…" screen, the new version opens, and a soft chime
+     plays with "The app is updated!" (the chime follows Account → Sounds on/off and volume).
+     Later: it asks again after an hour, or the next time the app opens.
+     Premium finds new versions much sooner than Free:
      - checks: every 5 minutes while the app is open, and on coming back to it (at most once a minute);
-       Free: every 30 minutes, and on coming back at most once every 10 minutes
-     - switching in: also on the next change of screen (Free: only when the app opens or is in the background) */
+       Free: every 30 minutes, and on coming back at most once every 10 minutes */
   const updEvery = () => (S.premium ? 5 * 60e3 : 30 * 60e3); // while the app is open
   const updGap = () => (S.premium ? 60e3 : 10 * 60e3); // on coming back to the app
   const busy = () => !!S.exam || !!document.querySelector('.modal-bg')
     || $$('input, textarea').some((el) => (el.type === 'checkbox' || el.type === 'radio' ? el.checked !== el.defaultChecked : el.value !== el.defaultValue));
   const markUpdated = () => store.set('cse-updated', 1);
-  if (store.get('cse-updated')) { store.del('cse-updated'); setTimeout(() => toast(L('Na-update ang app sa bagong bersyon.', 'The app was updated to a new version.')), 600); }
+  if (store.get('cse-updated')) {
+    store.del('cse-updated');
+    setTimeout(() => { toast(L('✅ Updated na ang app!', '✅ The app is updated!')); Sound.playSoon('updated'); }, 600);
+  }
+  const UpdAsk = (() => {
+    let asking = false, later = 0;
+    function updating(on) {
+      let el = document.getElementById('updating');
+      if (!on) { if (el) el.remove(); return; }
+      if (el) return;
+      el = document.createElement('div'); el.id = 'updating'; el.setAttribute('role', 'status'); el.setAttribute('aria-live', 'assertive');
+      el.innerHTML = `<div><div class="upd-spin" aria-hidden="true"></div><b>${L('Ina-update ang app…', 'Updating the app…')}</b><p class="muted small">${L('Huwag munang isara. Ilang segundo lang ito.', 'Please do not close it. It takes a few seconds.')}</p></div>`;
+      document.body.appendChild(el);
+    }
+    // apply(): switch to the new version (the app restarts by itself).
+    function ask(apply) {
+      if (asking || busy() || Date.now() - later < 3600e3 || document.getElementById('updating')) return;
+      asking = true;
+      modal(`<h2 style="margin-top:0">🔄 ${L('May bagong bersyon ng app', 'A new version of the app is ready')}</h2>
+        <p class="muted">${L('I-update na ngayon? Ilang segundo lang ito. Naka-save ang lahat ng resulta at settings mo.', 'Update now? It takes a few seconds. All your results and settings are saved.')}</p>
+        <div class="row" style="justify-content:flex-end;margin-top:16px"><button class="btn ghost" data-x>${L('Mamaya', 'Later')}</button><button class="btn" data-ok>${L('I-update', 'Update')}</button></div>`,
+      (bg, close) => {
+        $('[data-x]', bg).onclick = () => { close(); asking = false; later = Date.now(); };
+        $('[data-ok]', bg).onclick = async () => {
+          close(); asking = false; updating(true); markUpdated();
+          await new Promise((r) => setTimeout(r, 1200)); // let "Updating the app…" show
+          try { await apply(); } catch {
+            updating(false); store.del('cse-updated'); later = Date.now();
+            toast(L('Hindi natuloy ang update. Susubukan ulit mamaya.', 'The update did not go through. It will try again later.'));
+          }
+        };
+      });
+    }
+    return { ask, updating };
+  })();
 
   // Website (and the app installed from the website): the service worker keeps the files on the device.
   if (!IS_APP && 'serviceWorker' in navigator && location.protocol.startsWith('http')) {
     window.addEventListener('load', async () => {
       let reg;
       try { reg = await navigator.serviceWorker.register('/sw.js', { updateViaCache: 'none' }); } catch { return; }
-      let controlled = !!navigator.serviceWorker.controller, reloadWhenSafe = false, switching = false, last = Date.now();
-      // now: switch even though the app is on screen (Premium, right after a change of screen).
-      const applyWhenSafe = (now) => {
-        if ((!now && !document.hidden) || busy()) return;
-        if (reloadWhenSafe) { markUpdated(); location.reload(); return; }
-        if (reg.waiting && navigator.serviceWorker.controller) { switching = !!now; reg.waiting.postMessage('skip-waiting'); }
+      let controlled = !!navigator.serviceWorker.controller, accepted = false, otherTab = false, last = Date.now();
+      // A new version is downloaded and waiting: ask.
+      const offer = () => {
+        if (!reg.waiting || !navigator.serviceWorker.controller || document.hidden) return;
+        UpdAsk.ask(() => new Promise((ok, fail) => {
+          if (!reg.waiting) return fail(new Error('gone'));
+          accepted = true; reg.waiting.postMessage('skip-waiting');
+          setTimeout(() => fail(new Error('slow')), 20000); // the reload below normally comes first
+        }));
       };
       navigator.serviceWorker.addEventListener('controllerchange', () => {
         if (!controlled) { controlled = true; return; } // first visit: nothing to refresh
-        reloadWhenSafe = true; applyWhenSafe(switching);
+        if (accepted) { location.reload(); return; }
+        otherTab = true; // the update was accepted in another tab: switch here too when it is safe
+      });
+      const otherTabSafe = () => { if (otherTab && !busy()) { markUpdated(); location.reload(); } };
+      reg.addEventListener('updatefound', () => {
+        const w = reg.installing;
+        if (w) w.addEventListener('statechange', () => { if (w.state === 'installed') offer(); });
       });
       const look = (min) => {
         if (!navigator.onLine || Date.now() - last < min) return;
         last = Date.now(); reg.update().catch(() => {});
       };
-      document.addEventListener('visibilitychange', () => { if (document.hidden) applyWhenSafe(); else look(updGap()); });
-      setInterval(() => { if (!document.hidden) look(updEvery()); }, 60e3);
-      window.addEventListener('hashchange', () => { if (S.premium) applyWhenSafe(true); });
+      document.addEventListener('visibilitychange', () => { if (document.hidden) otherTabSafe(); else { look(updGap()); offer(); } });
+      setInterval(() => { if (!document.hidden) { look(updEvery()); offer(); } }, 60e3);
+      window.addEventListener('hashchange', () => { otherTabSafe(); setTimeout(offer, 400); });
+      setTimeout(offer, 1500); // the app just opened with a new version waiting
     });
   }
 
@@ -3582,10 +3620,14 @@
     let pending = store.get('cse-ota'), lastCheck = 0;
     if (pending && pending.version === BUILD) { store.del('cse-ota'); pending = null; } // already switched
     else if (pending && pending.tried) { store.set('cse-ota-bad', pending.version); store.del('cse-ota'); pending = null; } // did not start: stay on this one
+    // A new version is downloaded: ask (see UpdAsk). Update: the plugin restarts the screens on the new one.
     const applyWhenSafe = () => {
-      if (!pending || busy()) return;
-      store.set('cse-ota', { ...pending, tried: true }); markUpdated();
-      Updater.set({ id: pending.id }).catch(() => { store.set('cse-ota', pending); store.del('cse-updated'); });
+      if (!pending || document.hidden) return;
+      const p = pending;
+      UpdAsk.ask(async () => {
+        store.set('cse-ota', { ...p, tried: true });
+        try { await Updater.set({ id: p.id }); } catch (e) { store.set('cse-ota', p); throw e; }
+      });
     };
     const check = async (min = updGap()) => {
       if (pending || !navigator.onLine || Date.now() - lastCheck < min) return;
@@ -3597,13 +3639,24 @@
         const b = await Updater.download({ url: API + u.url, version: u.version });
         pending = { id: b.id, version: u.version };
         store.set('cse-ota', pending);
+        applyWhenSafe();
       } catch { /* try again later */ }
     };
-    applyWhenSafe(); // app just opened: switch now if a new version is ready
+    setTimeout(applyWhenSafe, 1500); // app just opened: ask now if a new version is ready
     setTimeout(() => check(0), S.premium ? 1500 : 5000);
-    document.addEventListener('visibilitychange', () => { if (document.hidden) applyWhenSafe(); else check(); });
-    document.addEventListener('pause', applyWhenSafe);
-    setInterval(() => { if (!document.hidden) check(updEvery()); }, 60e3);
-    window.addEventListener('hashchange', () => { if (S.premium) applyWhenSafe(); }); // Premium: on the next change of screen
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) { check(); applyWhenSafe(); } });
+    setInterval(() => { if (!document.hidden) { check(updEvery()); applyWhenSafe(); } }, 60e3);
+    window.addEventListener('hashchange', () => setTimeout(applyWhenSafe, 400));
+  }
+
+  // Windows app: the new version downloads in the background (apps/desktop/main.js); ask, then install and restart.
+  const desk = window.cseDesktop && window.cseDesktop.updates;
+  if (desk && desk.onReady) {
+    const offer = () => { if (!document.hidden) UpdAsk.ask(() => desk.install()); };
+    desk.onReady(() => setTimeout(offer, 400));
+    window.addEventListener('hashchange', () => desk.ready().then((r) => { if (r) setTimeout(offer, 400); }).catch(() => {}));
+    setInterval(() => desk.ready().then((r) => { if (r) offer(); }).catch(() => {}), 60e3);
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) desk.ready().then((r) => { if (r) offer(); }).catch(() => {}); });
+    desk.ready().then((r) => { if (r) setTimeout(offer, 1500); }).catch(() => {});
   }
 })();
