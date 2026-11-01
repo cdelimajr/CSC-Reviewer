@@ -260,12 +260,25 @@ app.post('/api/auth/register', wrap(async (req, res) => {
   res.json(withToken(res, { user: publicUser(user) }));
 }));
 
+// Offline login (Premium): a device that logged in without internet logs in again here once it is back online,
+// with "since" = when it logged in offline. If the account logged in on another device after that, the newer
+// login wins (one login at a time), so this device is told it was logged out instead.
+async function newerElsewhere(userId, since) {
+  const t = Number(since);
+  if (!t || !Number.isFinite(t)) return false;
+  const row = await db.get('SELECT 1 AS x FROM sessions WHERE user_id = ? AND replaced_at IS NULL AND expires_at > ? AND expires_at - ? > ? LIMIT 1',
+    userId, Date.now(), SESSION_DAYS * 864e5, t);
+  return !!row;
+}
+const tooLate = (res) => res.status(409).json({ error: REPLACED, code: 'replaced' });
+
 app.post('/api/auth/login', wrap(async (req, res) => {
   const email = String(req.body.email || '').trim().toLowerCase();
   if (limited('login:' + req.ip + email, 10)) return res.status(429).json({ error: 'Masyadong maraming subok. Maghintay ng 10 minuto.' });
   const u = await db.get('SELECT * FROM users WHERE email = ?', email);
   if (!u || !checkPassword(String(req.body.password || ''), u)) return res.status(401).json({ error: 'Mali ang email o password.' });
   if (u.disabled) return res.status(403).json({ error: 'Naka-disable ang account na ito. Makipag-ugnayan sa admin.' });
+  if (await newerElsewhere(u.id, req.body.since)) return tooLate(res);
   await newSession(res, u.id);
   res.json(withToken(res, { user: publicUser(u) }));
 }));
@@ -363,6 +376,7 @@ app.post('/api/auth/device/login', wrap(async (req, res) => {
   const u = await db.get('SELECT * FROM users WHERE id = ?', d.user_id);
   if (!u) return res.status(401).json({ error: 'Wala na ang account na ito.', code: 'device' });
   if (u.disabled) return res.status(403).json({ error: 'Naka-disable ang account na ito. Makipag-ugnayan sa admin.' });
+  if (await newerElsewhere(u.id, req.body.since)) return tooLate(res);
   await db.run('UPDATE devices SET last_used_at = ? WHERE id = ?', Date.now(), d.id);
   await newSession(res, u.id);
   res.json(withToken(res, { user: publicUser(u) }));

@@ -523,3 +523,4 @@ body.guard { background: var(--desk); }
 .page-ind b { font-variant-numeric: tabular-nums; font-size: 16px; }
 .page-ind small { color: var(--muted); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
 @media (prefers-reduced-motion: reduce) { .page-in, .ripple, .flip-hint span { animation: none; } }
+.auth-offline { margin-bottom: 10px; text-align: left; }
