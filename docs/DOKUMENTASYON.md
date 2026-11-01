@@ -2,7 +2,7 @@
 
 Mga batas at patakaran ng gobyerno na sinusunod ng app, paano ito ginawa, paano ito pinapatakbo, saan ito gumagana, at ang kasaysayan ng bawat bersyon.
 
-- **Kasalukuyang bersyon:** 1.19.0 (Nobyembre 1, 2026)
+- **Kasalukuyang bersyon:** 1.20.0 (Nobyembre 1, 2026)
 - **Huling update ng dokumentong ito:** Nobyembre 1, 2026
 
 > **Panuntunan sa pag-update:** sa bawat pagbabago sa app (bawat pull request), i-update ang dokumentong ito: dagdagan ang [Kasaysayan ng bersyon](#7-kasaysayan-ng-bersyon), palitan ang "Kasalukuyang bersyon" sa itaas, ang `APP_VERSION` sa `public/app.js` at ang `version` sa `package.json`, at baguhin ang anumang bahagi sa ibaba na naapektuhan (hal. bagong data na kinokolekta, bagong batas o patakaran ng gobyerno). Nakasulat din ito sa `CLAUDE.md`.
@@ -144,6 +144,19 @@ Mga detalye:
 - **Naibabalik na pagbabago** (mga aksyon sa user, I-save ang settings, zoom): nase-save agad; ang I-undo ay nagse-save ulit ng dating value. Para sa Premium, ibinabalik ang eksaktong petsa ng pagtatapos (`premium_until` sa `PATCH /api/admin/users/:id`).
 - Isa lang ang bar: kapag may bagong aksyon, tinatapos agad ang nauna. Hindi maa-undo ang pag-approve/reject ng bayad, pag-reset ng password at pagpapadala ng email, dahil may email na agad na naipapadala o hindi na makukuha ang lumang password; may tanong pa rin bago gawin ang mga ito.
 
+**Drop down na seksyon:** `fold` sa `public/app.js` (`FOLD_MS`). Kusang sumasara pagkalipas ng 30 segundo (mula 1.20.0; dati 10). Nagsisimula ulit ang 30 segundo habang ginagamit ito, at hindi ito sumasara habang may sinusulatan na box o may bukas na window. Hindi sumasara nang kusa ang Admin → Settings.
+
+**Kusang pag-update (mula 1.20.0, mas mabilis sa Premium):** sa dulo ng `public/app.js` (`updEvery`, `updGap`) at `autoUpdate` sa `apps/desktop/main.js`.
+
+| | Premium | Libre |
+|---|---|---|
+| Paghahanap habang bukas ang app (website, Android/iPhone) | bawat 5 minuto | bawat 30 minuto |
+| Paghahanap pagbalik sa app | agad (hanggang isang beses kada minuto) | hanggang isang beses kada 10 minuto |
+| Windows app (Setup.exe) | bawat 15 minuto, at pagbalik sa window | bawat oras, at pagbalik sa window (hanggang isang beses kada 10 minuto) |
+| Kailan ginagamit ang bagong bersyon | pagbukas ulit, habang nasa background, **o sa susunod na paglipat ng screen** | pagbukas ulit, o habang nasa background |
+
+Laging dina-download sa background at walang tanong sa user. Hindi kailanman lumilipat sa bagong bersyon habang may exam o practice, may bukas na window, o may tinatype. Sa Windows app, ini-install ang bago kapag isinara ang app (kaya bago na sa susunod na bukas). Kailangan ng Windows app mula 1.20.0 para sa mas mabilis na paghahanap ng Premium; sa mas luma, bawat 4 na oras pa rin hanggang ma-update ito.
+
 **Seguridad:** tingnan ang Seksyon 1.1. Dagdag pa: CORS para sa apps ay token lang (walang cookie), `trust proxy` para sa tamang IP sa limit ng subok, at hindi kailanman naka-cache ng service worker ang `/api`.
 
 ---
@@ -200,7 +213,7 @@ Kusang hinahanap at inaayos ng app ang mga karaniwang problema, online man o off
 |---|---|---|
 | Website (phone at computer) | Chrome, Edge, Firefox, Safari na bago (2022 pataas) | Pwedeng i-install bilang app (Add to Home screen). Offline sa Premium |
 | Android app (APK) | Android 6.0 pataas (Capacitor 7) | Face login: phone na may "strong" face unlock lang (hal. Pixel 8 pataas); fingerprint sa iba |
-| Windows app (EXE) | Windows 10 o 11, 64-bit | Windows Hello para sa mabilis na login; Setup.exe ang kusang nag-a-update |
+| Windows app (EXE) | Windows 10 o 11, 64-bit | Windows Hello para sa mabilis na login; Setup.exe ang kusang nag-a-update (Premium bawat 15 minuto, Libre bawat oras) |
 | iPhone (IPA) | iOS 14 pataas (Capacitor 7) | Kailangang i-sign (Apple Developer o Sideloadly/AltStore) |
 | Server | Node.js 20 pataas | Render (libre) + Turso + Brevo |
 
@@ -214,7 +227,8 @@ Kusang hinahanap at inaayos ng app ang mga karaniwang problema, online man o off
 
 | Bersyon | Petsa | PR | Mga pagbabago |
 |---|---|---|---|
-| **1.19.0** | 2026-11-01 | #16 | Bagong **I-undo sa loob ng 10 segundo**: bar sa ibaba na may ↶ I-undo pagkatapos burahin ang account, itago ang tanong, burahin ang exam set, alisin ang QR o payment account, baguhin ang user (admin, disable, Premium, verified), i-save ang settings, ibalik ang zoom sa 100%, at i-off ang mabilis na login. Ipinapadala lang sa server ang pagbura pagkalipas ng 10 segundo, at itinutuloy ito kahit naisara ang app o offline. Wala nang tanong bago itago ang tanong o burahin ang exam set (may I-undo na) |
+| **1.20.0** | 2026-11-01 | #20 | **Mas mabilis na kusang pag-update**, lalo na sa Premium. Premium: hinahanap ang bagong bersyon bawat 5 minuto habang bukas ang app (Windows app: bawat 15 minuto) at pagbalik sa app, at ginagamit na ito sa susunod na paglipat ng screen kapag walang ginagawa ang user. Libre: bawat 30 minuto (Windows app: bawat oras, dati 4 na oras), at ginagamit pa rin pagbukas ulit o habang nasa background ang app. Hindi pa rin nag-a-update sa gitna ng exam o habang may tinatype. Ang mga drop down na seksyon ay kusang sumasara na pagkalipas ng **30 segundo** (dati 10) |
+| 1.19.0 | 2026-11-01 | #16 | Bagong **I-undo sa loob ng 10 segundo**: bar sa ibaba na may ↶ I-undo pagkatapos burahin ang account, itago ang tanong, burahin ang exam set, alisin ang QR o payment account, baguhin ang user (admin, disable, Premium, verified), i-save ang settings, ibalik ang zoom sa 100%, at i-off ang mabilis na login. Ipinapadala lang sa server ang pagbura pagkalipas ng 10 segundo, at itinutuloy ito kahit naisara ang app o offline. Wala nang tanong bago itago ang tanong o burahin ang exam set (may I-undo na) |
 | 1.18.0 | 2026-11-01 | #18, #19 | Pagsusuri ng buong app at mga ayos. **Mga window na nagtatanong** (privacy, simulan ang exam, mag-logout…): ang pindot sa labas ng window ay parang "Bumalik" na, kaya hindi na naiiwang naka-disable ang button na "Simulan ang practice" o "Sagutan ulit". **Libreng plan:** kapag nagamit na ang mock exam o practice ngayong araw, sinasabi na agad (diretso sa Premium) sa halip na pagkatapos ng dalawang window. **Offline (Premium):** naise-save pa rin online ang mga resultang ginawa offline habang Premium pa, kahit natapos na ang Premium bago bumalik ang internet (dati, hindi na naise-save); naise-save rin ang resulta ng exam set na binura ng admin. **Pagpalit ng password:** ang offline na login sa device ay gumagamit na ng bagong password (dati, gumagana pa ang luma). **Manual na bayad:** ang halaga ay laging ang presyo sa Settings, hindi ang ipinadala ng app. **Admin → Settings:** ang maling numero (hal. presyong "abc" o negatibong araw) ay hindi na nase-save. **Server:** hindi na lumalaki nang walang hanggan ang listahan ng rate limit |
 | 1.17.0 | 2026-11-01 | #17 | **Backup at restore** (kusang naka-save sa account ang settings; Premium: backup file na gumagana offline). **Paalala araw-araw at streak 🔥** (notification sa phone app, sa website habang bukas, at opsyonal na email). **Balikan ang mali** at ranking ng mahihinang topic. **Mock exam na parang totoong CSE:** pace habang nag-e-exam, paalala sa 30/10/5/1 minuto, oras kada bahagi sa resulta. **Admin → Audit log** at alerto sa kahina-hinalang login (email sa user), Account → Seguridad. **Resibo** ng Premium (PDF, print, email) at paalala bago matapos ang Premium. **Dark mode Auto** na sumusunod sa phone (mas malinaw ang label). **Accessibility:** laki ng letra, high contrast, bawas galaw, at screen reader labels |
 | 1.15.0 | 2026-11-01 | #15 | Account: inalis ang Logout sa tabi ng pamagat (nasa kanang itaas pa rin); Premium at Tulong ay drop down na rin, kaya drop down na lahat mula Premium hanggang Tungkol sa exam. Admin: dropdown menu ang mga tab; sa Users, ang pangalan ng user ang pinipindot para sa mga aksyon (wala nang "Aksyon"); sa Exam sets, drop down ang Professional at Subprofessional; sa Settings, drop down ang Premium (may on/off at presyo sa pamagat). Bagong **Auto Fix** (online at offline). Bagong dokumentasyong ito. Mga ayos: hindi na humihinto ang server sa error sa logout o paglilinis ng session; mas ligtas na pagsumite ng exam kapag nawala ang kopya nito; tamang default na bilang ng tanong sa libreng practice; mga error sa Admin (paghahanap ng user, mga tanong, exam set) ay may malinaw na mensahe na |

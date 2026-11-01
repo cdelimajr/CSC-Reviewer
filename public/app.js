@@ -3,7 +3,7 @@
   'use strict';
   const $app = document.getElementById('app');
   const LETTERS = ['A', 'B', 'C', 'D'];
-  const APP_VERSION = '1.19.0'; // keep in step with package.json and docs/DOKUMENTASYON.md
+  const APP_VERSION = '1.20.0'; // keep in step with package.json and docs/DOKUMENTASYON.md
   const S = { user: null, meta: null, exam: null, timer: null, saveT: null };
 
   /* ---------------- helpers ---------------- */
@@ -1183,12 +1183,12 @@
      A section that opens and closes when its title is tapped (<details>, so it opens instantly).
      - All sections start closed.
      - Only one is open at a time: opening one closes the others on the screen.
-     - An open section closes by itself after 10 seconds. The 10 seconds start over while the user is using it
+     - An open section closes by itself after 30 seconds. The 30 seconds start over while the user is using it
        (tapping, typing, scrolling inside it), and it stays open while a box in it is being filled in. */
-  const FOLD_MS = 10000;
+  const FOLD_MS = 30000;
   const F = { key: null, el: null, t: 0 }; // the open section; its key survives a refresh of the same screen
   store.del('cse-fold'); // older versions remembered open sections
-  // stay: the section does not close by itself after 10 seconds (Admin → Settings, where the admin fills in forms).
+  // stay: the section does not close by itself after 30 seconds (Admin → Settings, where the admin fills in forms).
   function fold(key, title, body, { card = true, id = '', stay = false } = {}) {
     return `<details class="fold${card ? ' card' : ' plain'}" data-fold="${key}"${id ? ` id="${id}"` : ''}${stay ? ' data-stay="1"' : ''}${F.key === key ? ' open' : ''}>
       <summary><span class="fold-title">${title}</span><span class="chev" aria-hidden="true"></span></summary><div class="fold-body">${body}</div></details>`;
@@ -1227,7 +1227,7 @@
     if (!d.matches || !d.matches('details.fold')) return;
     if (d.open) { F.key = d.dataset.fold; F.el = d; foldTimer(); } else if (d === F.el) { clearTimeout(F.t); F.el = null; F.key = null; }
   }, true);
-  // Using the open section starts the 10 seconds over.
+  // Using the open section starts the 30 seconds over.
   ['pointerdown', 'keydown', 'input', 'wheel', 'touchmove', 'focusin'].forEach((ev) => document.addEventListener(ev, (e) => {
     if (F.el && e.target && e.target.nodeType === 1 && F.el.contains(e.target)) foldTimer();
   }, { capture: true, passive: true }));
@@ -3489,7 +3489,8 @@
   document.addEventListener('visibilitychange', () => { if (document.hidden) saveAnswers(); });
   window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); window._installPrompt = e; });
 
-  function applyMe(me) { S.user = me.user; S.config = me.config; S.premium = me.premium; S.practiceToday = me.practice_today || 0; S.mockToday = me.mock_today || 0; S.countDay = phDay(); Live.sync(); document.documentElement.classList.toggle('premium', !!S.premium); }
+  function applyMe(me) { S.user = me.user; S.config = me.config; S.premium = me.premium; S.practiceToday = me.practice_today || 0; S.mockToday = me.mock_today || 0; S.countDay = phDay(); Live.sync(); document.documentElement.classList.toggle('premium', !!S.premium);
+    if (window.cseDesktop && window.cseDesktop.updates) window.cseDesktop.updates.speed(!!S.premium); } // Windows app: Premium checks for updates more often
   async function refreshMe() {
     const me = await api('GET', '/api/me');
     if (!me.user && me.ended === 'replaced') { S.authNote = ELSEWHERE(); S.exam = null; stopTimer(); }
@@ -3532,7 +3533,13 @@
   /* ---------------- automatic updates ----------------
      New screens download in the background. They are switched in only at a safe moment: when the app
      opens, or when it is in the background and the user is not in the middle of anything
-     (no exam or practice, no open window, nothing typed). */
+     (no exam or practice, no open window, nothing typed).
+     Premium gets new versions much sooner than Free:
+     - checks: every 5 minutes while the app is open, and on coming back to it (at most once a minute);
+       Free: every 30 minutes, and on coming back at most once every 10 minutes
+     - switching in: also on the next change of screen (Free: only when the app opens or is in the background) */
+  const updEvery = () => (S.premium ? 5 * 60e3 : 30 * 60e3); // while the app is open
+  const updGap = () => (S.premium ? 60e3 : 10 * 60e3); // on coming back to the app
   const busy = () => !!S.exam || !!document.querySelector('.modal-bg')
     || $$('input, textarea').some((el) => (el.type === 'checkbox' || el.type === 'radio' ? el.checked !== el.defaultChecked : el.value !== el.defaultValue));
   const markUpdated = () => store.set('cse-updated', 1);
@@ -3543,18 +3550,24 @@
     window.addEventListener('load', async () => {
       let reg;
       try { reg = await navigator.serviceWorker.register('/sw.js', { updateViaCache: 'none' }); } catch { return; }
-      let controlled = !!navigator.serviceWorker.controller, reloadWhenSafe = false;
-      const applyWhenSafe = () => {
-        if (!document.hidden || busy()) return;
+      let controlled = !!navigator.serviceWorker.controller, reloadWhenSafe = false, switching = false, last = Date.now();
+      // now: switch even though the app is on screen (Premium, right after a change of screen).
+      const applyWhenSafe = (now) => {
+        if ((!now && !document.hidden) || busy()) return;
         if (reloadWhenSafe) { markUpdated(); location.reload(); return; }
-        if (reg.waiting && navigator.serviceWorker.controller) reg.waiting.postMessage('skip-waiting');
+        if (reg.waiting && navigator.serviceWorker.controller) { switching = !!now; reg.waiting.postMessage('skip-waiting'); }
       };
       navigator.serviceWorker.addEventListener('controllerchange', () => {
         if (!controlled) { controlled = true; return; } // first visit: nothing to refresh
-        reloadWhenSafe = true; applyWhenSafe();
+        reloadWhenSafe = true; applyWhenSafe(switching);
       });
-      document.addEventListener('visibilitychange', () => { if (document.hidden) applyWhenSafe(); else reg.update().catch(() => {}); });
-      setInterval(() => reg.update().catch(() => {}), 60 * 60e3);
+      const look = (min) => {
+        if (!navigator.onLine || Date.now() - last < min) return;
+        last = Date.now(); reg.update().catch(() => {});
+      };
+      document.addEventListener('visibilitychange', () => { if (document.hidden) applyWhenSafe(); else look(updGap()); });
+      setInterval(() => { if (!document.hidden) look(updEvery()); }, 60e3);
+      window.addEventListener('hashchange', () => { if (S.premium) applyWhenSafe(true); });
     });
   }
 
@@ -3574,8 +3587,8 @@
       store.set('cse-ota', { ...pending, tried: true }); markUpdated();
       Updater.set({ id: pending.id }).catch(() => { store.set('cse-ota', pending); store.del('cse-updated'); });
     };
-    const check = async () => {
-      if (pending || !navigator.onLine || Date.now() - lastCheck < 30 * 60e3) return;
+    const check = async (min = updGap()) => {
+      if (pending || !navigator.onLine || Date.now() - lastCheck < min) return;
       lastCheck = Date.now();
       try {
         const res = await fetch(API + '/api/app/update', { cache: 'no-store' });
@@ -3587,8 +3600,10 @@
       } catch { /* try again later */ }
     };
     applyWhenSafe(); // app just opened: switch now if a new version is ready
-    setTimeout(check, 5000);
+    setTimeout(() => check(0), S.premium ? 1500 : 5000);
     document.addEventListener('visibilitychange', () => { if (document.hidden) applyWhenSafe(); else check(); });
     document.addEventListener('pause', applyWhenSafe);
+    setInterval(() => { if (!document.hidden) check(updEvery()); }, 60e3);
+    window.addEventListener('hashchange', () => { if (S.premium) applyWhenSafe(); }); // Premium: on the next change of screen
   }
 })();
