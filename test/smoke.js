@@ -152,10 +152,11 @@ const lastCode = (to) => {
   assert.equal((await F('POST', `/api/attempts/${fid}/email`, {})).status, 402, 'email of the full review is Premium');
   assert.equal((await A('GET', `/api/attempts/${fid}`)).data.lite, undefined, 'admin sees the full review');
   assert.equal((await U('GET', '/api/offline/pack')).status, 402, 'offline is Premium only');
-  assert.equal((await U('POST', '/api/payments', { reference: 'GC123456' })).status, 200);
+  assert.equal((await U('POST', '/api/payments', { reference: 'GC123456', amount: '1' })).status, 200);
   assert.ok(mail.outbox.some((m) => m.to === 'admin@test.ph' && m.subject.startsWith('Bagong bayad')), 'admin notified');
   r = await A('GET', '/api/admin/payments');
   assert.equal(r.data.length, 1);
+  assert.equal(r.data[0].amount, '99', 'manual payment amount is the price, not what the app sent');
   r = await A('POST', `/api/admin/payments/${r.data[0].id}`, { action: 'approve' });
   assert.ok(r.data.until > Date.now() + 29 * 864e5);
   r = await U('GET', '/api/premium'); assert.equal(r.data.active, true);
@@ -239,6 +240,19 @@ const lastCode = (to) => {
   const count = (await U('GET', '/api/attempts')).data.length;
   await U('POST', '/api/offline/sync', { attempts: offline });
   assert.equal((await U('GET', '/api/attempts')).data.length, count, 'no duplicates');
+  // A set deleted after it was saved on the device: the result is kept with the questions the user saw.
+  r = await U('POST', '/api/offline/sync', { attempts: [{ client_id: 'Ltest4', mode: 'pro', set_id: 999999, title: 'Professional Mock Exam · Set 9', items: set.items, answers: {}, started_at: Date.now() - 6e5, finished_at: Date.now() }] });
+  assert.ok(r.data.saved.Ltest4, 'result of a deleted set is still saved');
+  // Premium ended before the device came back online: results made while it was Premium are still saved.
+  const juanRow = await require('../src/db').get('SELECT id, premium_until FROM users WHERE email = ?', 'juan@test.ph');
+  await require('../src/db').run('UPDATE users SET premium_until = ? WHERE id = ?', Date.now() - 60e3, juanRow.id);
+  r = await U('POST', '/api/offline/sync', { attempts: [
+    { client_id: 'Ltest5', mode: 'practice', title: 'Practice', items: ps, answers: {}, started_at: Date.now() - 6e5, finished_at: Date.now() - 3e5 },
+    { client_id: 'Ltest6', mode: 'practice', title: 'Practice', items: ps, answers: {}, started_at: Date.now() - 1000, finished_at: Date.now() },
+  ] });
+  assert.equal(r.status, 200, 'sync still works after Premium ended');
+  assert.ok(r.data.saved.Ltest5, 'made while Premium: saved'); assert.equal(r.data.rejected.Ltest6, 'premium', 'made after Premium: refused');
+  await require('../src/db').run('UPDATE users SET premium_until = ? WHERE id = ?', juanRow.premium_until, juanRow.id);
 
   // Premium: email the full review with the PDF attached
   const mocks = (await U('GET', '/api/attempts')).data.filter((x) => x.mode !== 'practice' && x.finished_at);
@@ -329,6 +343,11 @@ const lastCode = (to) => {
   r = await U('GET', '/api/me');
   assert.equal(r.data.config.watermark, true, 'watermark on by default'); assert.equal(r.data.config.ads.on, true);
   r = await A('GET', '/api/admin/settings');
+  // Number settings: a wrong value keeps the old one, and values are kept in range
+  const price0 = r.data.price;
+  r = await A('PUT', '/api/admin/settings', { price: 'abc', plan_days: '-5', free_practice_items: '2.6' });
+  assert.equal(r.data.price, price0, 'bad price ignored'); assert.equal(r.data.plan_days, '1'); assert.equal(r.data.free_practice_items, '5');
+  r = await A('PUT', '/api/admin/settings', { plan_days: '30', free_practice_items: '20' });
   assert.deepEqual(r.data.pay_methods.map((m) => m.id), ['gcash'], 'only the GCash account that has a number (no empty Maya/PayPal/bank)');
   assert.equal(r.data.pay_methods[0].name, 'GCash');
   // Accounts are added with the type dropdown; the name comes from the type (no "name in the app")
