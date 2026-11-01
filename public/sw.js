@@ -22,7 +22,27 @@ self.addEventListener('install', (e) => {
     if ((await caches.keys()).some((k) => /^cse-reviewer-v\d+$/.test(k))) await self.skipWaiting();
   })());
 });
-self.addEventListener('message', (e) => { if (e.data === 'skip-waiting') self.skipWaiting(); });
+// Auto Fix (see app.js): check that every file of this version is saved, and download any missing one again.
+async function repair() {
+  const c = await caches.open(CACHE);
+  let fixed = 0, missing = 0;
+  for (const f of FILES) {
+    if (await c.match(f)) continue;
+    try {
+      const res = await fetch(f, { cache: 'reload' });
+      if (!res.ok) throw new Error(String(res.status));
+      await c.put(f, res); fixed++;
+    } catch { missing++; }
+  }
+  return { fixed, missing };
+}
+self.addEventListener('message', (e) => {
+  if (e.data === 'skip-waiting') self.skipWaiting();
+  else if (e.data && e.data.type === 'repair') {
+    const port = e.ports && e.ports[0];
+    e.waitUntil(repair().then((r) => port && port.postMessage(r), () => port && port.postMessage({ fixed: 0, missing: -1 })));
+  }
+});
 self.addEventListener('activate', (e) => {
   e.waitUntil(caches.keys().then((keys) => Promise.all(keys.filter((k) => k !== CACHE).map((k) => caches.delete(k)))).then(() => self.clients.claim()));
 });
@@ -33,6 +53,11 @@ self.addEventListener('fetch', (e) => {
   e.respondWith(caches.open(CACHE).then(async (c) => {
     const saved = await c.match(key);
     if (saved) return saved; // this version's files, never mixed with another version
-    return fetch(e.request).catch(async () => (await c.match('/index.html')) || Response.error());
+    try {
+      const res = await fetch(e.request);
+      // Auto Fix: a file of this version that went missing from the device is saved again.
+      if (res.ok && FILES.includes(key) && url.search === '') c.put(key, res.clone()).catch(() => {});
+      return res;
+    } catch { return (await c.match('/index.html')) || Response.error(); }
   }));
 });
