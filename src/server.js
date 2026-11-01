@@ -283,12 +283,12 @@ app.post('/api/auth/login', wrap(async (req, res) => {
   res.json(withToken(res, { user: publicUser(u) }));
 }));
 
-app.post('/api/auth/logout', async (req, res) => {
+app.post('/api/auth/logout', wrap(async (req, res) => {
   const token = sessionToken(req);
   if (token) await db.run('DELETE FROM sessions WHERE token = ?', sha(token));
   res.clearCookie('sid', { path: '/' });
   res.json({ ok: true });
-});
+}));
 
 app.post('/api/auth/verify', auth, wrap(async (req, res) => {
   if (limited('verify:' + req.user.id, 15)) return res.status(429).json({ error: 'Masyadong maraming subok. Maghintay ng ilang minuto.' });
@@ -1046,7 +1046,18 @@ app.use('/api', (req, res) => res.status(404).json({ error: 'Not found' }));
 app.get('*', (req, res) => res.sendFile(path.join(__dirname, '..', 'public', 'index.html')));
 
 // Clean expired sessions every hour.
-setInterval(() => db.run('DELETE FROM sessions WHERE expires_at < ?', Date.now()), 3600e3).unref();
+setInterval(() => db.run('DELETE FROM sessions WHERE expires_at < ?', Date.now()).catch((e) => console.error('Session cleanup error:', e)), 3600e3).unref();
+
+/* Auto Fix (server): one failed request or background job must never stop the whole server.
+   Errors are written to the log and the server keeps running; each request already answers with an error
+   message (see wrap). A broken JSON body gets a clear 400 answer instead of an HTML error page. */
+process.on('unhandledRejection', (e) => console.error('Unhandled error (server kept running):', e));
+app.use((err, req, res, next) => {
+  if (res.headersSent) return next(err);
+  if (err && (err.type === 'entity.parse.failed' || err.type === 'entity.too.large')) return res.status(err.status || 400).json({ error: 'May nangyaring error. Subukan ulit.' });
+  console.error(err);
+  res.status(500).json({ error: 'May nangyaring error. Subukan ulit.' });
+});
 
 // Prepare the database before serving requests.
 app.ready = (async () => {

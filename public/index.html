@@ -16,6 +16,43 @@
 <body>
   <div id="app"><div class="boot">Naglo-load…</div></div>
   <div id="toast" role="status" aria-live="polite"></div>
+  <script>
+    /* Auto Fix boot guard. If the app's files cannot start (a file failed to load or is broken), it clears the
+       saved app files and loads fresh ones, at most twice per tab. After that it shows a "Fix and reload" button.
+       Login, settings and results waiting to be saved stay on the device. app.js sets CSE_ALIVE when it starts. */
+    (function () {
+      var KEY = 'cse-fix-boot', done = false;
+      function en() { try { return localStorage.getItem('cse-lang') === '"en"'; } catch (e) { return false; } }
+      function log(what) {
+        try { var l = JSON.parse(localStorage.getItem('cse-fixlog') || '[]'); if (!Array.isArray(l)) l = []; l.push({ t: Date.now(), what: what, ok: false }); localStorage.setItem('cse-fixlog', JSON.stringify(l.slice(-30))); } catch (e) { /* ignore */ }
+      }
+      function clean() {
+        var jobs = [];
+        if ('serviceWorker' in navigator && navigator.onLine) jobs.push(navigator.serviceWorker.getRegistrations().then(function (rs) { return Promise.all(rs.map(function (r) { return r.unregister(); })); }));
+        if (window.caches && navigator.onLine) jobs.push(caches.keys().then(function (ks) { return Promise.all(ks.filter(function (k) { return k.indexOf('cse-reviewer-') === 0; }).map(function (k) { return caches.delete(k); })); }));
+        return Promise.all(jobs).catch(function () {});
+      }
+      function fail(why) {
+        if (done || window.CSE_ALIVE) return;
+        done = true;
+        log('boot: ' + why);
+        var n = 0;
+        try { n = +sessionStorage.getItem(KEY) || 0; sessionStorage.setItem(KEY, n + 1); } catch (e) { n = 9; }
+        if (n < 2) { clean().then(function () { location.reload(); }); return; }
+        var app = document.getElementById('app');
+        if (!app) return;
+        app.innerHTML = '<div class="boot"><p>' + (en() ? 'The app could not start.' : 'Hindi makapagsimula ang app.') + '</p><button type="button" id="bootFix" style="padding:12px 18px;border-radius:10px;border:0;background:#1e40af;color:#fff;font-weight:600">'
+          + (en() ? 'Fix and reload' : 'Ayusin at i-reload') + '</button></div>';
+        document.getElementById('bootFix').onclick = function () { try { sessionStorage.removeItem(KEY); } catch (e) { /* ignore */ } clean().then(function () { location.reload(); }); };
+      }
+      window.addEventListener('error', function (e) {
+        var t = e.target;
+        if (t && t.tagName === 'SCRIPT') fail('load ' + (t.getAttribute('src') || ''));
+        else if (!window.CSE_ALIVE && e.filename && /app\.js|pdf\.js|config\.js/.test(e.filename)) setTimeout(function () { fail(String(e.message || 'error')); }, 1500);
+      }, true);
+      window.addEventListener('load', function () { setTimeout(function () { fail('no start'); }, 4000); });
+    })();
+  </script>
   <script src="config.js"></script>
   <script src="pdf.js"></script>
   <script src="app.js"></script>

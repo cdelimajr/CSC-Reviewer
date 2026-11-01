@@ -3,6 +3,7 @@
   'use strict';
   const $app = document.getElementById('app');
   const LETTERS = ['A', 'B', 'C', 'D'];
+  const APP_VERSION = '1.15.0'; // keep in step with package.json and docs/DOKUMENTASYON.md
   const S = { user: null, meta: null, exam: null, timer: null, saveT: null };
 
   /* ---------------- helpers ---------------- */
@@ -1001,6 +1002,31 @@
     if (!S.keepScroll) window.scrollTo(0, 0);
   }
 
+  /* ---------------- dropdown menu ----------------
+     A button that shows the current choice; tapping it opens a list below it. Picking an item, tapping
+     outside, or Esc closes it. Used for the Admin tabs. */
+  function ddMenu(id, items, cur) {
+    const it = items.find(([k]) => k === cur) || items[0];
+    return `<div class="dd" id="${id}"><button type="button" class="dd-btn" aria-haspopup="menu" aria-expanded="false"><span class="dd-cur">${it[2] || ''} ${it[1]}</span><span class="chev" aria-hidden="true"></span></button>
+      <div class="dd-list" role="menu" hidden>${items.map(([k, l, ic]) => `<button type="button" role="menuitem" data-t="${k}" class="${k === it[0] ? 'active' : ''}">${ic || ''} ${l}</button>`).join('')}</div></div>`;
+  }
+  function ddPick(dd, key) {
+    const b = $(`[data-t="${key}"]`, dd);
+    if (!b) return;
+    $$('[data-t]', dd).forEach((x) => x.classList.toggle('active', x === b));
+    $('.dd-cur', dd).innerHTML = b.innerHTML;
+  }
+  const ddClose = (except) => $$('.dd.open').forEach((d) => { if (d !== except) { d.classList.remove('open'); $('.dd-list', d).hidden = true; $('.dd-btn', d).setAttribute('aria-expanded', 'false'); } });
+  document.addEventListener('click', (e) => {
+    const btn = e.target.closest && e.target.closest('.dd-btn');
+    const dd = btn && btn.parentNode;
+    ddClose(dd);
+    if (!dd) return;
+    const open = !dd.classList.contains('open');
+    dd.classList.toggle('open', open); $('.dd-list', dd).hidden = !open; btn.setAttribute('aria-expanded', String(open));
+  });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') ddClose(); });
+
   /* ---------------- auth screens ----------------
      One screen, no scrolling on a phone: name of the app, the form, quick login options,
      and "Gumawa ng account" at the bottom. The language button is at the top right. */
@@ -1487,7 +1513,8 @@
 
   /* ---------------- practice setup ---------------- */
   function viewPractice() {
-    const st = { subject: 'verbal', count: 20, minutes: 0, level: myLevel() };
+    // Free plan: the default number of questions is never one the plan does not allow.
+    const st = { subject: 'verbal', count: isFree() ? Math.max(5, Math.min(20, Number(S.config.free.practice_items) || 20)) : 20, minutes: 0, level: myLevel() };
     const subs = S.meta.subjects;
     shell('practice', `
       <div class="row between" style="flex-wrap:nowrap"><h1>${L('Practice kada subject', 'Practice by subject')}</h1>${showLevel() ? `<span id="pLvl">${levelChip(st.level, 'big')}</span>` : ''}</div>
@@ -1767,12 +1794,13 @@
     return close;
   }
   async function submitFlow() {
-    const ex = S.exam; const total = ex.a.items.length;
+    const ex = S.exam; if (!ex || ex.submitting) return;
+    const total = ex.a.items.length;
     const blank = total - Object.keys(ex.answers).length;
     const ok = await confirmBox(L('Isumite na ang exam?', 'Submit the exam?'), blank
       ? L(`May <b>${blank}</b> tanong ka pang walang sagot. Sa totoong CSE, walang bawas ang maling sagot kaya mas mabuting sagutan lahat.`, `You still have <b>${blank}</b> unanswered question(s). In the real CSE, wrong answers have no penalty, so it is better to answer all.`)
       : L('Nasagutan mo na lahat ng tanong. Hindi mo na ito mababago pagkatapos isumite.', 'You answered all questions. You cannot change them after submitting.'), L('Isumite', 'Submit'));
-    if (ok) submit();
+    if (ok && S.exam === ex) submit();
   }
   async function submit() {
     const ex = S.exam; if (!ex || ex.submitting) return;
@@ -1780,7 +1808,8 @@
     stopTimer(); clearTimeout(S.saveT);
     const finish = () => { try { localStorage.removeItem('cse-ans-' + ex.a.id); localStorage.removeItem('cse-flag-' + ex.a.id); } catch { /* ignore */ } S.exam = null; document.onkeydown = null; };
     if (isLocal(ex.a.id)) {
-      const la = local.get(ex.a.id);
+      const la = local.get(ex.a.id) || { ...ex.a }; // its saved copy went missing: grade the copy on screen
+      delete la.now;
       const { score, breakdown } = gradeLocal(la.items, ex.answers);
       let end = Date.now();
       if (la.time_limit_sec) end = Math.min(end, la.started_at + la.time_limit_sec * 1000 + 60000);
@@ -1985,19 +2014,26 @@
   /* ---------------- account ----------------
      Log out (red) is on the right of the "Account" title, and also at the top right of every screen. The language choice is always visible (not in a drop down). */
   function viewAccount() {
+    const premOn = S.user.role !== 'admin' && S.premium && S.user.premium_until > Date.now();
+    const premNote = S.user.role === 'admin' ? L('Admin: bukas lahat', 'Admin: everything open')
+      : premOn ? L('Aktibo hanggang ', 'Active until ') + new Date(S.user.premium_until).toLocaleDateString('en-PH')
+      : S.config.premium_required ? L('Hindi pa aktibo. Sa Premium: lahat ng exam set, walang limit, gumagana offline, PDF/email/print ng resulta.', 'Not active yet. With Premium: all exam sets, no limits, works offline, result PDF/email/print.')
+      : L('Libre pa ang mock exams', 'Mock exams are free for now');
     shell('account', `
-      <div class="row between page-head"><h1>Account</h1><button class="btn danger-outline small" id="logout" type="button">${LOGOUT_ICON} ${L('Mag-logout', 'Log out')}</button></div>
+      <div class="page-head"><h1>Account</h1></div>
       <div class="card">
         <div class="row between"><div><b>${esc(S.user.name)}</b><div class="muted small">${esc(S.user.email)}</div></div>
         <span class="pill">${S.user.role === 'admin' ? 'Admin' : 'Reviewer'}</span></div>
         <div class="row between lang-row"><span class="small"><b>${L('Wika', 'Language')}</b> <span class="muted">· ${L('pindutin ang flag para magpalit', 'tap the flag to switch')}</span></span>${flagBtn('big')}</div>
         ${showLevel() ? `<div class="row between lang-row"><span class="small"><b>Level</b></span><div class="seg lvl-seg">${Object.entries(LEVELS).map(([k, [c, n]]) => `<button type="button" class="lvl-opt ${k} ${myLevel() === k ? 'active' : ''}" data-level="${k}" title="${n}">${c}</button>`).join('')}</div></div>` : ''}
       </div>
-      <a class="list-item" href="#/premium" style="margin-top:12px"><div class="grow"><b>Premium</b><div class="muted small">${S.user.role === 'admin' ? L('Admin: bukas lahat', 'Admin: everything open')
-        : S.premium && S.user.premium_until > Date.now() ? L('Aktibo hanggang ', 'Active until ') + new Date(S.user.premium_until).toLocaleDateString('en-PH')
-        : S.config.premium_required ? L('Hindi pa aktibo', 'Not active yet') : L('Libre pa ang mock exams', 'Mock exams are free for now')}</div></div><span>›</span></a>
-      <a class="list-item" href="#/help" style="margin-top:8px"><div class="grow"><b>❓ ${L('Tulong at gabay', 'Help and guide')}</b><div class="muted small">${L('Paano gamitin ang app, mga madalas itanong, at ulitin ang gabay', 'How to use the app, common questions, and replay the guide')}</div></div><span>›</span></a>
       <div class="stack">
+      ${fold('acc-premium', `<h3>⭐ Premium</h3><span class="pill${premOn ? ' ok' : ''}">${premOn ? L('Aktibo', 'Active') : S.user.role === 'admin' ? 'Admin' : S.config.premium_required ? L('Hindi aktibo', 'Not active') : L('Libre', 'Free')}</span>`, `
+        <p class="muted small" style="margin:0 0 10px">${premNote}</p>
+        <a class="btn${premOn ? ' secondary' : ''}" href="#/premium">${premOn ? L('Tingnan o i-extend ang Premium', 'See or extend Premium') : L('Kumuha ng Premium', 'Get Premium')} ›</a>`)}
+      ${fold('acc-help', `<h3>❓ ${L('Tulong at gabay', 'Help and guide')}</h3>`, `
+        <p class="muted small" style="margin:0 0 10px">${L('Paano gamitin ang app, mga madalas itanong, at ulitin ang gabay.', 'How to use the app, common questions, and replay the guide.')}</p>
+        <div class="row"><a class="btn secondary" href="#/help">${L('Buksan ang Tulong', 'Open Help')} ›</a><button type="button" class="btn ghost" id="accTour">▶ ${L('Ipakita ulit ang gabay', 'Show the guide again')}</button></div>`)}
       ${fold('acc-look', `<h3>${L('Itsura ng screen', 'Screen look')}</h3>`, `
         <p class="muted small" style="margin:0 0 10px">${L('Malambot na kulay na hindi masakit sa mata. Para mag-zoom, i-pinch ang screen gamit ang dalawang daliri', 'Soft colors that are easy on the eyes. To zoom, pinch the screen with two fingers')}${IS_APP && !capNative ? L(' (o Ctrl + scroll / touchpad pinch)', ' (or Ctrl + scroll / touchpad pinch)') : ''}.</p>
         <div class="seg" id="themes">${THEMES().map(([k, l]) => `<button type="button" data-theme="${k}" class="${(look() || {}).theme === k ? 'active' : ''}">${l}</button>`).join('')}</div>
@@ -2021,9 +2057,11 @@
         <p class="muted small" style="margin:0 0 10px">${L('<b>Android (Chrome):</b> pindutin ang ⋮ menu → "Add to Home screen" o "Install app".<br><b>iPhone (Safari):</b> pindutin ang Share (□↑) → "Add to Home Screen".<br>Sa Premium, gumagana ito kahit offline. Kailangan ng internet para mag-login, magbayad, at makatanggap ng email.',
           '<b>Android (Chrome):</b> tap the ⋮ menu → "Add to Home screen" or "Install app".<br><b>iPhone (Safari):</b> tap Share (□↑) → "Add to Home Screen".<br>With Premium, it works even offline. You need internet to log in, pay, and get emails.')}</p>
         <button class="btn secondary" id="install" hidden>${L('I-install ang app', 'Install the app')}</button>`)}
+      ${fold('acc-fix', `<h3>🛠️ Auto Fix</h3><span class="pill ok" id="fixPill">${L('Naka-on', 'On')}</span>`, `<div id="fixCard"></div>`)}
       ${fold('acc-about', `<h3>${L('Tungkol sa exam', 'About the exam')}</h3>`, `
         <p class="muted small" style="margin:0">${L('Sinusunod ng mock exam ang format ng Career Service Exam (pen and paper test) ng Civil Service Commission: Professional na 170 tanong sa loob ng 3 oras at 10 minuto, at Subprofessional na 165 tanong sa loob ng 2 oras at 40 minuto, lahat ay may 4 na pagpipilian at 80% ang passing rate. Hindi inilalabas ng CSC ang eksaktong bilang kada subject, kaya tantiya ang hati ng mga tanong. Ang app na ito ay hindi opisyal na produkto ng CSC.',
-          'The mock exam follows the format of the Civil Service Commission\'s Career Service Exam (pen and paper test): Professional has 170 questions in 3 hours and 10 minutes, and Subprofessional has 165 questions in 2 hours and 40 minutes, all with 4 choices and an 80% passing rate. The CSC does not publish the exact count per subject, so the split of questions is an estimate. This app is not an official CSC product.')}</p>`)}
+          'The mock exam follows the format of the Civil Service Commission\'s Career Service Exam (pen and paper test): Professional has 170 questions in 3 hours and 10 minutes, and Subprofessional has 165 questions in 2 hours and 40 minutes, all with 4 choices and an 80% passing rate. The CSC does not publish the exact count per subject, so the split of questions is an estimate. This app is not an official CSC product.')}</p>
+        <p class="muted small" style="margin:10px 0 0">${L('Bersyon', 'Version')} ${APP_VERSION}</p>`)}
       </div>`);
     $$('#themes [data-theme]').forEach((b) => (b.onclick = () => {
       store.set('cse-look', { ...(look() || { zoom: 1 }), theme: b.dataset.theme });
@@ -2043,11 +2081,28 @@
       e.preventDefault();
       try { await api('POST', '/api/me/password', { current: $('#cur').value, password: $('#npw').value }); toast(L('Napalitan na ang password.', 'Password changed.')); e.target.reset(); $('#err').textContent = ''; } catch (err) { $('#err').textContent = err.message; }
     };
-    $('#logout').onclick = () => logout();
+    if ($('#accTour')) $('#accTour').onclick = () => Tour.replay();
+    paintFixCard();
     if (window._installPrompt) { const b = $('#install'); b.hidden = false; b.onclick = () => window._installPrompt.prompt(); }
   }
 
-  /* Log out: the red "Log out" button at the top right of every screen, and at the top of Account.
+  // Account → Auto Fix: what it did lately, "Fix now", and the safe reset.
+  function paintFixCard() {
+    const el = $('#fixCard');
+    if (!el) return;
+    const last = AutoFix.last(), log = AutoFix.log().slice(-5).reverse();
+    el.innerHTML = `<p class="muted small" style="margin:0 0 10px">${L('Kusang hinahanap at inaayos ng app ang mga problema, online man o offline: sirang data sa device, kulang na files ng app, puno na storage, at mga resultang hindi pa naka-save online. Hindi nito binubura ang login at mga resulta mo.',
+        'The app finds and fixes problems by itself, online or offline: broken data on the device, missing app files, full storage, and results not yet saved online. It never deletes your login or results.')}</p>
+      <p class="small" style="margin:0 0 10px"><b>${L('Huling check', 'Last check')}:</b> ${last && last.t ? `${fmtDate(last.t)} · ${last.n ? L(`${last.n} naayos`, `${last.n} fixed`) : L('walang problema', 'no problems')}` : L('wala pa', 'not yet')}</p>
+      ${log.length ? `<ul class="small fix-log">${log.map((x) => `<li class="${x.ok ? '' : 'bad'}"><span class="muted">${fmtDate(x.t)}</span> · ${esc(x.what)}</li>`).join('')}</ul>` : ''}
+      <div class="row"><button type="button" class="btn secondary" id="fixNow">🛠️ ${L('Suriin at ayusin ngayon', 'Check and fix now')}</button><button type="button" class="btn ghost" id="fixReset">${L('I-reset ang files ng app', 'Reset the app files')}</button></div>`;
+    $('#fixNow').onclick = async (e) => { e.target.disabled = true; await AutoFix.run('manual', true); paintFixCard(); };
+    $('#fixReset').onclick = async () => {
+      if (await confirmBox(L('I-reset ang files ng app?', 'Reset the app files?'), L('Kukunin ulit ang mga file ng app at magre-reload ito. Hindi mabubura ang login, settings at mga resulta mo.', 'The app\'s files are downloaded again and it reloads. Your login, settings and results stay.'), L('I-reset', 'Reset'))) AutoFix.reset();
+    };
+  }
+
+  /* Log out: the red "Log out" button at the top right of every screen.
      It always asks first, so a stray tap does not log you out. */
   async function logout(ask = true) {
     const unsaved = local.all().some((a) => a.finished_at);
@@ -2097,16 +2152,18 @@
   /* ---------------- admin ---------------- */
   async function viewAdmin(tab = 'overview') {
     if (S.user.role !== 'admin') return go('#/');
-    const tabs = [['overview', 'Overview'], ['payments', 'Payments'], ['users', 'Users'], ['sets', 'Exam sets'], ['questions', L('Mga tanong', 'Questions')], ['results', L('Resulta', 'Results')], ['settings', 'Settings']];
-    /* The tab buttons never move. On a phone they wrap into rows (no sideways scrolling), and switching tabs
-       only changes the part below them: the tab bar is not drawn again and the screen does not jump. */
+    const tabs = [['overview', 'Overview', '📊'], ['payments', 'Payments', '💳'], ['users', 'Users', '👥'], ['sets', 'Exam sets', '🗂️'], ['questions', L('Mga tanong', 'Questions'), '❓'], ['results', L('Resulta', 'Results'), '📈'], ['settings', 'Settings', '⚙️']];
+    if (!tabs.some(([k]) => k === tab)) return go('#/admin');
+    /* The tabs are one dropdown menu. Switching tabs only changes the part below it:
+       the menu is not drawn again and the screen does not jump. */
     const bar = $('#admTabs');
     if (bar && bar.dataset.lang === lang && $('#adm')) {
-      $$('[data-t]', bar).forEach((b) => b.classList.toggle('active', b.dataset.t === tab));
+      ddPick(bar, tab);
       $('#adm').innerHTML = `<div class="empty">${L('Naglo-load…', 'Loading…')}</div>`;
     } else {
-      shell('admin', `<h1>Admin</h1><div class="tabs adm-tabs" id="admTabs" data-lang="${lang}" role="tablist">${tabs.map(([k, l]) => `<button type="button" role="tab" data-t="${k}" class="${k === tab ? 'active' : ''}">${l}</button>`).join('')}</div><div id="adm"><div class="empty">${L('Naglo-load…', 'Loading…')}</div></div>`);
-      $$('#admTabs [data-t]').forEach((b) => (b.onclick = () => go('#/admin/' + b.dataset.t)));
+      shell('admin', `<h1>Admin</h1>${ddMenu('admTabs', tabs, tab)}<div id="adm"><div class="empty">${L('Naglo-load…', 'Loading…')}</div></div>`);
+      $('#admTabs').dataset.lang = lang;
+      $$('#admTabs [data-t]').forEach((b) => (b.onclick = () => { ddClose(); go('#/admin/' + b.dataset.t); }));
     }
     const el = $('#adm');
     try {
@@ -2135,19 +2192,22 @@
       <div class="grid stats" style="margin-top:12px"><div class="card stat"><div class="v">${o.premiumUsers}</div><div class="l">Premium users</div></div></div>`;
   }
   async function admUsers(el) {
+    let seq = 0;
     const paint = async (q = '') => {
+      const my = ++seq;
       const users = await api('GET', '/api/admin/users?q=' + encodeURIComponent(q));
+      if (my !== seq || !$('#ut')) return; // a newer search answered first, or the admin left this tab
       $('#ut').innerHTML = users.map((u) => `
-        <tr><td><b>${esc(u.name)}</b><div class="muted small">${esc(u.email)}</div></td>
+        <tr><td>${u.id === S.user.id ? `<b>${esc(u.name)}</b> <span class="muted small">(${L('Ikaw', 'You')})</span>` : `<button type="button" class="u-link" data-u="${u.id}" title="${L('Pindutin para sa mga aksyon', 'Tap for actions')}">${esc(u.name)}</button>`}<div class="muted small">${esc(u.email)}</div></td>
         <td>${u.role === 'admin' ? '<span class="pill">Admin</span>' : 'User'} ${u.disabled ? '<span class="pill bad">Disabled</span>' : ''} ${u.premium_until > Date.now() ? '<span class="pill ok">Premium</span>' : ''} ${S.config.verify && !u.email_verified ? '<span class="pill warn">Unverified</span>' : ''}</td>
         <td>${u.attempts}</td><td>${u.avg_mock ?? '–'}${u.avg_mock != null ? '%' : ''}</td>
-        <td class="hide-mobile small muted">${esc(u.created_at.slice(0, 10))}</td>
-        <td>${u.id === S.user.id ? `<span class="muted small">${L('Ikaw', 'You')}</span>` : `<button class="btn ghost small" data-u="${u.id}">${L('Aksyon', 'Actions')}</button>`}</td></tr>`).join('') || `<tr><td colspan="6" class="empty">${L('Walang user.', 'No users.')}</td></tr>`;
+        <td class="hide-mobile small muted">${esc(String(u.created_at || '').slice(0, 10))}</td></tr>`).join('') || `<tr><td colspan="5" class="empty">${L('Walang user.', 'No users.')}</td></tr>`;
       $$('[data-u]').forEach((b) => (b.onclick = () => userActions(users.find((x) => x.id === +b.dataset.u), () => paint($('#uq').value))));
     };
     el.innerHTML = `<input type="search" id="uq" placeholder="${L('Hanapin ang pangalan o email', 'Search name or email')}">
-      <div class="card table-wrap" style="margin-top:10px;padding:8px"><table><thead><tr><th>User</th><th>Role</th><th>Exams</th><th>Avg mock</th><th class="hide-mobile">${L('Sumali', 'Joined')}</th><th></th></tr></thead><tbody id="ut"></tbody></table></div>`;
-    let t; $('#uq').oninput = (e) => { clearTimeout(t); t = setTimeout(() => paint(e.target.value), 300); };
+      <div class="card table-wrap" style="margin-top:10px;padding:8px"><table><thead><tr><th>User</th><th>Role</th><th>Exams</th><th>Avg mock</th><th class="hide-mobile">${L('Sumali', 'Joined')}</th></tr></thead><tbody id="ut"></tbody></table></div>
+      <p class="muted small">${L('Pindutin ang pangalan ng user para sa mga aksyon (Premium, admin, reset ng password, at iba pa).', 'Tap a user\'s name for actions (Premium, admin, password reset, and more).')}</p>`;
+    let t; $('#uq').oninput = (e) => { clearTimeout(t); t = setTimeout(() => paint(e.target.value).catch((err) => toast(err.message)), 300); };
     await paint();
   }
   function userActions(u, refresh) {
@@ -2183,7 +2243,8 @@
         }
       };
       $('[data-a=hist]', bg).onclick = async () => {
-        const rows = await api('GET', `/api/admin/users/${u.id}/attempts`);
+        let rows;
+        try { rows = await api('GET', `/api/admin/users/${u.id}/attempts`); } catch (e) { return toast(e.message); }
         $('#extra', bg).innerHTML = `<h3 style="margin-top:16px">${L('Mga resulta', 'Results')}</h3>${rows.length ? `<div class="list">${rows.map(attemptRow).join('')}</div>` : `<p class="muted">${L('Wala pa.', 'None yet.')}</p>`}`;
         $$('#extra a', bg).forEach((a) => a.addEventListener('click', close));
       };
@@ -2214,13 +2275,14 @@
       $('#qnext').disabled = (st.page + 1) * 50 >= r.total;
       $$('[data-e]').forEach((b) => (b.onclick = () => qForm(r.rows.find((x) => x.id === +b.dataset.e), paint)));
       $$('[data-d]').forEach((b) => (b.onclick = async () => {
-        if (await confirmBox(L('Itago ang tanong?', 'Hide the question?'), L('Hindi na ito lalabas sa mga bagong exam.', 'It will no longer appear in new exams.'), L('Itago', 'Hide'), true)) { await api('DELETE', '/api/admin/questions/' + b.dataset.d); toast(L('Naitago.', 'Hidden.')); paint(); }
+        if (await confirmBox(L('Itago ang tanong?', 'Hide the question?'), L('Hindi na ito lalabas sa mga bagong exam.', 'It will no longer appear in new exams.'), L('Itago', 'Hide'), true)) { try { await api('DELETE', '/api/admin/questions/' + b.dataset.d); toast(L('Naitago.', 'Hidden.')); await paint(); } catch (e) { toast(e.message); } }
       }));
     };
-    $('#qs').onchange = (e) => { st.subject = e.target.value; st.page = 0; paint(); };
-    let t; $('#qq').oninput = (e) => { clearTimeout(t); t = setTimeout(() => { st.q = e.target.value; st.page = 0; paint(); }, 300); };
-    $('#qprev').onclick = () => { st.page--; paint(); };
-    $('#qnext').onclick = () => { st.page++; paint(); };
+    const repaint = () => paint().catch((e) => toast(e.message));
+    $('#qs').onchange = (e) => { st.subject = e.target.value; st.page = 0; repaint(); };
+    let t; $('#qq').oninput = (e) => { clearTimeout(t); t = setTimeout(() => { st.q = e.target.value; st.page = 0; repaint(); }, 300); };
+    $('#qprev').onclick = () => { st.page--; repaint(); };
+    $('#qnext').onclick = () => { st.page++; repaint(); };
     $('#qadd').onclick = () => qForm(null, paint);
     $('#qimp').onclick = () => importForm(paint);
     await paint();
@@ -2299,12 +2361,16 @@
   async function admSets(el) {
     const rows = await api('GET', '/api/admin/sets');
     const by = (m) => rows.filter((r) => r.mode === m);
+    // Professional and Subprofessional each open and close (drop down / up). They stay open while the admin works.
     el.innerHTML = `<p class="muted small">${L('Awtomatikong may bagong set bawat linggo. Pwede ka ring gumawa ng bagong set ngayon. Laging naka-on ang Set 1 (libre at nasa Home ng lahat).', 'A new set is made every week by itself. You can also make a new set now. Set 1 is always on (free and on everyone\'s Home).')}</p>
-      ${['pro', 'subpro'].map((m) => `<div class="card" style="margin-bottom:12px"><div class="row between"><h3>${m === 'pro' ? 'Professional' : 'Subprofessional'} (${by(m).length} set)</h3><button class="btn small" data-new="${m}">+ ${L('Bagong set', 'New set')}</button></div>
-        <div class="list" style="margin-top:8px">${by(m).map((r) => `<div class="list-item"><div class="grow"><b>Set ${r.number}</b><div class="muted small">${fmtDate(r.created_at)} · ${L(`${r.taken} beses nasubukan`, `taken ${r.taken} time(s)`)}</div></div>${r.number === 1 ? `<span class="pill" title="${L('Libreng set na nasa Home ng lahat. Hindi ito nabubura.', 'The free set on everyone\'s Home. It cannot be deleted.')}">${L('Laging naka-on', 'Always on')}</span>` : `<button class="btn ghost small" data-del="${r.id}">${L('Burahin', 'Delete')}</button>`}</div>`).join('')}</div></div>`).join('')}`;
-    $$('[data-new]').forEach((b) => (b.onclick = async () => { b.disabled = true; try { const r = await api('POST', '/api/admin/sets', { mode: b.dataset.new }); toast(L(`Nagawa ang Set ${r.number}.`, `Set ${r.number} made.`)); admSets(el); } catch (e) { toast(e.message); b.disabled = false; } }));
-    $$('[data-del]').forEach((b) => (b.onclick = async () => {
-      if (await confirmBox(L('Burahin ang set?', 'Delete the set?'), L('Hindi na ito makikita ng mga user. Mananatili ang mga resulta ng mga nakasubok na.', 'Users will no longer see it. Results of those who took it stay.'), L('Burahin', 'Delete'), true)) { await api('DELETE', '/api/admin/sets/' + b.dataset.del); toast(L('Nabura.', 'Deleted.')); admSets(el); }
+      <div class="stack">${['pro', 'subpro'].map((m) => fold('adm-sets-' + m, `<h3>${m === 'pro' ? 'Professional' : 'Subprofessional'}</h3><span class="pill">${by(m).length} set</span>`, `
+        <button class="btn small" data-new="${m}">+ ${L('Bagong set', 'New set')}</button>
+        <div class="list" style="margin-top:8px">${by(m).map((r) => `<div class="list-item"><div class="grow"><b>Set ${r.number}</b><div class="muted small">${fmtDate(r.created_at)} · ${L(`${r.taken} beses nasubukan`, `taken ${r.taken} time(s)`)}</div></div>${r.number === 1 ? `<span class="pill" title="${L('Libreng set na nasa Home ng lahat. Hindi ito nabubura.', 'The free set on everyone\'s Home. It cannot be deleted.')}">${L('Laging naka-on', 'Always on')}</span>` : `<button class="btn ghost small" data-del="${r.id}">${L('Burahin', 'Delete')}</button>`}</div>`).join('') || `<p class="muted small">${L('Wala pang set.', 'No sets yet.')}</p>`}</div>`, { stay: true })).join('')}</div>`;
+    foldSync();
+    $$('[data-new]', el).forEach((b) => (b.onclick = async () => { b.disabled = true; try { const r = await api('POST', '/api/admin/sets', { mode: b.dataset.new }); toast(L(`Nagawa ang Set ${r.number}.`, `Set ${r.number} made.`)); await admSets(el); } catch (e) { toast(e.message); b.disabled = false; } }));
+    $$('[data-del]', el).forEach((b) => (b.onclick = async () => {
+      if (!(await confirmBox(L('Burahin ang set?', 'Delete the set?'), L('Hindi na ito makikita ng mga user. Mananatili ang mga resulta ng mga nakasubok na.', 'Users will no longer see it. Results of those who took it stay.'), L('Burahin', 'Delete'), true))) return;
+      try { await api('DELETE', '/api/admin/sets/' + b.dataset.del); toast(L('Nabura.', 'Deleted.')); await admSets(el); } catch (e) { toast(e.message); }
     }));
   }
   async function admSettings(el) {
@@ -2330,15 +2396,14 @@
       </div>`;
     // Each part of the settings opens and closes (drop down / up). Only one is open at a time, and they stay
     // open while the admin works in them. Everything is saved together with the Save button.
-    const sec = (key, title, body) => fold('adm-' + key, `<h3>${title}</h3>`, body, { stay: true });
+    const sec = (key, title, body, pill = '') => fold('adm-' + key, `<h3>${title}</h3>${pill}`, body, { stay: true });
     el.innerHTML = `<form id="stf" class="stack adm-settings">
-      <div class="card">
-      <h3>${L('Premium (bayad para sa mock exams)', 'Premium (paid mock exams)')}</h3>
+      ${sec('premium', `⭐ ${L('Premium (bayad para sa mock exams)', 'Premium (paid mock exams)')}`, `
       ${check('preq', st.premium_required === '1', L('Kailangan ng Premium para sa mock exams', 'Mock exams need Premium'))}
       <p class="muted small" style="margin:4px 0 0">${L('Kapag naka-off, libre ang lahat at gumagana offline para sa lahat. Kapag naka-on, online lang ang libreng plan at may limit (Libreng plan sa ibaba).', 'When off, everything is free and works offline for everyone. When on, the free plan is online only and has limits (Free plan below).')}</p>
       <div class="row"><div style="flex:1;min-width:120px"><label>${L('Presyo (₱)', 'Price (₱)')}</label><input type="number" id="price" value="${esc(st.price)}"></div>
-      <div style="flex:1;min-width:120px"><label>${L('Ilang araw', 'Number of days')}</label><input type="number" id="days" value="${esc(st.plan_days)}"></div></div>
-      </div>
+      <div style="flex:1;min-width:120px"><label>${L('Ilang araw', 'Number of days')}</label><input type="number" id="days" value="${esc(st.plan_days)}"></div></div>`,
+      st.premium_required === '1' ? `<span class="pill ok">${L('Naka-on', 'On')} · ₱${esc(st.price)}</span>` : `<span class="pill">${L('Naka-off', 'Off')}</span>`)}
 
       ${sec('online', `💳 ${L('Online na bayad (PayMongo)', 'Online payment (PayMongo)')}`, `
       ${check('payon', st.pay_online_on !== '0', L('Naka-on ang online na bayad', 'Online payment on'))}
@@ -2553,6 +2618,165 @@
     $('#tourAgain').onclick = () => Tour.replay();
   }
 
+  /* ---------------- Auto Fix ----------------
+     Finds and fixes common problems by itself, online and offline, without the user doing anything:
+     - Saved data on the device (the account copy, exam questions, results waiting to be saved…) is checked.
+       A broken copy is removed and fetched again from the server. Results not yet saved online are never
+       thrown away: a broken one is moved to a backup instead.
+     - Device storage full: old copies of screens' data (they are only copies) are cleared to make room.
+     - App files (website): the service worker checks that every file of this version is on the device and
+       downloads any missing one again.
+     - Saving: results, emails and payments waiting on this device are sent again; the live login line reconnects.
+     - Screen errors: a screen that fails to draw is drawn again once; if it keeps failing, Auto Fix runs and the
+       user gets a button to fix and reload. Never in the middle of an exam (answers are saved on every tap).
+     It runs when the app opens, when the internet comes back, when the app returns to the front (at most once an
+     hour), and when errors repeat. Account → Auto Fix shows what it did and has "Fix now" and a safe reset.
+     index.html has a small boot guard for when the app's files themselves cannot start (see there). */
+  const AutoFix = (() => {
+    const LOG = 'cse-fixlog';
+    let lastRun = 0, running = null, recent = [];
+    const note = (what, ok = true) => { const l = store.get(LOG, []); (Array.isArray(l) ? l : []).push({ t: Date.now(), what: String(what).slice(0, 160), ok }); store.set(LOG, (Array.isArray(l) ? l : []).slice(-30)); };
+    const lsKeys = () => { try { return Object.keys(localStorage); } catch { return []; } };
+    const raw = (k) => { try { return localStorage.getItem(k); } catch { return null; } };
+    const parse = (k) => { const r = raw(k); if (r == null) return { ok: true, v: undefined }; try { return { ok: true, v: JSON.parse(r) }; } catch { return { ok: false }; } };
+    const isObj = (v) => !!v && typeof v === 'object' && !Array.isArray(v);
+    // What each saved item must look like. Anything else is a broken copy.
+    const SHAPES = [
+      [/^cse-boot$/, (v) => isObj(v) && 'user' in v], [/^cse-meta$/, (v) => isObj(v) && isObj(v.subjects)],
+      [/^cse-look$/, isObj], [/^cse-offauth$/, (v) => isObj(v) && !!v.email], [/^cse-bio$/, (v) => isObj(v) && !!v.email],
+      [/^cse-ota$/, (v) => isObj(v) && !!v.id], [/^cse-token$/, (v) => typeof v === 'string'],
+      [/^cse-pack-\d+$/, (v) => isObj(v) && isObj(v.practice)], [/^cse-map-\d+$/, isObj],
+      [/^cse-mailq-\d+$/, Array.isArray], [/^cse-local-\d+$/, Array.isArray], [/^cse-psub-\d+$/, Array.isArray],
+      [/^cse-fixlog$/, Array.isArray],
+    ];
+    // Results waiting to be saved: keep the good ones, back up the broken ones (never deleted).
+    const KEEP = /^cse-(local|psub)-\d+$/;
+    function checkData() {
+      let fixed = 0;
+      for (const k of lsKeys()) {
+        if (!k.startsWith('cse-') || k === 'cse-fix-backup') continue;
+        const p = parse(k), rule = SHAPES.find(([re]) => re.test(k));
+        if (KEEP.test(k)) {
+          if (p.ok && Array.isArray(p.v)) {
+            const good = p.v.filter((a) => isObj(a) && a.id != null);
+            if (good.length === p.v.length) continue;
+            backup(k, p.v.filter((a) => !good.includes(a))); store.set(k, good);
+          } else { backup(k, raw(k)); store.del(k); }
+          fixed++; note(L('Inayos ang naka-save na resulta (may backup)', 'Repaired saved results (backed up)'));
+          continue;
+        }
+        if (p.ok && (!rule || rule[1](p.v))) continue;
+        store.del(k); fixed++;
+        if (k === 'cse-token' || k === 'cse-boot') note(L('Sirang login sa device: mag-login ulit kung kailangan', 'Broken login on the device: log in again if asked'), false);
+      }
+      if (fixed) note(L(`Inayos ang ${fixed} sirang data sa device`, `Fixed ${fixed} broken item(s) of data on the device`));
+      return fixed;
+    }
+    function backup(k, v) { const b = store.get('cse-fix-backup', {}); (isObj(b) ? b : {})[k + '@' + Date.now()] = v; store.set('cse-fix-backup', b); }
+    // Storage full: clear the copies of screen data (cse-c-…), which come back from the server.
+    function checkSpace() {
+      if (store.set('cse-fix-probe', 'x'.repeat(2048))) { store.del('cse-fix-probe'); return 0; }
+      let n = 0;
+      for (const k of lsKeys()) if (/^cse-c-\d+\//.test(k)) { store.del(k); n++; }
+      store.del('cse-fix-probe');
+      if (n) note(L('Puno ang storage: binura ang mga lumang kopya ng screen', 'Storage full: cleared old screen copies'));
+      return n;
+    }
+    // Website: ask the service worker to check its files and download any missing one again.
+    async function checkFiles() {
+      if (IS_APP || !('serviceWorker' in navigator) || !location.protocol.startsWith('http')) return 0;
+      try {
+        const reg = await navigator.serviceWorker.getRegistration();
+        if (!reg) {
+          if (!navigator.onLine) return 0;
+          await navigator.serviceWorker.register('/sw.js', { updateViaCache: 'none' });
+          note(L('Ibinalik ang offline na files ng app', 'Restored the app\'s offline files'));
+          return 1;
+        }
+        const sw = reg.active;
+        if (!sw) return 0;
+        const r = await new Promise((resolve) => {
+          const ch = new MessageChannel();
+          const t = setTimeout(() => resolve(null), 8000);
+          ch.port1.onmessage = (e) => { clearTimeout(t); resolve(e.data); };
+          sw.postMessage({ type: 'repair' }, [ch.port2]);
+        });
+        if (r && r.fixed) note(L(`Na-download ulit ang ${r.fixed} nawawalang file ng app`, `Downloaded ${r.fixed} missing app file(s) again`));
+        if (r && r.missing) note(L(`May ${r.missing} file na hindi pa ma-download (offline)`, `${r.missing} file(s) could not be downloaded yet (offline)`), false);
+        return (r && r.fixed) || 0;
+      } catch { return 0; }
+    }
+    // Things left on screen by a view that crashed half-way.
+    function checkScreen() {
+      let n = 0;
+      if (!S.exam) {
+        if (document.body.classList.contains('guard') || document.body.classList.contains('away')) { guardOff(); n++; }
+        $$('.modal-bg').forEach((m) => { if (!m.querySelector('.modal, .tour-box') && !m.children.length) { m.remove(); n++; } });
+      }
+      if (S.user && S.meta && $('#app > .boot') && !S.exam) { route(); n++; }
+      return n;
+    }
+    // Send everything waiting on this device again, and reconnect the live login line.
+    async function resync() {
+      if (!navigator.onLine || !S.user) return;
+      if (!S.meta) return init();
+      try { Live.sync(); await syncNow(); } catch { /* next time */ }
+    }
+    async function run(why = 'auto', loud = false) {
+      if (running) return running;
+      running = (async () => {
+        lastRun = Date.now();
+        let n = 0;
+        try { n += checkSpace(); } catch { /* ignore */ }
+        try { n += checkData(); } catch { /* ignore */ }
+        try { n += await checkFiles(); } catch { /* ignore */ }
+        try { n += checkScreen(); } catch { /* ignore */ }
+        await resync();
+        store.set('cse-fix-last', { t: Date.now(), n, why });
+        if (loud) toast(n ? L(`Auto Fix: ${n} problema ang naayos.`, `Auto Fix: fixed ${n} problem(s).`) : L('Auto Fix: walang problema. Ayos ang app.', 'Auto Fix: no problems found. The app is fine.'));
+        return n;
+      })().finally(() => { running = null; });
+      return running;
+    }
+    // Safe reset: new copies of the app's files and screen data. Login, settings, and results waiting to be saved stay.
+    async function reset() {
+      note(L('Ni-reset ang files ng app', 'Reset the app files'));
+      for (const k of lsKeys()) if (/^cse-c-\d+\//.test(k) || k === 'cse-ota' || k === 'cse-ota-bad') store.del(k);
+      if (!IS_APP && 'serviceWorker' in navigator && navigator.onLine) {
+        try { for (const r of await navigator.serviceWorker.getRegistrations()) await r.unregister(); } catch { /* ignore */ }
+        try { for (const k of await caches.keys()) if (k.startsWith('cse-reviewer-')) await caches.delete(k); } catch { /* ignore */ }
+      }
+      location.reload();
+    }
+    // Errors: ignore the expected ones (offline, server said no, other websites' scripts).
+    function onError(err, where) {
+      if (!err || err.offline || err.status) return;
+      const msg = String((err && err.message) || err);
+      if (/ResizeObserver|^Script error\.?$|AbortError|aborted/i.test(msg) || err.name === 'AbortError') return;
+      note(`${where}: ${msg}`, false);
+      const now = Date.now();
+      recent = recent.filter((t) => now - t < 30e3); recent.push(now);
+      if (recent.length >= 3 && now - lastRun > 60e3) { recent = []; run('errors'); }
+    }
+    window.addEventListener('error', (e) => { if (e.error || e.message) onError(e.error || { message: e.message }, 'error'); });
+    window.addEventListener('unhandledrejection', (e) => onError(e.reason, 'promise'));
+    window.addEventListener('online', () => setTimeout(() => run('online'), 2500));
+    document.addEventListener('visibilitychange', () => { if (!document.hidden && Date.now() - lastRun > 3600e3) run('resume'); });
+    const log = () => { const l = store.get(LOG, []); return Array.isArray(l) ? l : []; };
+    return { run, reset, onError, log, last: () => store.get('cse-fix-last'), note, quick: () => { try { checkSpace(); checkData(); } catch { /* ignore */ } } };
+  })();
+  // A screen that failed to draw for an unexpected reason (not internet, not the server).
+  let retried = '';
+  function screenFailed(e) {
+    AutoFix.onError(e, 'screen');
+    const h = location.hash;
+    if (retried !== h) { retried = h; AutoFix.run('screen').finally(() => { if (location.hash === h && !S.exam) route(); }); return; }
+    retried = '';
+    shell('', `<div class="card empty"><div style="font-size:40px">🛠️</div><p>${L('May problema sa screen na ito. Pindutin ang Ayusin para awtomatikong ayusin ang app. Hindi mabubura ang login at mga resulta mo.', 'This screen has a problem. Tap Fix to repair the app automatically. Your login and results stay.')}</p>
+      <div class="row" style="justify-content:center"><button class="btn" id="fixGo">🛠️ ${L('Ayusin', 'Fix')}</button><a class="btn ghost" href="#/">${L('Bumalik sa Home', 'Back to Home')}</a></div></div>`);
+    $('#fixGo').onclick = () => AutoFix.reset();
+  }
+
   /* ---------------- router ---------------- */
   async function route() {
     stopTimer();
@@ -2585,6 +2809,7 @@
       if (e.status === 401) { S.user = null; return viewAuth('login'); }
       if (e.code === 'unverified') { S.user.email_verified = false; return viewVerify(); }
       const home = `<a class="btn" href="#/">${L('Bumalik sa Home', 'Back to Home')}</a>`;
+      if (!e.status && !e.offline && !e.code) return screenFailed(e);
       if (e.offline) return shell('', `<div class="card empty"><div style="font-size:40px">📡</div><p>${L('Kailangan ng internet para sa bahaging ito. Pwede ka pa ring mag-practice o sumagot ng na-download na exam set.', 'This part needs internet. You can still practice or answer a downloaded exam set.')}</p>${home}</div>`);
       shell('', `<div class="card empty"><p>${esc(e.message)}</p>${home}</div>`);
     }
@@ -2638,7 +2863,10 @@
     }
     if (!S.offline) { syncNow(); setTimeout(() => prefetch(['sets']), 1200); }
   }
+  window.CSE_ALIVE = true; // the boot guard in index.html: the app's files started
+  AutoFix.quick(); // broken saved data is fixed before the app reads it
   init();
+  setTimeout(() => { try { sessionStorage.removeItem('cse-fix-boot'); } catch { /* ignore */ } AutoFix.run('start'); }, 6000);
 
   /* ---------------- automatic updates ----------------
      New screens download in the background. They are switched in only at a safe moment: when the app

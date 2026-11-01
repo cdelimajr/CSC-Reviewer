@@ -345,6 +345,20 @@ const lastCode = (to) => {
   assert.ok(files['index.html'] && files['app.js'] && files['icons/icon-192.png'] && !files['sw.js'], 'zip has the screens');
   assert.ok(files['config.js'].toString().includes(`window.CSE_API = "${base}"`) && files['config.js'].toString().includes(web.versionOf()));
   assert.equal((await fetch(base + '/api/app/bundle/old.zip')).status, 404);
+
+  // Auto Fix: the service worker can repair its files, the page has a boot guard, a broken JSON body
+  // gets a JSON error (the server keeps running), and the app version matches package.json and the docs.
+  assert.ok(sw.includes("type === 'repair'"), 'service worker can repair its files');
+  const html = await (await fetch(base + '/')).text();
+  assert.ok(html.includes('CSE_ALIVE') && html.includes('cse-fix-boot'), 'index.html has the boot guard');
+  const bad = await fetch(base + '/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{broken' });
+  assert.equal(bad.status, 400);
+  assert.ok((await bad.json()).error, 'broken JSON gets a JSON error');
+  assert.equal((await fetch(base + '/api/meta')).status, 200, 'server still running');
+  const fs = require('node:fs'), path = require('node:path');
+  const ver = require('../package.json').version;
+  assert.ok(fs.readFileSync(path.join(__dirname, '..', 'public', 'app.js'), 'utf8').includes(`APP_VERSION = '${ver}'`), 'app.js version = package.json');
+  assert.ok(fs.readFileSync(path.join(__dirname, '..', 'docs', 'DOKUMENTASYON.md'), 'utf8').includes(`**Kasalukuyang bersyon:** ${ver}`), 'docs version = package.json');
   console.log('All smoke tests passed.');
   srv.close(); process.exit(0);
 })().catch((e) => { console.error(e); process.exit(1); });

@@ -412,13 +412,21 @@ input[type=file] { font-size: 14px; max-width: 100%; }
 .tour-btns .grow { flex: 1; }
 body.touring { overflow: hidden; }
 
-/* Admin: the tabs wrap into rows on a phone, so they never scroll sideways and never move when one is tapped. */
-.tabs.adm-tabs { flex-wrap: wrap; overflow: visible; }
-@media (max-width: 720px) {
-  .tabs.adm-tabs { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; }
-  .tabs.adm-tabs button { padding: 8px 4px; font-size: 13px; white-space: normal; line-height: 1.2; min-height: 38px; border-radius: 10px; }
-}
-@media (max-width: 360px) { .tabs.adm-tabs { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+/* Dropdown menu (Admin tabs): one button that shows the current tab; the list opens below it. */
+.dd { position: relative; margin: 8px 0 16px; }
+.dd-btn { width: 100%; display: flex; align-items: center; gap: 10px; padding: 10px 14px; min-height: 48px; border-radius: 12px; border: 1px solid var(--line); background: var(--card); color: inherit; font: inherit; font-weight: 700; font-size: 16px; cursor: pointer; text-align: left; box-shadow: var(--shadow); }
+.dd-btn .dd-cur { flex: 1; min-width: 0; }
+.dd-btn .chev { flex: 0 0 auto; width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center; background: var(--primary-soft); color: var(--primary); }
+.dd-btn .chev::before { content: ''; width: 8px; height: 8px; border-right: 2px solid currentColor; border-bottom: 2px solid currentColor; transform: translateY(-2px) rotate(45deg); transition: transform .15s; }
+.dd.open .dd-btn .chev::before { transform: translateY(2px) rotate(225deg); }
+.dd-list { position: absolute; z-index: 25; left: 0; right: 0; top: calc(100% + 6px); background: var(--card); border: 1px solid var(--line); border-radius: 12px; box-shadow: 0 8px 28px rgba(16, 24, 40, .18); padding: 6px; display: flex; flex-direction: column; gap: 2px; max-height: 70vh; overflow: auto; }
+.dd-list[hidden] { display: none; }
+.dd-list button { text-align: left; padding: 12px; border: 0; border-radius: 8px; background: transparent; color: inherit; font: inherit; font-weight: 600; cursor: pointer; min-height: 44px; }
+.dd-list button:hover, .dd-list button:focus-visible { background: var(--primary-soft); }
+.dd-list button.active { background: var(--primary); color: var(--on-primary); }
+@media (min-width: 721px) { .dd { max-width: 360px; } }
+/* Admin → Users: the name is the link that opens the actions. */
+.u-link { font: inherit; font-weight: 700; color: var(--primary); text-decoration: underline; text-underline-offset: 3px; background: none; border: 0; padding: 0; cursor: pointer; text-align: left; }
 /* Admin → Settings: each part opens and closes; the account type dropdown sits next to "+ Add an account". */
 .adm-settings .fold > summary h3 { font-size: 16px; }
 .pm-add { flex-wrap: nowrap; align-items: stretch; margin-top: 10px; }
@@ -524,3 +532,7 @@ body.guard { background: var(--desk); }
 .page-ind small { color: var(--muted); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
 @media (prefers-reduced-motion: reduce) { .page-in, .ripple, .flip-hint span { animation: none; } }
 .auth-offline { margin-bottom: 10px; text-align: left; }
+/* Account → Auto Fix: the last things it did. */
+.fix-log { margin: 0 0 10px; padding-left: 18px; }
+.fix-log li { margin: 2px 0; }
+.fix-log li.bad { color: var(--warn-text, #92400e); }
