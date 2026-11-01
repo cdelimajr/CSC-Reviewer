@@ -11,6 +11,9 @@ const mail = require('./mail');
 const sets = require('./sets');
 const paymongo = require('./paymongo');
 const web = require('./webbuild');
+const audit = require('./audit');
+const review = require('./review');
+const jobs = require('./jobs');
 
 const PORT = Number(process.env.PORT) || 3000;
 const ADMIN_EMAIL = (process.env.ADMIN_EMAIL || '').trim().toLowerCase();
@@ -47,8 +50,13 @@ const SETTING_DEFAULTS = {
   pay_online_on: '1', pay_manual_on: '1', pay_methods: '',
   // Ads for the free plan only (never for Premium, never during an exam).
   ads_on: '1', adsense_client: '', adsense_slot: '', admob_banner: '',
+  // Shown on Premium receipts (RA 11967: the seller's name and contact).
+  biz_name: '', biz_contact: '',
 };
 const LONG_SETTINGS = { pay_methods: 20000 };
+// [key, smallest, largest] for the settings that are numbers (Admin → Settings).
+const NUM_SETTINGS = [['price', 0, 100000], ['plan_days', 1, 3650], ['free_practice_daily', 0, 100], ['free_practice_items', 5, 100],
+  ['free_sets', 1, 1000], ['free_mock_daily', 0, 100]];
 async function getSettings() {
   const rows = await db.all(`SELECT key, value FROM meta WHERE key LIKE 'set:%'`);
   const out = { ...SETTING_DEFAULTS };
@@ -169,6 +177,11 @@ function limited(key, max = 10, windowMs = 10 * 60 * 1000) {
   h.push(now); hits.set(key, h);
   return h.length > max;
 }
+// Forget old tries every 10 minutes, so the list does not keep growing while the server runs.
+setInterval(() => {
+  const now = Date.now();
+  for (const [k, h] of hits) if (!h.length || now - h[h.length - 1] > 60 * 60 * 1000) hits.delete(k);
+}, 10 * 60 * 1000).unref();
 
 /* ------------------------------ app ------------------------------ */
 const app = express();
@@ -257,6 +270,7 @@ app.post('/api/auth/register', wrap(async (req, res) => {
   await newSession(res, r.lastInsertRowid);
   const user = await db.get('SELECT * FROM users WHERE id = ?', r.lastInsertRowid);
   if (REQUIRE_VERIFY) await sendCode(user, 'verify');
+  await audit.login(req, user, 'register');
   res.json(withToken(res, { user: publicUser(user) }));
 }));
 
@@ -276,16 +290,21 @@ app.post('/api/auth/login', wrap(async (req, res) => {
   const email = String(req.body.email || '').trim().toLowerCase();
   if (limited('login:' + req.ip + email, 10)) return res.status(429).json({ error: 'Masyadong maraming subok. Maghintay ng 10 minuto.' });
   const u = await db.get('SELECT * FROM users WHERE email = ?', email);
-  if (!u || !checkPassword(String(req.body.password || ''), u)) return res.status(401).json({ error: 'Mali ang email o password.' });
+  if (!u || !checkPassword(String(req.body.password || ''), u)) {
+    if (u) await audit.failed(req, u);
+    return res.status(401).json({ error: 'Mali ang email o password.' });
+  }
   if (u.disabled) return res.status(403).json({ error: 'Naka-disable ang account na ito. Makipag-ugnayan sa admin.' });
   if (await newerElsewhere(u.id, req.body.since)) return tooLate(res);
   await newSession(res, u.id);
+  await audit.login(req, u, req.body.since ? 'password (offline)' : 'password');
   res.json(withToken(res, { user: publicUser(u) }));
 }));
 
 app.post('/api/auth/logout', wrap(async (req, res) => {
   const token = sessionToken(req);
   if (token) await db.run('DELETE FROM sessions WHERE token = ?', sha(token));
+  if (req.user) await audit.log(req, 'logout', { userId: req.user.id });
   res.clearCookie('sid', { path: '/' });
   res.json({ ok: true });
 }));
@@ -327,6 +346,7 @@ app.post('/api/auth/reset', wrap(async (req, res) => {
     ['DELETE FROM devices WHERE user_id = ?', [u.id]],
   ]);
   liveEnd(u.id, 'ended');
+  await audit.log(req, 'password_reset', { userId: u.id, actorId: u.id, detail: 'code sa email' });
   res.json({ ok: true });
 }));
 
@@ -349,6 +369,7 @@ app.post('/api/auth/otp/login', wrap(async (req, res) => {
   // Receiving the code proves the email works.
   if (!u.email_verified) await db.run('UPDATE users SET email_verified = 1 WHERE id = ?', u.id);
   await newSession(res, u.id);
+  await audit.login(req, u, 'code');
   res.json(withToken(res, { user: publicUser({ ...u, email_verified: 1 }) }));
 }));
 
@@ -379,6 +400,7 @@ app.post('/api/auth/device/login', wrap(async (req, res) => {
   if (await newerElsewhere(u.id, req.body.since)) return tooLate(res);
   await db.run('UPDATE devices SET last_used_at = ? WHERE id = ?', Date.now(), d.id);
   await newSession(res, u.id);
+  await audit.login(req, u, req.body.since ? 'face/fingerprint (offline)' : 'face/fingerprint');
   res.json(withToken(res, { user: publicUser(u) }));
 }));
 app.post('/api/auth/device/remove', wrap(async (req, res) => {
@@ -412,7 +434,41 @@ app.post('/api/me/password', auth, wrap(async (req, res) => {
   if (String(password || '').length < 8) return res.status(400).json({ error: 'Ang bagong password ay dapat may 8 characters o higit pa.' });
   const { salt, hash } = hashPassword(String(password));
   await db.run('UPDATE users SET pass_hash = ?, salt = ? WHERE id = ?', hash, salt, req.user.id);
+  await audit.log(req, 'password_change', { userId: req.user.id });
   res.json({ ok: true });
+}));
+
+/* Backup and sync of settings and study data (all accounts). The device sends its settings (language, look,
+   text size, sounds, level, study reminder…) with the time they changed; the newer copy wins. A new phone gets
+   them right after login. Results are already saved on the server. */
+const PREFS_MAX = 20000;
+const prefsOut = (row) => ({ data: row ? JSON.parse(row.data || '{}') : {}, updated_at: row ? row.updated_at : 0,
+  remind_email: !!(row && row.remind_email), remind_min: row ? row.remind_min : 1200 });
+app.get('/api/me/prefs', auth, wrap(async (req, res) => {
+  res.json(prefsOut(await db.get('SELECT * FROM user_prefs WHERE user_id = ?', req.user.id)));
+}));
+app.put('/api/me/prefs', auth, wrap(async (req, res) => {
+  const old = await db.get('SELECT * FROM user_prefs WHERE user_id = ?', req.user.id);
+  let data = old ? old.data : '{}', at = old ? old.updated_at : 0;
+  if (req.body.data !== undefined) {
+    const json = JSON.stringify(req.body.data && typeof req.body.data === 'object' && !Array.isArray(req.body.data) ? req.body.data : {});
+    if (json.length > PREFS_MAX) return res.status(413).json({ error: 'Masyadong malaki ang backup.' });
+    const when = Math.min(Number(req.body.updated_at) || Date.now(), Date.now());
+    if (when >= at) { data = json; at = when; } // an older copy from another device does not overwrite a newer one
+  }
+  const remindEmail = req.body.remind_email !== undefined ? (req.body.remind_email ? 1 : 0) : old ? old.remind_email : 0;
+  const m = Number(req.body.remind_min);
+  const remindMin = Number.isInteger(m) && m >= 0 && m < 1440 ? m : old ? old.remind_min : 1200;
+  await db.run(`INSERT INTO user_prefs (user_id, data, updated_at, remind_email, remind_min) VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(user_id) DO UPDATE SET data = excluded.data, updated_at = excluded.updated_at, remind_email = excluded.remind_email,
+      remind_min = excluded.remind_min, reminded_day = CASE WHEN user_prefs.remind_min != excluded.remind_min THEN 0 ELSE user_prefs.reminded_day END`,
+  req.user.id, data, at, remindEmail, remindMin);
+  res.json(prefsOut(await db.get('SELECT * FROM user_prefs WHERE user_id = ?', req.user.id)));
+}));
+// The account's recent logins (Account → Security), so the user can spot a login that was not them.
+app.get('/api/me/logins', auth, wrap(async (req, res) => {
+  res.json(await db.all(`SELECT at, action, detail, device, ip, alert FROM audit_log WHERE user_id = ? AND action IN ('login', 'login_failed_many', 'password_change', 'password_reset')
+    ORDER BY id DESC LIMIT 15`, req.user.id));
 }));
 
 app.get('/api/meta', (req, res) => res.json({ subjects: SUBJECTS, exams: EXAMS }));
@@ -434,7 +490,7 @@ function attemptView(a, full = true, lite = false) {
   const out = {
     id: a.id, mode: a.mode, title: a.title, total: a.total, score: a.score, time_limit_sec: a.time_limit_sec,
     started_at: a.started_at, finished_at: a.finished_at, breakdown: a.breakdown ? JSON.parse(a.breakdown) : null,
-    passing: EXAMS[a.mode]?.passing || 80, now: Date.now(),
+    passing: EXAMS[a.mode]?.passing || 80, now: Date.now(), times: a.times ? JSON.parse(a.times) : null,
   };
   if (full) {
     out.answers = JSON.parse(a.answers || '{}');
@@ -468,7 +524,9 @@ app.post('/api/attempts', auth, verified, wrap(async (req, res) => {
     }
   }
   let ex, setId = null;
-  if (mode !== 'practice' && req.body.set_id) {
+  if (mode === 'practice' && (req.body.review === 'mistakes' || req.body.review === 'topic')) {
+    ex = await reviewExam(req.user.id, premium, req.body, opts.count);
+  } else if (mode !== 'practice' && req.body.set_id) {
     const set = await db.get('SELECT * FROM exam_sets WHERE id = ? AND mode = ?', Number(req.body.set_id), mode);
     if (!set) return res.status(404).json({ error: 'Hindi makita ang exam set.' });
     ex = { title: set.title, items: JSON.parse(set.items), timeLimitSec: EXAMS[mode].minutes * 60 };
@@ -480,6 +538,38 @@ app.post('/api/attempts', auth, verified, wrap(async (req, res) => {
   const r = await db.run(`INSERT INTO attempts (user_id, mode, title, items, time_limit_sec, started_at, total, set_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     req.user.id, mode, ex.title, JSON.stringify(ex.items), ex.timeLimitSec, Date.now(), ex.items.length, setId);
   res.json(attemptView(await db.get('SELECT * FROM attempts WHERE id = ?', r.lastInsertRowid)));
+}));
+
+// Practice from "Balikan ang mali": the user's own mistakes, or one weak topic (mistakes of that topic first).
+async function reviewExam(userId, premium, body, count) {
+  const n = Math.max(5, Math.min(100, Number(count) || 20));
+  const { mistakes } = await review.collect(userId, premium);
+  const lv = body.level === 'subpro' ? 'subpro' : 'pro';
+  const tag = lv === 'subpro' ? 'Subpro' : 'Pro';
+  const strip = ({ from, at, ...it }) => it;
+  if (body.review === 'mistakes') {
+    const pool = mistakes.filter((m) => !SUBJECTS[body.subject] || m.subject === body.subject);
+    const items = shuffleList(pool).slice(0, n).map(strip);
+    return { title: `Practice (${tag}): Mga mali ko (${items.length} items)`, items, timeLimitSec: 0 };
+  }
+  const subject = SUBJECTS[body.subject] ? body.subject : 'verbal';
+  const topic = String(body.topic || '').slice(0, 80);
+  const items = mistakes.filter((m) => m.subject === subject && m.topic === topic).slice(0, n).map(strip);
+  const seen = new Set(items.map(review.keyOf));
+  for (let tries = 0; items.length < n && tries < 4; tries++) {
+    const more = (await buildExam('practice', { subject, count: 100, level: subject === 'clerical' ? 'subpro' : lv })).items;
+    for (const it of more) {
+      if (items.length >= n) break;
+      if (it.topic !== topic || seen.has(review.keyOf(it))) continue;
+      seen.add(review.keyOf(it)); items.push(it);
+    }
+  }
+  return { title: `Practice (${tag}): ${SUBJECTS[subject].name} · ${topic || '—'} (${items.length} items)`, items, timeLimitSec: 0 };
+}
+const shuffleList = (arr) => { const a = arr.slice(); for (let i = a.length - 1; i > 0; i--) { const j = crypto.randomInt(i + 1); [a[i], a[j]] = [a[j], a[i]]; } return a; };
+
+app.get('/api/review', auth, verified, wrap(async (req, res) => {
+  res.json(await review.summary(req.user.id, hasPremium(req.user, await getSettings())));
 }));
 
 app.get('/api/sets', auth, verified, wrap(async (req, res) => {
@@ -529,6 +619,19 @@ function cleanAnswers(raw, total) {
   return out;
 }
 
+// Seconds spent on each subject (from the exam screen), kept within the exam's time.
+function cleanTimes(raw, items, limitSec) {
+  if (!raw || typeof raw !== 'object') return null;
+  const subjects = new Set(items.map((it) => it.subject));
+  const cap = limitSec ? limitSec + 120 : 6 * 3600;
+  const out = {};
+  for (const [k, v] of Object.entries(raw)) {
+    const n = Math.round(Number(v));
+    if (subjects.has(k) && Number.isFinite(n) && n >= 0) out[k] = Math.min(n, cap);
+  }
+  return Object.keys(out).length ? JSON.stringify(out) : null;
+}
+
 app.put('/api/attempts/:id/answers', auth, verified, wrap(async (req, res) => {
   const a = await getOwnAttempt(req);
   if (!a || a.user_id !== req.user.id) return res.status(404).json({ error: 'Hindi makita ang exam.' });
@@ -545,8 +648,8 @@ app.post('/api/attempts/:id/submit', auth, verified, wrap(async (req, res) => {
     const { score, breakdown } = grade(JSON.parse(a.items), answers);
     let finished = Date.now();
     if (a.time_limit_sec) finished = Math.min(finished, a.started_at + a.time_limit_sec * 1000 + 60000);
-    await db.run('UPDATE attempts SET answers = ?, score = ?, breakdown = ?, finished_at = ? WHERE id = ?',
-      JSON.stringify(answers), score, JSON.stringify(breakdown), finished, a.id);
+    await db.run('UPDATE attempts SET answers = ?, score = ?, breakdown = ?, finished_at = ?, times = ? WHERE id = ?',
+      JSON.stringify(answers), score, JSON.stringify(breakdown), finished, cleanTimes(req.body.times, JSON.parse(a.items), a.time_limit_sec), a.id);
     if (a.mode !== 'practice' && req.body.email !== false) {
       mail.result(req.user.email, req.user.name, { title: a.title, score, total: a.total }, breakdown, SUBJECTS);
     }
@@ -569,7 +672,9 @@ async function statsFor(userId) {
     }
   }
   const mocks = rows.filter((r) => r.mode !== 'practice').map((r) => ({ mode: r.mode, pct: Math.round((r.score / r.total) * 1000) / 10, at: r.finished_at }));
-  return { attempts: rows.length, subjects: subj, mocks };
+  // Days with a finished exam or practice (Philippine time), for the study streak. The app adds days of results made offline.
+  const days = [...new Set(rows.filter((r) => r.finished_at > Date.now() - 400 * 864e5).map((r) => review.phDay(r.finished_at)))];
+  return { attempts: rows.length, subjects: subj, mocks, days, streak: review.streakOf(days), today: review.phDay(Date.now()) };
 }
 app.get('/api/stats', auth, verified, wrap(async (req, res) => res.json(await statsFor(req.user.id))));
 
@@ -625,7 +730,9 @@ function offlineItems(items, max = 100) {
   return out;
 }
 
-app.post('/api/offline/sync', auth, verified, premiumOnly, wrap(async (req, res) => {
+// No premiumOnly here: results made offline while the user had Premium are still saved after Premium ends
+// (each one is checked below against the time it was taken).
+app.post('/api/offline/sync', auth, verified, wrap(async (req, res) => {
   const list = Array.isArray(req.body.attempts) ? req.body.attempts.slice(0, 50) : [];
   const st = await getSettings();
   const saved = {}, rejected = {};
@@ -637,15 +744,19 @@ app.post('/api/offline/sync', auth, verified, premiumOnly, wrap(async (req, res)
     const mode = EXAMS[x.mode] ? x.mode : 'practice';
     const started = Math.min(Number(x.started_at) || Date.now(), Date.now());
     let items, title, setId = null, limit = Math.max(0, Number(x.time_limit_sec) || 0);
+    // Offline use is Premium: it counts only if the user had Premium when they took it.
+    const allowed = hasPremium(req.user, st) || (req.user.premium_until || 0) >= started;
+    if (!allowed) { rejected[cid] = 'premium'; continue; }
     if (mode !== 'practice') {
-      // Mock exams count only if the user had Premium when they took it.
-      const allowed = hasPremium(req.user, st) || (req.user.premium_until || 0) >= started;
-      if (!allowed) { rejected[cid] = 'premium'; continue; }
       limit = EXAMS[mode].minutes * 60;
-      if (x.set_id) {
-        const set = await db.get('SELECT * FROM exam_sets WHERE id = ? AND mode = ?', Number(x.set_id), mode);
-        if (!set) { rejected[cid] = 'set'; continue; }
+      const set = x.set_id ? await db.get('SELECT * FROM exam_sets WHERE id = ? AND mode = ?', Number(x.set_id), mode) : null;
+      if (set) {
         items = JSON.parse(set.items); title = set.title; setId = set.id;
+      } else if (x.set_id) {
+        // The set was deleted by the admin after it was saved on the device: keep the result with the questions the user saw.
+        items = offlineItems(x.items, EXAMS[mode].items);
+        if (!items) { rejected[cid] = 'set'; continue; }
+        title = String(x.title || EXAMS[mode].title).slice(0, 120);
       } else {
         // "Bagong halo" mock exam made on the device from the saved questions.
         items = offlineItems(x.items, EXAMS[mode].items);
@@ -662,9 +773,9 @@ app.post('/api/offline/sync', auth, verified, premiumOnly, wrap(async (req, res)
     let finished = Math.min(Number(x.finished_at) || Date.now(), Date.now());
     if (finished < started) finished = started;
     if (limit) finished = Math.min(finished, started + limit * 1000 + 60000);
-    const r = await db.run(`INSERT INTO attempts (user_id, mode, title, items, answers, time_limit_sec, started_at, finished_at, score, total, breakdown, set_id, client_id)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, req.user.id, mode, title, JSON.stringify(items), JSON.stringify(answers), limit, started, finished,
-      score, items.length, JSON.stringify(breakdown), setId, cid);
+    const r = await db.run(`INSERT INTO attempts (user_id, mode, title, items, answers, time_limit_sec, started_at, finished_at, score, total, breakdown, set_id, client_id, times)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, req.user.id, mode, title, JSON.stringify(items), JSON.stringify(answers), limit, started, finished,
+      score, items.length, JSON.stringify(breakdown), setId, cid, cleanTimes(x.times, items, limit));
     saved[cid] = r.lastInsertRowid;
     if (mode !== 'practice') mail.result(req.user.email, req.user.name, { title, score, total: items.length }, breakdown, SUBJECTS);
   }
@@ -709,11 +820,39 @@ async function markPaid(p, method) {
     String(method || 'Online').slice(0, 40), Date.now(), p.id);
   if (r.changes !== 1) return false; // already done
   const days = Number(p.days) || Number((await getSettings()).plan_days) || 30;
-  await db.run('UPDATE users SET premium_until = MAX(premium_until, ?) + ? WHERE id = ?', Date.now(), days * 864e5, p.user_id);
+  const before = await db.get('SELECT premium_until FROM users WHERE id = ?', p.user_id);
+  const from = Math.max(Date.now(), (before && before.premium_until) || 0), to = from + days * 864e5;
+  await db.batch([
+    ['UPDATE users SET premium_until = ? WHERE id = ?', [to, p.user_id]],
+    ['UPDATE payments SET period_from = ?, period_to = ?, days = ? WHERE id = ?', [from, to, days, p.id]],
+  ]);
   const u = await db.get('SELECT * FROM users WHERE id = ?', p.user_id);
-  if (u) mail.payment(u.email, u.name, 'approved', u.premium_until);
+  if (u) mail.payment(u.email, u.name, 'approved', u.premium_until, '', await receiptOf(p.id));
+  await audit.log(null, 'payment_paid_online', { userId: p.user_id, actorId: null, detail: `₱${p.amount} · ${method || 'Online'}` });
   return true;
 }
+
+/* Receipt of an approved payment (proof of payment in the app, not a BIR invoice). The number is
+   CSE-<year>-<payment id>. The same receipt is in the approval email (as a PDF) and in Premium → Your payments. */
+async function receiptOf(id) {
+  const p = await db.get(`SELECT p.*, u.name, u.email FROM payments p JOIN users u ON u.id = p.user_id WHERE p.id = ?`, id);
+  if (!p || p.status !== 'approved') return null;
+  const st = await getSettings();
+  const date = p.decided_at || p.created_at;
+  return {
+    id: p.id, no: `CSE-${new Date(date + 8 * 3600e3).getUTCFullYear()}-${String(p.id).padStart(5, '0')}`, date, name: p.name, email: p.email,
+    amount: p.amount, method: p.method, reference: p.provider === 'paymongo' ? '' : p.reference, provider: p.provider,
+    days: p.days || (p.period_to && p.period_from ? Math.round((p.period_to - p.period_from) / 864e5) : null),
+    period_from: p.period_from || null, period_to: p.period_to || null, business: st.biz_name, contact: st.biz_contact,
+  };
+}
+app.get('/api/payments/:id/receipt', auth, wrap(async (req, res) => {
+  const p = await db.get('SELECT user_id FROM payments WHERE id = ?', Number(req.params.id));
+  if (!p || (p.user_id !== req.user.id && req.user.role !== 'admin')) return res.status(404).json({ error: 'Walang resibo para dito.' });
+  const r = await receiptOf(Number(req.params.id));
+  if (!r) return res.status(404).json({ error: 'Walang resibo para dito.' });
+  res.json(r);
+}));
 
 // Read the checkout from PayMongo (never trust the webhook body alone) and update our record.
 async function syncCheckout(p) {
@@ -792,7 +931,8 @@ app.post('/api/payments', auth, verified, wrap(async (req, res) => {
   if (await db.get(`SELECT 1 FROM payments WHERE user_id = ? AND status = 'pending'`, req.user.id)) {
     return res.status(409).json({ error: 'May nakabinbin ka pang bayad na hinihintay ma-check.' });
   }
-  const p = { amount: String(req.body.amount || st.price).slice(0, 20), method: m.name, reference };
+  // The amount is the current price (not what the app sends), so the admin sees what the user should have paid.
+  const p = { amount: String(st.price).slice(0, 20), method: m.name, reference };
   await db.run('INSERT INTO payments (user_id, amount, method, reference, created_at, proof) VALUES (?, ?, ?, ?, ?, ?)', req.user.id, p.amount, p.method, p.reference, Date.now(), proof);
   const admins = await db.all(`SELECT email FROM users WHERE role = 'admin' AND disabled = 0`);
   admins.forEach((a) => mail.newPayment(a.email, req.user, p));
@@ -812,6 +952,7 @@ app.get('/api/admin/overview', admin, wrap(async (req, res) => {
     questions: await db.all('SELECT subject, COUNT(*) AS n FROM questions WHERE active = 1 GROUP BY subject'),
     premiumUsers: await one(`SELECT COUNT(*) FROM users WHERE premium_until > ${Date.now()}`),
     pendingPayments: await one(`SELECT COUNT(*) FROM payments WHERE status = 'pending'`),
+    alerts7d: await one(`SELECT COUNT(*) FROM audit_log WHERE alert = 1 AND at > ${Date.now() - 7 * 864e5}`),
     mail: { enabled: mail.enabled, provider: mail.provider, verify: REQUIRE_VERIFY },
   });
 }));
@@ -845,6 +986,12 @@ app.patch('/api/admin/users/:id', admin, wrap(async (req, res) => {
     await db.run('UPDATE users SET premium_until = ? WHERE id = ?', until, id);
   }
   if (req.body.email_verified !== undefined) await db.run('UPDATE users SET email_verified = ? WHERE id = ?', req.body.email_verified ? 1 : 0, id);
+  const what = [];
+  if (req.body.role !== undefined) what.push('role: ' + (req.body.role === 'admin' ? 'admin' : 'user'));
+  if (req.body.disabled !== undefined) what.push(req.body.disabled ? 'disabled' : 'enabled');
+  if (req.body.premium_days !== undefined) what.push(Number(req.body.premium_days) > 0 ? `Premium +${Number(req.body.premium_days)} araw` : 'Premium inalis');
+  if (req.body.email_verified !== undefined) what.push('email verified: ' + (req.body.email_verified ? 'oo' : 'hindi'));
+  await audit.log(req, 'admin_user_change', { userId: id, detail: what.join(', '), alert: req.body.role === 'admin' });
   res.json({ ok: true });
 }));
 
@@ -855,14 +1002,20 @@ app.post('/api/admin/users/:id/password', admin, wrap(async (req, res) => {
   await db.run('UPDATE users SET pass_hash = ?, salt = ? WHERE id = ?', hash, salt, Number(req.params.id));
   await db.batch([['DELETE FROM sessions WHERE user_id = ?', [Number(req.params.id)]], ['DELETE FROM devices WHERE user_id = ?', [Number(req.params.id)]]]);
   liveEnd(Number(req.params.id), 'ended');
+  await audit.log(req, 'admin_password_reset', { userId: Number(req.params.id) });
   res.json({ ok: true });
 }));
 
 app.delete('/api/admin/users/:id', admin, wrap(async (req, res) => {
   const id = Number(req.params.id);
   if (id === req.user.id) return res.status(400).json({ error: 'Hindi mo mabubura ang sarili mong account.' });
-  await db.batch([['DELETE FROM payments WHERE user_id = ?', [id]], ['DELETE FROM attempts WHERE user_id = ?', [id]], ['DELETE FROM sessions WHERE user_id = ?', [id]], ['DELETE FROM devices WHERE user_id = ?', [id]], ['DELETE FROM users WHERE id = ?', [id]]]);
+  const gone = await db.get('SELECT email FROM users WHERE id = ?', id);
+  await db.batch([['DELETE FROM payments WHERE user_id = ?', [id]], ['DELETE FROM attempts WHERE user_id = ?', [id]], ['DELETE FROM sessions WHERE user_id = ?', [id]], ['DELETE FROM devices WHERE user_id = ?', [id]],
+    ['DELETE FROM user_prefs WHERE user_id = ?', [id]], ['DELETE FROM users WHERE id = ?', [id]]]);
   liveEnd(id, 'ended');
+  // The deleted person's own log entries go too (right to erasure); this entry keeps only the account number.
+  await db.run('DELETE FROM audit_log WHERE user_id = ? AND actor_id = ?', id, id);
+  await audit.log(req, 'admin_user_delete', { userId: id, detail: gone ? 'binura ang account' : '' });
   res.json({ ok: true });
 }));
 
@@ -898,11 +1051,14 @@ app.post('/api/admin/payments/:id', admin, wrap(async (req, res) => {
   const stmts = [['UPDATE payments SET status = ?, note = ?, decided_at = ? WHERE id = ?', [approve ? 'approved' : 'rejected', note, Date.now(), p.id]]];
   if (approve && u) {
     const days = Number(req.body.days) || Number((await getSettings()).plan_days) || 30;
-    until = Math.max(Date.now(), until) + days * 864e5;
+    const from = Math.max(Date.now(), until);
+    until = from + days * 864e5;
     stmts.push(['UPDATE users SET premium_until = ? WHERE id = ?', [until, u.id]]);
+    stmts.push(['UPDATE payments SET period_from = ?, period_to = ?, days = ? WHERE id = ?', [from, until, days, p.id]]);
   }
   await db.batch(stmts);
-  if (u) mail.payment(u.email, u.name, approve ? 'approved' : 'rejected', until, note);
+  if (u) mail.payment(u.email, u.name, approve ? 'approved' : 'rejected', until, note, approve ? await receiptOf(p.id) : null);
+  await audit.log(req, approve ? 'payment_approve' : 'payment_reject', { userId: p.user_id, detail: `₱${p.amount} · ${p.method} · ref ${p.reference}${note ? ' · ' + note : ''}` });
   res.json({ ok: true, until });
 }));
 
@@ -910,6 +1066,13 @@ const adminSettings = async () => { const st = await getSettings(); return { ...
 app.get('/api/admin/settings', admin, wrap(async (req, res) => res.json(await adminSettings())));
 app.put('/api/admin/settings', admin, wrap(async (req, res) => {
   const body = { ...req.body };
+  const before = await getSettings();
+  // Numbers must be whole numbers within range; a blank or wrong value keeps the old one.
+  for (const [k, min, max] of NUM_SETTINGS) {
+    if (body[k] === undefined) continue;
+    const n = Number(String(body[k]).trim());
+    body[k] = String(body[k]).trim() !== '' && Number.isFinite(n) ? String(Math.min(max, Math.max(min, Math.round(n)))) : before[k];
+  }
   if (body.pay_methods !== undefined) {
     const qr = new Set((await db.all(`SELECT key FROM meta WHERE key LIKE 'qr:%'`)).map((r) => r.key.slice(3)));
     const list = payMethods({ pay_methods: JSON.stringify(Array.isArray(body.pay_methods) ? body.pay_methods : []) }).map((m) => ({ ...m, has_qr: qr.has(m.id) }));
@@ -918,6 +1081,10 @@ app.put('/api/admin/settings', admin, wrap(async (req, res) => {
   const stmts = Object.keys(SETTING_DEFAULTS).filter((k) => body[k] !== undefined)
     .map((k) => [`INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`, ['set:' + k, String(body[k]).slice(0, LONG_SETTINGS[k] || 500)]]);
   if (stmts.length) await db.batch(stmts);
+  if (stmts.length) {
+    const changed = Object.keys(SETTING_DEFAULTS).filter((k) => body[k] !== undefined && String(body[k]).slice(0, LONG_SETTINGS[k] || 500) !== String(before[k] ?? ''));
+    if (changed.length) await audit.log(req, 'admin_settings', { detail: changed.join(', ') });
+  }
   res.json(await adminSettings());
 }));
 // Upload (data URL) or remove (empty) the QR code of a manual payment account.
@@ -930,6 +1097,7 @@ app.put('/api/admin/pay-qr/:id', admin, wrap(async (req, res) => {
   const st = await getSettings();
   const list = payMethods(st).map((m) => (m.id === id ? { ...m, has_qr: !!data } : m));
   await db.run(`INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`, 'set:pay_methods', JSON.stringify(list));
+  await audit.log(req, 'admin_pay_qr', { detail: `${id}: ${data ? 'bagong QR' : 'inalis ang QR'}` });
   res.json({ ok: true, has_qr: !!data });
 }));
 
@@ -940,12 +1108,15 @@ app.get('/api/admin/sets', admin, wrap(async (req, res) => {
 }));
 app.post('/api/admin/sets', admin, wrap(async (req, res) => {
   if (!EXAMS[req.body.mode]) return res.status(400).json({ error: 'Piliin ang Professional o Subprofessional.' });
-  res.json(await sets.createSet(req.body.mode));
+  const made = await sets.createSet(req.body.mode);
+  await audit.log(req, 'admin_set_new', { detail: `${req.body.mode} Set ${made.number}` });
+  res.json(made);
 }));
 app.delete('/api/admin/sets/:id', admin, wrap(async (req, res) => {
   const set = await db.get('SELECT number FROM exam_sets WHERE id = ?', Number(req.params.id));
   if (set && set.number === 1) return res.status(400).json({ error: 'Hindi mabubura ang Set 1. Ito ang libreng set na nasa Home ng lahat.' });
   await db.run('DELETE FROM exam_sets WHERE id = ?', Number(req.params.id));
+  if (set) await audit.log(req, 'admin_set_delete', { detail: `Set ${set.number} (#${Number(req.params.id)})` });
   res.json({ ok: true });
 }));
 
@@ -982,6 +1153,7 @@ app.post('/api/admin/questions', admin, wrap(async (req, res) => {
   const err = validQuestion(req.body);
   if (err) return res.status(400).json({ error: err });
   const r = await db.run(`INSERT INTO questions (subject, topic, level, question, choices, answer, explanation, passage, source) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'admin')`, ...qParams(req.body));
+  await audit.log(req, 'admin_question_add', { detail: `#${r.lastInsertRowid} ${req.body.subject}` });
   res.json({ id: r.lastInsertRowid });
 }));
 
@@ -990,12 +1162,14 @@ app.put('/api/admin/questions/:id', admin, wrap(async (req, res) => {
   if (err) return res.status(400).json({ error: err });
   await db.run(`UPDATE questions SET subject = ?, topic = ?, level = ?, question = ?, choices = ?, answer = ?, explanation = ?, passage = ?, source = 'admin' WHERE id = ?`,
     ...qParams(req.body), Number(req.params.id));
+  await audit.log(req, 'admin_question_edit', { detail: `#${Number(req.params.id)}` });
   res.json({ ok: true });
 }));
 
 app.delete('/api/admin/questions/:id', admin, wrap(async (req, res) => {
   // Hide instead of hard delete, so a bank update does not bring it back.
   await db.run(`UPDATE questions SET active = 0, source = 'admin' WHERE id = ?`, Number(req.params.id));
+  await audit.log(req, 'admin_question_hide', { detail: `#${Number(req.params.id)}` });
   res.json({ ok: true });
 }));
 
@@ -1010,6 +1184,7 @@ app.post('/api/admin/questions/import', admin, wrap(async (req, res) => {
     if (err) errors.push(`#${i + 1}: ${err}`); else { stmts.push([INS, qParams(b)]); added++; }
   });
   for (let i = 0; i < stmts.length; i += 200) await db.batch(stmts.slice(i, i + 200));
+  if (added) await audit.log(req, 'admin_question_import', { detail: `${added} tanong` });
   res.json({ added, errors: errors.slice(0, 20) });
 }));
 
@@ -1017,6 +1192,20 @@ app.get('/api/admin/attempts', admin, wrap(async (req, res) => {
   const rows = await db.all(`SELECT a.id, a.mode, a.title, a.score, a.total, a.started_at, a.finished_at, u.name, u.email
     FROM attempts a JOIN users u ON u.id = a.user_id WHERE a.finished_at IS NOT NULL ORDER BY a.finished_at DESC LIMIT 200`);
   res.json(rows);
+}));
+
+/* Admin → Audit log: logins, failed logins and admin changes, newest first. "alerts" shows only suspicious ones. */
+app.get('/api/admin/audit', admin, wrap(async (req, res) => {
+  const where = [], args = [];
+  if (req.query.filter === 'alerts') where.push('l.alert = 1');
+  else if (req.query.filter === 'admin') where.push(`l.action LIKE 'admin_%' OR l.action LIKE 'payment_%'`);
+  else if (req.query.filter === 'logins') where.push(`l.action LIKE 'login%' OR l.action IN ('logout', 'password_change', 'password_reset')`);
+  if (req.query.q) { where.push('(u.email LIKE ? OR u.name LIKE ? OR l.ip LIKE ?)'); const q = `%${String(req.query.q).trim()}%`; args.push(q, q, q); }
+  const rows = await db.all(`SELECT l.id, l.at, l.action, l.detail, l.ip, l.device, l.alert, l.user_id, l.actor_id, u.name, u.email, a.name AS actor_name
+    FROM audit_log l LEFT JOIN users u ON u.id = l.user_id LEFT JOIN users a ON a.id = l.actor_id
+    ${where.length ? 'WHERE ' + where.map((w) => `(${w})`).join(' AND ') : ''} ORDER BY l.id DESC LIMIT 300`, ...args);
+  const alerts7d = (await db.get('SELECT COUNT(*) AS n FROM audit_log WHERE alert = 1 AND at > ?', Date.now() - 7 * 864e5)).n;
+  res.json({ rows, alerts7d, keep_days: audit.KEEP_DAYS });
 }));
 
 /* --------------------------- app updates --------------------------- */
@@ -1078,6 +1267,9 @@ app.ready = (async () => {
 if (process.env.RENDER_EXTERNAL_URL && process.env.KEEP_AWAKE !== '0') {
   setInterval(() => fetch(process.env.RENDER_EXTERNAL_URL + '/api/meta').catch(() => {}), 10 * 60e3).unref();
 }
+// Study reminder emails, Premium expiry emails and audit log cleanup (see jobs.js).
+app.jobs = () => jobs.runAll(getSettings);
+if (process.env.NODE_ENV !== 'test') setInterval(() => app.jobs(), 10 * 60e3).unref();
 // Publish a new exam set automatically when the latest one is older than SET_INTERVAL_DAYS.
 setInterval(() => sets.ensureSets().catch((e) => console.error('Exam set error:', e)), 3600e3).unref();
 

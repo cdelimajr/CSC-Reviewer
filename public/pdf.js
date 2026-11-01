@@ -156,7 +156,33 @@
     return doc.bytes();
   }
 
-  const api = { create, report, clean };
+  /* Receipt of a Premium payment (proof of payment in the app, not a BIR invoice).
+     r: { no, date, name, email, amount, method, reference, days, period_from, period_to, business, contact }
+     opts: { lang: 'tl' | 'en' } */
+  function receipt(r, opts = {}) {
+    const en = opts.lang === 'en';
+    const L = (tl, e) => (en ? e : tl);
+    const day = (ms) => new Date(ms).toLocaleDateString('en-PH', { year: 'numeric', month: 'long', day: 'numeric' });
+    const doc = create({ title: `${L('Resibo', 'Receipt')} ${r.no}`, footer: L('CSE Reviewer · Patunay ng bayad, hindi BIR invoice', 'CSE Reviewer · Proof of payment, not a BIR invoice') });
+    doc.text(r.business || 'CSE Reviewer', { size: 12, bold: true, color: BLUE, after: 0 });
+    if (r.contact) doc.text(r.contact, { size: 9.5, color: MUTED, after: 0 });
+    doc.space(10).text(`${L('RESIBO NG BAYAD', 'PAYMENT RECEIPT')}  ${r.no}`, { size: 16, bold: true, after: 8 });
+    const row = (k, v) => doc.text(`${k}:  ${v}`, { size: 11, after: 2 });
+    row(L('Petsa', 'Date'), day(r.date));
+    row(L('Pangalan', 'Name'), `${r.name} <${r.email}>`);
+    row(L('Para sa', 'For'), `CSE Reviewer Premium${r.days ? ` (${r.days} ${L('araw', 'days')})` : ''}`);
+    if (r.period_from) row(L('Premium mula', 'Premium period'), `${day(r.period_from)} - ${day(r.period_to)}`);
+    row(L('Paraan ng bayad', 'Payment method'), r.method);
+    if (r.reference) row(L('Reference no.', 'Reference no.'), r.reference);
+    doc.space(6).rule();
+    doc.text(`${L('KABUUAN', 'TOTAL')}:  PHP ${r.amount}`, { size: 14, bold: true, color: GREEN, after: 6 });
+    doc.text(L('Bayad na. Salamat!', 'Paid. Thank you!'), { size: 11, after: 10 });
+    doc.text(L('Patunay ito ng bayad sa loob ng app (RA 8792, Electronic Commerce Act). Hindi ito BIR-registered invoice.',
+      'This is proof of payment inside the app (RA 8792, Electronic Commerce Act). It is not a BIR-registered invoice.'), { size: 9, color: MUTED });
+    return doc.bytes();
+  }
+
+  const api = { create, report, receipt, clean };
   if (typeof module === 'object' && module.exports) module.exports = api;
   else root.CSEPDF = api;
 })(typeof self !== 'undefined' ? self : this);

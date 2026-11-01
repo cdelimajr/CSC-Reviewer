@@ -152,13 +152,24 @@ const lastCode = (to) => {
   assert.equal((await F('POST', `/api/attempts/${fid}/email`, {})).status, 402, 'email of the full review is Premium');
   assert.equal((await A('GET', `/api/attempts/${fid}`)).data.lite, undefined, 'admin sees the full review');
   assert.equal((await U('GET', '/api/offline/pack')).status, 402, 'offline is Premium only');
-  assert.equal((await U('POST', '/api/payments', { reference: 'GC123456' })).status, 200);
+  assert.equal((await U('POST', '/api/payments', { reference: 'GC123456', amount: '1' })).status, 200);
   assert.ok(mail.outbox.some((m) => m.to === 'admin@test.ph' && m.subject.startsWith('Bagong bayad')), 'admin notified');
   r = await A('GET', '/api/admin/payments');
   assert.equal(r.data.length, 1);
+  assert.equal(r.data[0].amount, '99', 'manual payment amount is the price, not what the app sent');
   r = await A('POST', `/api/admin/payments/${r.data[0].id}`, { action: 'approve' });
   assert.ok(r.data.until > Date.now() + 29 * 864e5);
   r = await U('GET', '/api/premium'); assert.equal(r.data.active, true);
+  // Receipt: in the approval email (with a PDF) and in Premium → Your payments; only for the owner (and admins)
+  const apr = mail.outbox.filter((m) => m.to === 'juan@test.ph' && m.subject.startsWith('Aktibo na')).pop();
+  assert.ok(/Resibo CSE-\d{4}-\d{5}/.test(apr.subject) && apr.attachments[0].startsWith('Resibo-CSE-'), 'receipt PDF in the approval email');
+  const paidId = r.data.payments.find((x) => x.status === 'approved').id;
+  r = await U('GET', `/api/payments/${paidId}/receipt`);
+  assert.match(r.data.no, /^CSE-\d{4}-\d{5}$/); assert.equal(r.data.amount, '99'); assert.equal(r.data.days, 30);
+  assert.ok(r.data.period_to - r.data.period_from === 30 * 864e5, 'receipt shows the Premium period');
+  assert.equal(Buffer.from(require('../public/pdf').receipt(r.data).slice(0, 8)).toString(), '%PDF-1.4');
+  assert.equal((await F('GET', `/api/payments/${paidId}/receipt`)).status, 404, 'not for other users');
+  assert.equal((await A('GET', `/api/payments/${paidId}/receipt`)).status, 200, 'admin can see it');
   assert.equal((await U('POST', '/api/attempts', { mode: 'subpro' })).status, 200, 'premium unlocks mocks');
 
   // Online payment (PayMongo, faked here): checkout, signed webhook, Premium extended once only
@@ -229,6 +240,19 @@ const lastCode = (to) => {
   const count = (await U('GET', '/api/attempts')).data.length;
   await U('POST', '/api/offline/sync', { attempts: offline });
   assert.equal((await U('GET', '/api/attempts')).data.length, count, 'no duplicates');
+  // A set deleted after it was saved on the device: the result is kept with the questions the user saw.
+  r = await U('POST', '/api/offline/sync', { attempts: [{ client_id: 'Ltest4', mode: 'pro', set_id: 999999, title: 'Professional Mock Exam · Set 9', items: set.items, answers: {}, started_at: Date.now() - 6e5, finished_at: Date.now() }] });
+  assert.ok(r.data.saved.Ltest4, 'result of a deleted set is still saved');
+  // Premium ended before the device came back online: results made while it was Premium are still saved.
+  const juanRow = await require('../src/db').get('SELECT id, premium_until FROM users WHERE email = ?', 'juan@test.ph');
+  await require('../src/db').run('UPDATE users SET premium_until = ? WHERE id = ?', Date.now() - 60e3, juanRow.id);
+  r = await U('POST', '/api/offline/sync', { attempts: [
+    { client_id: 'Ltest5', mode: 'practice', title: 'Practice', items: ps, answers: {}, started_at: Date.now() - 6e5, finished_at: Date.now() - 3e5 },
+    { client_id: 'Ltest6', mode: 'practice', title: 'Practice', items: ps, answers: {}, started_at: Date.now() - 1000, finished_at: Date.now() },
+  ] });
+  assert.equal(r.status, 200, 'sync still works after Premium ended');
+  assert.ok(r.data.saved.Ltest5, 'made while Premium: saved'); assert.equal(r.data.rejected.Ltest6, 'premium', 'made after Premium: refused');
+  await require('../src/db').run('UPDATE users SET premium_until = ? WHERE id = ?', juanRow.premium_until, juanRow.id);
 
   // Premium: email the full review with the PDF attached
   const mocks = (await U('GET', '/api/attempts')).data.filter((x) => x.mode !== 'practice' && x.finished_at);
@@ -239,10 +263,91 @@ const lastCode = (to) => {
   const pdfBytes = require('../public/pdf').report({ ...(await U('GET', `/api/attempts/${mocks[0].id}`)).data }, { subjects: {} });
   assert.equal(Buffer.from(pdfBytes.slice(0, 8)).toString(), '%PDF-1.4');
 
+  // Settings backup and sync between devices: the newer copy wins
+  assert.deepEqual((await U('GET', '/api/me/prefs')).data.data, {}, 'no backup yet');
+  r = await U('PUT', '/api/me/prefs', { data: { lang: 'en', level: 'subpro', remind: { on: true, time: '07:30', email: true } }, updated_at: Date.now(), remind_email: true, remind_min: 450 });
+  assert.equal(r.data.data.level, 'subpro'); assert.equal(r.data.remind_email, true); assert.equal(r.data.remind_min, 450);
+  r = await U('PUT', '/api/me/prefs', { data: { lang: 'tl' }, updated_at: Date.now() - 864e5 });
+  assert.equal(r.data.data.lang, 'en', 'an older copy does not overwrite a newer one');
+  assert.equal((await U('PUT', '/api/me/prefs', { data: { x: 'y'.repeat(30000) } })).status, 413, 'size limit');
+  await U('PUT', '/api/me/prefs', { remind_email: false });
+
+  // Study streak
+  r = await U('GET', '/api/stats');
+  assert.ok(r.data.streak.current >= 1 && r.data.streak.today && r.data.days.includes(r.data.today), 'studied today');
+  const { streakOf } = require('../src/review');
+  assert.deepEqual(streakOf([8, 9, 10, 3, 4], 10), { current: 3, best: 3, today: true });
+  assert.deepEqual(streakOf([7, 8], 10), { current: 0, best: 2, today: false });
+  assert.equal(streakOf([8, 9], 10).current, 2, 'yesterday still counts until today ends');
+
+  // Mistakes review and weak topics
+  r = await U('GET', '/api/review');
+  const wrong0 = r.data.mistakes_count;
+  assert.ok(wrong0 > 10 && r.data.items.length === Math.min(300, wrong0), 'premium: the mistakes with their questions (for offline)');
+  assert.ok(r.data.topics.length > 3 && r.data.topics.every((t, i, l) => !i || l[i - 1].pct <= t.pct), 'weakest topic first');
+  r = await U('POST', '/api/attempts', { mode: 'practice', review: 'mistakes', count: 10 });
+  assert.equal(r.data.items.length, 10); assert.match(r.data.title, /Mga mali ko/);
+  const fixAns = Object.fromEntries(r.data.items.map((it, i) => [i, it.answer]));
+  await U('POST', `/api/attempts/${r.data.id}/submit`, { answers: fixAns });
+  assert.equal((await U('GET', '/api/review')).data.mistakes_count, wrong0 - 10, 'answered right later: off the list');
+  const weak = (await U('GET', '/api/review')).data.topics[0];
+  r = await U('POST', '/api/attempts', { mode: 'practice', review: 'topic', subject: weak.subject, topic: weak.topic, count: 10 });
+  assert.ok(r.data.items.length >= 1 && r.data.items.every((it) => it.topic === weak.topic && it.subject === weak.subject), 'practice of one topic');
+  r = await F('GET', '/api/review');
+  assert.equal(r.data.items, undefined); assert.equal(r.data.mistakes_count, 0, 'free plan: mock exam questions stay hidden');
+
+  // Time per part of a mock exam
+  r = await U('POST', '/api/attempts', { mode: 'subpro' });
+  r = await U('POST', `/api/attempts/${r.data.id}/submit`, { answers: {}, times: { verbal: 600, numerical: 300.4, bogus: 5, clerical: 1e9 } });
+  assert.equal(r.data.times.verbal, 600); assert.equal(r.data.times.numerical, 300); assert.equal(r.data.times.bogus, undefined);
+  assert.ok(r.data.times.clerical <= 160 * 60 + 120, 'kept within the exam time');
+
+  // Audit log and suspicious-login alerts
+  const juanId = (await U('GET', '/api/me')).data.user.id;
+  r = await A('GET', '/api/admin/audit');
+  assert.ok(r.data.rows.some((x) => x.action === 'payment_approve' && x.user_id === juanId), 'admin change logged');
+  assert.ok(r.data.rows.some((x) => x.action === 'login' && x.user_id === juanId && x.device), 'login logged with the device');
+  assert.equal((await U('GET', '/api/admin/audit')).status, 403);
+  const loginFrom = (ip, ua, password = 'newpass123') => fetch(base + '/api/auth/login', { method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Forwarded-For': ip, 'User-Agent': ua }, body: JSON.stringify({ email: 'juan@test.ph', password }) });
+  assert.equal((await loginFrom('203.0.113.9', 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Safari/604.1')).status, 200);
+  assert.ok(mail.outbox.some((m) => m.to === 'juan@test.ph' && m.subject === 'May bagong login sa account mo'), 'new place + new device: email to the owner');
+  for (let i = 0; i < 5; i++) await loginFrom('198.51.100.7', 'curl/8', 'wrongpass');
+  assert.ok(mail.outbox.some((m) => m.to === 'juan@test.ph' && m.subject.startsWith('Maraming maling password')), 'many wrong passwords: email');
+  r = await A('GET', '/api/admin/audit?filter=alerts');
+  assert.ok(r.data.rows.some((x) => x.action === 'login' && x.alert) && r.data.rows.some((x) => x.action === 'login_failed_many'), 'alerts listed');
+  assert.ok(r.data.rows.every((x) => x.alert), 'alerts filter'); assert.ok((await A('GET', '/api/admin/overview')).data.alerts7d >= 2);
+  assert.equal((await A('GET', '/api/admin/audit?q=203.0.113')).data.rows.length, 1, 'search by IP');
+  await U('POST', '/api/auth/login', { email: 'juan@test.ph', password: 'newpass123' });
+  r = await U('GET', '/api/me/logins');
+  assert.ok(r.data.some((x) => x.alert && x.device === 'iPhone · Safari'), 'the user sees their own logins');
+
+  // Background jobs: study reminder email (once a day, only without study today) and Premium expiry emails
+  const jobs = require('../src/jobs'), dbm = require('../src/db');
+  await A('PUT', '/api/me/prefs', { remind_email: true, remind_min: 0 });
+  await U('PUT', '/api/me/prefs', { remind_email: true, remind_min: 0 });
+  assert.equal(await jobs.studyReminders(), 1, 'admin has not studied today: reminded; Juan studied: not');
+  assert.equal(await jobs.studyReminders(), 0, 'once a day');
+  assert.ok(mail.outbox.some((m) => m.to === 'admin@test.ph' && /review|streak/i.test(m.subject)));
+  const keepUntil = (await dbm.get('SELECT premium_until FROM users WHERE id = ?', juanId)).premium_until;
+  const st = { premium_required: '1', price: '99', plan_days: '30' };
+  await dbm.run('UPDATE users SET premium_until = ? WHERE id = ?', Date.now() + 2 * 864e5, juanId);
+  assert.equal(await jobs.expiryReminders(st), 1); assert.equal(await jobs.expiryReminders(st), 0, 'sent once');
+  assert.ok(mail.outbox.some((m) => m.to === 'juan@test.ph' && m.subject === 'Mag-e-expire ang Premium mo sa 2 araw'));
+  await dbm.run('UPDATE users SET premium_until = ? WHERE id = ?', Date.now() - 3600e3, juanId);
+  assert.equal(await jobs.expiryReminders(st), 1, 'ended: one more email');
+  await dbm.run('UPDATE users SET premium_until = ? WHERE id = ?', keepUntil, juanId);
+  await U('PUT', '/api/me/prefs', { remind_email: false });
+
   // Admin settings: exam watermark, payment switches, manual accounts (Maya, PayPal, bank), ads
   r = await U('GET', '/api/me');
   assert.equal(r.data.config.watermark, true, 'watermark on by default'); assert.equal(r.data.config.ads.on, true);
   r = await A('GET', '/api/admin/settings');
+  // Number settings: a wrong value keeps the old one, and values are kept in range
+  const price0 = r.data.price;
+  r = await A('PUT', '/api/admin/settings', { price: 'abc', plan_days: '-5', free_practice_items: '2.6' });
+  assert.equal(r.data.price, price0, 'bad price ignored'); assert.equal(r.data.plan_days, '1'); assert.equal(r.data.free_practice_items, '5');
+  r = await A('PUT', '/api/admin/settings', { plan_days: '30', free_practice_items: '20' });
   assert.deepEqual(r.data.pay_methods.map((m) => m.id), ['gcash'], 'only the GCash account that has a number (no empty Maya/PayPal/bank)');
   assert.equal(r.data.pay_methods[0].name, 'GCash');
   // Accounts are added with the type dropdown; the name comes from the type (no "name in the app")

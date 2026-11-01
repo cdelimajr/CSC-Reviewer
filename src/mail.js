@@ -11,7 +11,17 @@ const provider = process.env.BREVO_API_KEY ? 'brevo' : process.env.RESEND_API_KE
 const enabled = !!(provider && FROM);
 const outbox = []; // last emails (used by tests when no provider is set)
 
+const PDF = require('../public/pdf');
+const dateText = (ms) => new Date(ms).toLocaleDateString('en-PH', { year: 'numeric', month: 'long', day: 'numeric', timeZone: 'Asia/Manila' });
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+function receiptHtml(r) {
+  const row = (k, v) => `<tr><td style="padding:4px 0;color:#5b6478">${k}</td><td style="text-align:right">${esc(v)}</td></tr>`;
+  return `<h3 style="margin:16px 0 6px;font-size:16px">Resibo ${esc(r.no)}</h3><table style="width:100%;border-collapse:collapse;font-size:14px">
+    ${r.business ? row('Mula kay', r.business) : ''}${row('Petsa', dateText(r.date))}${row('Halaga', '₱' + r.amount)}${row('Paraan', r.method)}${r.reference ? row('Reference', r.reference) : ''}
+    ${r.period_from ? row('Premium', `${dateText(r.period_from)} – ${dateText(r.period_to)}`) : ''}</table>
+    <p style="font-size:12px;color:#5b6478">Patunay ito ng bayad sa app. Hindi ito BIR invoice.</p>`;
+}
 
 function layout(title, bodyHtml) {
   return `<!doctype html><html><body style="margin:0;background:#f4f6fb;font-family:Arial,Helvetica,sans-serif;color:#172033">
@@ -105,14 +115,52 @@ const templates = {
         <p>Ituloy lang ang pag-review!</p>`),
       `Hi ${name},\n\nNatapos na exam: ${stats.attempts}. Huling mock exams: ${last}.`);
   },
-  payment(to, name, status, until, note) {
+  // receipt (when approved): the receipt details, also attached as a PDF (see public/pdf.js receipt()).
+  payment(to, name, status, until, note, receipt) {
     const ok = status === 'approved';
-    const untilText = until ? new Date(until).toLocaleDateString('en-PH', { year: 'numeric', month: 'long', day: 'numeric' }) : '';
-    return safeSend(to, ok ? 'Aktibo na ang Premium mo' : 'Tungkol sa iyong bayad',
+    const untilText = until ? dateText(until) : '';
+    const rc = ok && receipt ? receiptHtml(receipt) : '';
+    const files = ok && receipt ? [{ name: `Resibo-${receipt.no}.pdf`, content: Buffer.from(PDF.receipt(receipt)) }] : [];
+    return safeSend(to, ok ? `Aktibo na ang Premium mo${receipt ? ` · Resibo ${receipt.no}` : ''}` : 'Tungkol sa iyong bayad',
       layout(ok ? 'Salamat! Aktibo na ang Premium' : 'Hindi na-approve ang bayad', ok
-        ? `<p>Hi ${esc(name)},</p><p>Na-confirm na ang bayad mo. Pwede mo nang gamitin ang lahat ng mock exam hanggang <b>${esc(untilText)}</b>.</p>${note ? `<p>${esc(note)}</p>` : ''}`
+        ? `<p>Hi ${esc(name)},</p><p>Na-confirm na ang bayad mo. Pwede mo nang gamitin ang lahat ng mock exam hanggang <b>${esc(untilText)}</b>.</p>${note ? `<p>${esc(note)}</p>` : ''}${rc}`
         : `<p>Hi ${esc(name)},</p><p>Hindi namin ma-confirm ang bayad mo.</p>${note ? `<p>Dahilan: ${esc(note)}</p>` : ''}<p>Pakisubukan ulit o mag-reply sa email na ito.</p>`),
-      ok ? `Hi ${name}, aktibo na ang Premium mo hanggang ${untilText}.` : `Hi ${name}, hindi na-approve ang bayad mo. ${note || ''}`);
+      ok ? `Hi ${name}, aktibo na ang Premium mo hanggang ${untilText}.${receipt ? ` Resibo ${receipt.no}: ₱${receipt.amount}, ${receipt.method}, ref ${receipt.reference}.` : ''}` : `Hi ${name}, hindi na-approve ang bayad mo. ${note || ''}`,
+      files);
+  },
+  // Login from a new place and a new device.
+  newLogin(to, name, info) {
+    return safeSend(to, 'May bagong login sa account mo',
+      layout('Bagong login sa CSE Reviewer', `<p>Hi ${esc(name)},</p>
+        <p>May nag-login sa account mo mula sa device o lugar na hindi pa namin nakikita:</p>
+        <p style="background:#f4f6fb;padding:12px;border-radius:8px">${esc(new Date(info.when).toLocaleString('en-PH', { timeZone: 'Asia/Manila' }))}<br>${esc(info.device)}<br>IP: ${esc(info.ip)}</p>
+        <p>Kung ikaw ito, wala kang kailangang gawin.</p>
+        <p><b>Kung hindi ikaw:</b> palitan agad ang password mo (Account → Palitan ang password, o "Nakalimutan ang password?" sa login). Malo-logout ang ibang device.</p>`),
+      `Hi ${name}, may bagong login sa account mo (${info.device}, IP ${info.ip}). Kung hindi ikaw, palitan agad ang password mo.`);
+  },
+  failedLogins(to, name, info) {
+    return safeSend(to, 'Maraming maling password sa account mo',
+      layout('May sumusubok mag-login', `<p>Hi ${esc(name)},</p>
+        <p>May <b>${info.count}</b> maling password sa account mo sa loob ng 15 minuto (${esc(info.device)}, IP ${esc(info.ip)}).</p>
+        <p>Kung hindi ikaw ito, gumamit ng mas mahabang password na hindi mo ginagamit sa ibang site.</p>`),
+      `Hi ${name}, may ${info.count} maling password sa account mo sa loob ng 15 minuto. Kung hindi ikaw, palitan ang password mo.`);
+  },
+  // Daily study reminder (only when the user turned on "Ipaalala rin sa email").
+  studyReminder(to, name, streak) {
+    return safeSend(to, streak > 1 ? `🔥 ${streak} araw na! Huwag putulin ang streak mo` : 'Oras na para mag-review',
+      layout('Paalala sa pag-aaral', `<p>Hi ${esc(name)},</p>
+        <p>${streak > 1 ? `<b>${streak} araw</b> ka nang sunod-sunod na nag-aaral. Isang practice lang ngayon para tuloy ang streak mo.` : 'Wala ka pang practice o exam ngayong araw. Kahit 10 tanong lang, malaking tulong na.'}</p>
+        <p style="font-size:13px;color:#5b6478">Pwede mong i-off ito sa Account → Paalala sa pag-aaral.</p>`),
+      `Hi ${name}, oras na para mag-review. Pwede mong i-off ito sa Account → Paalala sa pag-aaral.`);
+  },
+  // Premium ends in a few days (days = 3 or 1), or ended (days = 0).
+  premiumExpiry(to, name, until, days, price, planDays) {
+    const when = dateText(until);
+    return safeSend(to, days ? `Mag-e-expire ang Premium mo sa ${days} araw` : 'Natapos na ang Premium mo',
+      layout(days ? 'Malapit nang matapos ang Premium' : 'Natapos na ang Premium', `<p>Hi ${esc(name)},</p>
+        <p>${days ? `Matatapos ang Premium mo sa <b>${esc(when)}</b>.` : `Natapos ang Premium mo noong <b>${esc(when)}</b>. Bumalik ka na sa libreng plan.`}</p>
+        <p>Para tuloy-tuloy ang lahat ng exam set, buong review at offline, i-extend ito sa app: Account → Premium${price ? ` (₱${esc(price)} para sa ${esc(planDays)} araw)` : ''}. Hindi nawawala ang mga resulta mo.</p>`),
+      days ? `Hi ${name}, matatapos ang Premium mo sa ${when}. I-extend sa Account → Premium.` : `Hi ${name}, natapos na ang Premium mo noong ${when}.`);
   },
   newPayment(to, user, p) {
     return safeSend(to, `Bagong bayad: ${user.name} (${p.reference})`,
