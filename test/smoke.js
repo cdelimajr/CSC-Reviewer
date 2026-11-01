@@ -57,6 +57,17 @@ const lastCode = (to) => {
   r = await O('POST', '/api/auth/otp/login', { email: 'juan@test.ph', code: lastCode('juan@test.ph') });
   assert.equal(r.status, 200); assert.equal(r.data.user.email, 'juan@test.ph');
   assert.equal((await O('GET', '/api/stats')).status, 200, 'logged in with code');
+
+  // Offline login coming back online: a newer login on another device wins
+  const B = client();
+  r = await B('POST', '/api/auth/login', { email: 'juan@test.ph', password: 'newpass123', since: Date.now() - 60e3 });
+  assert.equal(r.status, 409, 'newer login elsewhere wins'); assert.equal(r.data.code, 'replaced');
+  assert.equal((await O('GET', '/api/stats')).status, 200, 'newer session kept');
+  r = await B('POST', '/api/auth/login', { email: 'juan@test.ph', password: 'newpass123', since: Date.now() + 1000 });
+  assert.equal(r.status, 200, 'no newer login: offline login goes online');
+  r = await O('POST', '/api/auth/otp', { email: 'juan@test.ph' });
+  r = await O('POST', '/api/auth/otp/login', { email: 'juan@test.ph', code: lastCode('juan@test.ph') });
+  assert.equal(r.status, 200);
   assert.equal((await client()('POST', '/api/auth/otp/login', { email: 'juan@test.ph', code: lastCode('juan@test.ph') })).status, 400, 'code works once');
 
   // One login at a time: the code login above ended the older session, and that device is told why

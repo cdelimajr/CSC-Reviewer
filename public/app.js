@@ -117,6 +117,11 @@
   };
 
   async function api(method, url, body) {
+    // Logged in offline: log in online first (in the background), then make the call.
+    if (S.offAuth && !url.startsWith('/api/auth/') && url !== '/api/meta') {
+      if (navigator.onLine) await OffAuth.resume();
+      if (S.offAuth) { setOffline(true); const e = new Error(L('Walang internet. Kailangan ng internet para dito.', 'No internet. This needs an internet connection.')); e.offline = true; throw e; }
+    }
     let res;
     const headers = body ? { 'Content-Type': 'application/json' } : {};
     if (IS_APP) {
@@ -151,7 +156,7 @@
     Live.stop();
     clearTimeout(S.saveT); stopTimer();
     S.exam = null; document.onkeydown = null;
-    store.del('cse-token'); store.del('cse-boot');
+    store.del('cse-token'); store.del('cse-boot'); store.del('cse-offauth'); S.offAuth = null;
     S.user = null; S.authNote = note;
     Tour.stop();
     document.querySelectorAll('.modal-bg').forEach((m) => m.remove());
@@ -166,7 +171,7 @@
     let ctl = null, retry = 0, retryT = 0, pollT = 0, lastCheck = 0, on = false;
     const headers = () => { const h = {}; if (IS_APP) { h['X-App'] = '1'; const t = store.get('cse-token'); if (t) h.Authorization = 'Bearer ' + t; } return h; };
     async function check(force) {
-      if (!S.user || S.offline && !force) return;
+      if (!S.user || S.offAuth || S.offline && !force) return;
       if (!force && Date.now() - lastCheck < 1500) return;
       lastCheck = Date.now();
       try {
@@ -176,7 +181,7 @@
     }
     async function connect() {
       clearTimeout(retryT);
-      if (!on || ctl || !S.user || !window.ReadableStream) return;
+      if (!on || ctl || !S.user || S.offAuth || !window.ReadableStream) return;
       const me = ctl = new AbortController();
       try {
         const res = await fetch(API + '/api/session/live', { headers: headers(), credentials: IS_APP ? 'omit' : 'same-origin', cache: 'no-store', signal: me.signal });
@@ -212,7 +217,7 @@
     window.addEventListener('online', wake);
     window.addEventListener('pageshow', wake);
     document.addEventListener('resume', wake); // phone app back from the background
-    return { sync: () => (S.user ? start() : stop()), stop, check };
+    return { sync: () => (S.user && !S.offAuth ? start() : stop()), stop, check };
   })();
 
   // GET that remembers the last answer, so the screen still works offline.
@@ -255,7 +260,7 @@
   };
   const warmAt = {};
   function prefetch(names) {
-    if (!S.premium || !S.user || S.offline || document.hidden) return;
+    if (!S.premium || !S.user || S.offline || S.offAuth || document.hidden) return;
     const urls = [...new Set(names.flatMap((n) => (PREFETCH[n] ? PREFETCH[n]() : [])))];
     urls.forEach((u) => {
       if (Date.now() - (warmAt[u] || 0) < 15e3) return;
@@ -276,19 +281,19 @@
     if (!!S.offline === on) return;
     S.offline = on;
     let el = document.getElementById('offline');
-    if (!on) { if (el) el.remove(); syncSoon(); if (S.locked) route(); return; }
+    if (!on) { if (el) el.remove(); if (S.offAuth) OffAuth.resume(); syncSoon(); if (S.locked) route(); return; }
     if (el) return;
     el = document.createElement('div');
     el.id = 'offline';
     el.className = 'offline-bar';
-    el.innerHTML = canOffline() ? L('📡 <b>Offline ka.</b> Gumagana pa rin ang lahat ng practice at mock exam. Ise-save online ang mga resulta mo kapag may internet na.',
+    el.innerHTML = !S.user ? L('📡 <b>Walang internet.</b>', '📡 <b>No internet.</b>') : canOffline() ? L('📡 <b>Offline ka.</b> Gumagana pa rin ang lahat ng practice at mock exam. Ise-save online ang mga resulta mo kapag may internet na.',
       '📡 <b>You are offline.</b> All practice and mock exams still work. Your results will be saved online when the internet is back.')
       : L('📡 <b>Walang internet.</b> Para sa Premium lang ang offline na paggamit.', '📡 <b>No internet.</b> Offline use is for Premium only.');
     document.body.prepend(el);
     if (S.user && S.meta && !canOffline() && !S.exam) setTimeout(route);
   }
   window.addEventListener('offline', () => setOffline(true));
-  window.addEventListener('online', () => { syncSoon(); if (!S.meta) init(); });
+  window.addEventListener('online', () => { if (S.offAuth) OffAuth.resume(); syncSoon(); if (!S.meta) init(); });
 
   /* Exams taken offline are kept on the device until they are saved online. */
   const local = {
@@ -322,7 +327,7 @@
   let syncing = null, syncT = null;
   function syncSoon() { clearTimeout(syncT); syncT = setTimeout(() => syncNow(), 800); }
   async function syncNow() {
-    if (syncing || !S.user || (S.config.verify && !S.user.email_verified)) return syncing;
+    if (syncing || !S.user || S.offAuth || (S.config.verify && !S.user.email_verified)) return syncing;
     syncing = (async () => {
       let n = 0;
       for (const p of store.get(uk('cse-psub'), [])) {
@@ -759,7 +764,13 @@
     },
     async login() {
       const key = await this.unlock();
-      try { return await api('POST', '/api/auth/device/login', { key }); } catch (e) { if (e.code === 'device') this.forget(true); throw e; }
+      // No internet: face/fingerprint was checked on this device, so Premium can log in offline (see OffAuth).
+      if (!navigator.onLine) return { offlineKey: key };
+      try { return await api('POST', '/api/auth/device/login', { key }); } catch (e) {
+        if (e.offline) return { offlineKey: key };
+        if (e.code === 'device') this.forget(true);
+        throw e;
+      }
     },
     async forget(localOnly) {
       const rec = this.saved();
@@ -775,6 +786,116 @@
     ? L('Kinansela.', 'Cancelled.') : (e && e.message) || L('Hindi gumana ang face/fingerprint login.', 'Face/fingerprint login did not work.');
   // Switch between face and fingerprint without a new device key (same secret, only the label and the prompt change).
   function setBioMethod(method) { const rec = Bio.saved(); if (rec) store.set('cse-bio', { ...rec, method }); }
+
+  /* ---------------- offline login (Premium) ----------------
+     A Premium account can log in even without internet, on a device where it logged in online before:
+     - After each online login (and each check with the server) this device keeps the account's details,
+       and after a password login a salted PBKDF2 hash of the password (never the password itself).
+     - Offline, the password is checked against that hash on the device, or face/fingerprint is used
+       (quick login). It opens at once: no server to wait for.
+     - It works for 30 days after the last time the account was online on this device, and only while
+       Premium and the saved questions are still valid. Free accounts need internet to log in.
+     - Back online, the app logs in to the server in the background (the password or quick-login key is
+       kept in memory only, for this). If the account logged in on another device after the offline
+       login, the newer login wins and this device is logged out (one login at a time). Results made
+       offline stay on the device and are saved online after the next login. */
+  const OffAuth = (() => {
+    const KEY = 'cse-offline-login', DAYS = 30, ROUNDS = 150000;
+    const norm = (e) => String(e || '').trim().toLowerCase();
+    const all = () => store.get(KEY, {}) || {};
+    const put = (m) => store.set(KEY, m);
+    const ok = () => !!(window.crypto && crypto.subtle && window.TextEncoder);
+    async function derive(pw, salt) {
+      const k = await crypto.subtle.importKey('raw', new TextEncoder().encode(pw), 'PBKDF2', false, ['deriveBits']);
+      return b64.to(await crypto.subtle.deriveBits({ name: 'PBKDF2', hash: 'SHA-256', salt: b64.from(salt), iterations: ROUNDS }, k, 256));
+    }
+    const get = (email) => { const r = all()[norm(email)]; return r && r.until > Date.now() ? r : null; };
+    const packOk = (uid) => { const p = store.get(`cse-pack-${uid}`); return !!(p && p.user_id === uid && (p.valid_until || 0) > Date.now()); };
+    const forget = (email) => { const m = all(); delete m[norm(email)]; put(m); };
+    let resuming = null;
+    const noInternet = () => L('Walang internet.', 'No internet.');
+    const offErr = (m) => Object.assign(new Error(m), { offlineLogin: true });
+    function enter(rec, secret) {
+      S.authNote = null;
+      S.offAuth = { email: rec.email, at: Date.now(), ...secret };
+      store.set('cse-offauth', { email: rec.email, at: S.offAuth.at }); // no password here
+      applyMe(rec.me);
+      S.meta = S.meta || store.get('cse-meta');
+      store.set('cse-boot', rec.me); store.set('cse-last-email', rec.email);
+      const bar = document.getElementById('offline'); if (bar) bar.remove();
+      S.offline = false; setOffline(true); // banner text for a logged-in Premium account
+      toast(L('Naka-login ka offline. Ise-save online ang mga resulta mo kapag may internet na.', 'You are logged in offline. Your results will be saved online when the internet is back.'));
+      go('#/');
+    }
+    // Why offline login is not possible for this email, or the saved record.
+    function usable(email) {
+      const r = get(email);
+      if (!r) {
+        const old = all()[norm(email)];
+        throw offErr(old ? L('Lumipas na ang 30 araw mula nang huling mag-online ang account na ito sa device na ito. Kumonekta sa internet para mag-login.', 'It has been over 30 days since this account was last online on this device. Connect to the internet to log in.')
+          : `${noInternet()} ${L('Para sa Premium ang offline na login, sa device na nag-login na online dati.', 'Offline login is for Premium, on a device that logged in online before.')}`);
+      }
+      if (!r.me || !r.me.premium) throw offErr(`${noInternet()} ${L('Para sa Premium ang offline na login.', 'Offline login is for Premium.')}`);
+      if (!packOk(r.uid) || !store.get('cse-meta')) throw offErr(L('Kailangang kumonekta sa internet para ma-update ang Premium at mga tanong mo (kahit isang beses bawat 30 araw).', 'Connect to the internet to update your Premium and questions (at least once every 30 days).'));
+      return r;
+    }
+    const self = {
+      // After an online login or check (Premium only). pw: the password, when the login used one.
+      async remember(pw) {
+        if (!S.user || !S.premium || !ok()) return;
+        const m = all(), e = norm(S.user.email), old = m[e] && m[e].uid === S.user.id ? m[e] : {};
+        let { salt, hash } = old;
+        if (pw) { salt = b64.to(rand(16)); hash = await derive(pw, salt); }
+        m[e] = { uid: S.user.id, email: e, salt, hash, me: store.get('cse-boot'), until: Date.now() + DAYS * 864e5 };
+        put(m);
+      },
+      // Each check with the server: keep the details fresh; drop them when Premium ended.
+      touch(me) {
+        if (!me || !me.user) return;
+        const e = norm(me.user.email), m = all();
+        if (!me.premium) { if (m[e]) forget(e); return; }
+        if (!m[e] || m[e].uid !== me.user.id) return;
+        m[e] = { ...m[e], me, until: Date.now() + DAYS * 864e5 }; put(m);
+      },
+      forget,
+      any: () => Object.values(all()).some((r) => r.until > Date.now() && r.me && r.me.premium),
+      has: (email) => !!get(email),
+      async login(email, pw) {
+        const r = usable(email);
+        if (!r.hash) throw offErr(L('Offline, gamitin ang face/fingerprint (o mag-login muna online gamit ang password).', 'Offline, use face/fingerprint (or log in online with your password first).'));
+        if (!ok() || (await derive(String(pw || ''), r.salt)) !== r.hash) throw offErr(L('Mali ang email o password.', 'Wrong email or password.'));
+        enter(r, { pw });
+      },
+      bio(email, key) { enter(usable(email), { key }); },
+      // Back online: log in to the server, then save the offline results.
+      resume() {
+        const s = S.offAuth;
+        if (!s) return Promise.resolve();
+        if (resuming) return resuming;
+        resuming = (async () => {
+          try {
+            let r;
+            if (s.pw) r = await api('POST', '/api/auth/login', { email: s.email, password: s.pw, since: s.at });
+            else if (s.key) r = await api('POST', '/api/auth/device/login', { key: s.key, since: s.at });
+            else { await api('GET', '/api/meta'); throw Object.assign(new Error(L('Mag-login ulit para ma-save online ang mga exam na ginawa mo offline.', 'Please log in again to save the exams you took offline.')), { relogin: true }); }
+            S.offAuth = null; store.del('cse-offauth');
+            if (r && r.user) store.set('cse-last-email', r.user.email);
+            await refreshMe();
+            if (s.pw) self.remember(s.pw).catch(() => {});
+            if (r && r.others) toast(L('Naka-online ka na. Na-logout ang account mo sa ibang device.', 'You are online. Your account was logged out on the other device.'));
+          } catch (e) {
+            if (e.offline) return;
+            S.offAuth = null; store.del('cse-offauth');
+            if (e.code === 'device') Bio.forget(true);
+            if (!e.relogin && e.code !== 'replaced' && (e.status === 401 || e.status === 403)) forget(s.email); // password changed or account disabled
+            if (e.code !== 'replaced') endedElsewhere(e.message); // "replaced": api() already logged out with the reason
+          }
+        })().finally(() => { resuming = null; });
+        return resuming;
+      },
+    };
+    return self;
+  })();
 
   /* ---------------- drop down / up sections ----------------
      A section that opens and closes when its title is tapped (<details>, so it opens instantly).
@@ -897,10 +1018,11 @@
     if (b && b.dataset.lang !== lang) setLang(b.dataset.lang);
   });
   const lastEmail = () => (Bio.saved() && Bio.saved().email) || store.get('cse-last-email') || '';
-  async function afterLogin(r, msg) {
+  async function afterLogin(r, msg, pw) {
     if (r && r.user) store.set('cse-last-email', r.user.email);
     S.authNote = null;
     await refreshMe();
+    OffAuth.remember(pw).catch(() => {}); // Premium: this device can log in offline next time
     // One login at a time: say so when this login logged out another device.
     toast(r && r.others ? `${msg} ${L('Na-logout ang account mo sa ibang device.', 'Your account was logged out on the other device.')}` : msg);
     go('#/');
@@ -921,7 +1043,9 @@
   function viewAuth(mode) {
     const reg = mode === 'register';
     const bio = !reg && Bio.saved();
-    authShell(`${S.authNote ? `<div class="notice auth-kicked" role="alert">🔒 ${esc(S.authNote)}</div>` : ''}
+    const offHint = !reg && !navigator.onLine && OffAuth.any()
+      ? `<div class="notice auth-offline">📡 ${L('Offline ka. Pwede pa ring mag-login ang Premium account na nag-login na sa device na ito.', 'You are offline. A Premium account that logged in on this device before can still log in.')}</div>` : '';
+    authShell(`${S.authNote ? `<div class="notice auth-kicked" role="alert">🔒 ${esc(S.authNote)}</div>` : offHint}
       <form id="authForm" class="auth-form" novalidate>
         ${reg ? `<input id="name" type="text" autocomplete="name" required placeholder="${L('Pangalan', 'Name')}" aria-label="${L('Pangalan', 'Name')}">` : ''}
         <input id="email" type="email" autocomplete="${reg ? 'email' : 'username'}" required placeholder="Email" aria-label="Email" value="${reg ? '' : esc(lastEmail())}">
@@ -945,13 +1069,23 @@
       try {
         const body = { email: $('#email').value, password: $('#pw').value };
         if (reg) body.name = $('#name').value;
-        const r = await api('POST', reg ? '/api/auth/register' : '/api/auth/login', body);
-        await afterLogin(r, reg ? L(`Maligayang pagdating, ${r.user.name}!`, `Welcome, ${r.user.name}!`) : loggedIn());
+        // No internet (Premium, on a device that logged in online before): check the password on the device, instantly.
+        if (!reg && !navigator.onLine) return await OffAuth.login(body.email, body.password);
+        let r;
+        try { r = await api('POST', reg ? '/api/auth/register' : '/api/auth/login', body); } catch (err) {
+          if (!reg && err.offline) return await OffAuth.login(body.email, body.password);
+          throw err;
+        }
+        await afterLogin(r, reg ? L(`Maligayang pagdating, ${r.user.name}!`, `Welcome, ${r.user.name}!`) : loggedIn(), body.password);
       } catch (err) { $('#err').textContent = err.message; btn.disabled = false; }
     };
     if ($('#bio')) $('#bio').onclick = async (e) => {
       e.target.disabled = true; $('#err').textContent = '';
-      try { await afterLogin(await Bio.login(), loggedIn()); } catch (err) { $('#err').textContent = bioErr(err); e.target.disabled = false; if (!Bio.saved()) e.target.remove(); }
+      try {
+        const r = await Bio.login();
+        if (r.offlineKey) return OffAuth.bio(Bio.saved().email, r.offlineKey);
+        await afterLogin(r, loggedIn());
+      } catch (err) { $('#err').textContent = bioErr(err); e.target.disabled = false; if (!Bio.saved()) e.target.remove(); }
     };
   }
 
@@ -1922,7 +2056,7 @@
       : L('Kailangan mong mag-login ulit para magamit ang app sa device na ito.', 'You will need to log in again to use the app on this device.'), L('Mag-logout', 'Log out'), true))) return;
     Live.stop();
     api('POST', '/api/auth/logout').catch(() => { /* offline: still log out on this device */ });
-    store.del('cse-token'); store.del('cse-boot'); S.user = null; S.exam = null; Tour.stop(); go('#/login');
+    store.del('cse-token'); store.del('cse-boot'); store.del('cse-offauth'); S.offAuth = null; S.user = null; S.exam = null; Tour.stop(); go('#/login');
   }
 
   async function paintBioCard() {
@@ -2412,7 +2546,7 @@
       ${Q('results', L('Saan ang resulta, PDF, email at print?', 'Where are results, PDF, email and print?'), L('Sa <a href="#/history">Resulta</a> ang lahat ng exam mo at ang score kada subject. Buksan ang isang exam para sa review. Sa Premium, may <b>I-save bilang PDF</b>, <b>Ipadala sa email</b> at <b>Print</b> sa itaas ng resulta (gumagana offline ang PDF at Print).', '<a href="#/history">Results</a> has all your exams and your score by subject. Open an exam for the review. With Premium, <b>Save as PDF</b>, <b>Send to email</b> and <b>Print</b> are at the top of the result (PDF and Print work offline).'))}
       ${Q('look', L('Paano palitan ang level, wika, itsura at tunog?', 'How do I change the level, language, look and sounds?'), L('<b>Level:</b> pindutin ang PRO / SUBPRO sa Home, Practice o Account.<br><b>Wika:</b> pindutin ang flag sa kanang itaas.<br><b>Itsura at Tunog:</b> sa <a href="#/account">Account</a>. Para mag-zoom, i-pinch ang screen gamit ang dalawang daliri.', '<b>Level:</b> tap PRO / SUBPRO on Home, Practice or Account.<br><b>Language:</b> tap the flag at the top right.<br><b>Look and Sounds:</b> in <a href="#/account">Account</a>. To zoom, pinch the screen with two fingers.'))}
       ${Q('bio', L('Paano mag-login gamit ang face o fingerprint?', 'How do I log in with face or fingerprint?'), L('Sa <a href="#/account">Account</a> → <b>Mabilis na login</b>, piliin ang Face o Fingerprint (Premium). Sa susunod, pindutin lang ito sa login screen. Pwede ka ring mag-login gamit ang <b>code sa email</b>, walang password.', 'In <a href="#/account">Account</a> → <b>Quick login</b>, choose Face or Fingerprint (Premium). Next time, just tap it on the login screen. You can also log in with an <b>email code</b>, no password.'))}
-      ${Q('offline', L('Gumagana ba kahit walang internet?', 'Does it work without internet?'), L('Oo, sa Premium: lahat ng practice, mock exam at naka-save na exam set. Ise-save online ang mga resulta kapag may internet na. Kailangang mag-online kahit isang beses bawat 30 araw. Kailangan ng internet sa libreng plan.', 'Yes, with Premium: all practice, mock exams and saved exam sets. Results are saved online when the internet is back. Go online at least once every 30 days. The free plan needs internet.'))}
+      ${Q('offline', L('Gumagana ba kahit walang internet?', 'Does it work without internet?'), L('Oo, sa Premium: lahat ng practice, mock exam at naka-save na exam set. Pwede ka ring <b>mag-login offline</b> gamit ang password o face/fingerprint, sa device na nag-login ka na online dati. Ise-save online ang mga resulta kapag may internet na. Kailangang mag-online kahit isang beses bawat 30 araw. Kailangan ng internet sa libreng plan.', 'Yes, with Premium: all practice, mock exams and saved exam sets. You can also <b>log in offline</b> with your password or face/fingerprint, on a device where you logged in online before. Results are saved online when the internet is back. Go online at least once every 30 days. The free plan needs internet.'))}
       ${Q('logout', L('Bakit ako na-logout?', 'Why was I logged out?'), L('<b>Isang device lang ang pwedeng naka-login</b> sa isang account. Kapag nag-login ka sa ibang phone o computer, malo-logout agad ang nauna (sa loob ng ilang segundo). Kung hindi ikaw ang nag-login, mag-login ulit at palitan agad ang password sa <a href="#/account">Account</a>.', '<b>Only one device can be logged in</b> to an account. When you log in on another phone or computer, the first one is logged out within seconds. If it was not you, log in again and change your password right away in <a href="#/account">Account</a>.'))}
       ${Q('pay', L('Paano magbayad o i-extend ang Premium?', 'How do I pay or extend Premium?'), L('Sa <a href="#/premium">Account → Premium</a>. Magbayad online (bukas agad ang Premium), o manual: magpadala sa account na nakalista, tapos ilagay ang reference number at screenshot ng resibo. May email kapag na-approve na.', 'In <a href="#/premium">Account → Premium</a>. Pay online (Premium opens right away), or manually: send to a listed account, then enter the reference number and a screenshot of the receipt. You get an email once it is approved.'))}
       </div>`);
@@ -2474,13 +2608,15 @@
     const me = await api('GET', '/api/me');
     if (!me.user && me.ended === 'replaced') { S.authNote = ELSEWHERE(); S.exam = null; stopTimer(); }
     applyMe(me);
-    if (me.user) { store.set('cse-boot', me); syncSoon(); } else { store.del('cse-boot'); if (IS_APP) store.del('cse-token'); }
+    if (me.user) { store.set('cse-boot', me); OffAuth.touch(me); syncSoon(); } else { store.del('cse-boot'); if (IS_APP) store.del('cse-token'); }
   }
   const stateKey = () => JSON.stringify([S.user && S.user.id, S.user && S.user.email_verified, S.premium, S.config && S.config.premium_required]);
   async function init() {
     // Open instantly with the account saved on this device, then check with the server in the background.
     const boot = store.get('cse-boot'), meta = store.get('cse-meta');
     let shown = false;
+    const off = boot && boot.user && store.get('cse-offauth');
+    if (off && off.email === String(boot.user.email).toLowerCase()) S.offAuth = off; // logged in offline before the app was closed
     if (boot && boot.user && meta && !S.meta) {
       applyMe(boot); S.meta = meta;
       if (!navigator.onLine) setOffline(true);
@@ -2488,11 +2624,13 @@
     }
     const before = stateKey();
     try {
-      const [, m] = await Promise.all([refreshMe(), api('GET', '/api/meta')]);
+      const [, m] = await Promise.all([S.offAuth ? OffAuth.resume() : refreshMe(), api('GET', '/api/meta')]);
       S.meta = m; store.set('cse-meta', m);
       if (!shown || (stateKey() !== before && !S.exam)) route();
     } catch (e) {
       if (shown) { if (S.offline && !canOffline() && !S.exam) route(); return; }
+      // No internet and nobody logged in: Premium can still log in on this device (see OffAuth).
+      if (e.offline && meta && OffAuth.any()) { S.meta = meta; S.config = S.config || {}; setOffline(true); route(); return; }
       $app.innerHTML = e.offline
         ? `<main class="wrap"><div class="card empty" style="margin-top:18vh;text-align:center"><div style="font-size:44px">📡</div><h2 style="margin:6px 0">${L('Walang internet', 'No internet')}</h2><p class="muted">${L('Kumonekta sa internet para mag-login. Sa Premium, gumagana na ang app kahit offline pagkatapos noon.', 'Connect to the internet to log in. With Premium, the app then works even offline.')}</p><button class="btn" onclick="location.reload()">${L('Subukan ulit', 'Try again')}</button></div></main>`
         : `<div class="boot">${L('Hindi makakonekta sa server. I-refresh ang page.', 'Cannot connect to the server. Please refresh the page.')}</div>`;
