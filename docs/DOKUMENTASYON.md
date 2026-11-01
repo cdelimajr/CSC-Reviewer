@@ -2,7 +2,7 @@
 
 Mga batas at patakaran ng gobyerno na sinusunod ng app, paano ito ginawa, paano ito pinapatakbo, saan ito gumagana, at ang kasaysayan ng bawat bersyon.
 
-- **Kasalukuyang bersyon:** 1.16.0 (Nobyembre 1, 2026)
+- **Kasalukuyang bersyon:** 1.17.0 (Nobyembre 1, 2026)
 - **Huling update ng dokumentong ito:** Nobyembre 1, 2026
 
 > **Panuntunan sa pag-update:** sa bawat pagbabago sa app (bawat pull request), i-update ang dokumentong ito: dagdagan ang [Kasaysayan ng bersyon](#7-kasaysayan-ng-bersyon), palitan ang "Kasalukuyang bersyon" sa itaas, ang `APP_VERSION` sa `public/app.js` at ang `version` sa `package.json`, at baguhin ang anumang bahagi sa ibaba na naapektuhan (hal. bagong data na kinokolekta, bagong batas o patakaran ng gobyerno). Nakasulat din ito sa `CLAUDE.md`.
@@ -49,7 +49,7 @@ Walang sensitive personal information (hal. edad, relihiyon, kalusugan, governme
 **Paano sumusunod ang app:**
 - **Seguridad:** scrypt para sa password, naka-hash na session token at code, HTTPS (Render), limit sa dami ng subok sa login/register/code, isang device lang kada account (agad nalo-logout ang luma), at nawawala ang face/fingerprint login kapag na-reset ang password.
 - **Proteksyon ng exam screen:** babala ng RA 10173, watermark ng email ng user, naka-block ang screenshot sa Android at Windows app, nakatago ang tanong kapag lumipat sa ibang app.
-- **Audit log at alerto (mula 1.16.0):** naka-log ang bawat login, maling password, pagpapalit ng password, at bawat pagbabago ng admin (Admin → Audit log). Kapag nag-login mula sa **bagong lugar at bagong device**, o may **5 maling password sa loob ng 15 minuto**, may alerto sa admin at email sa may-ari ng account. Nakikita rin ng user ang sarili niyang mga huling login (Account → Seguridad). Tumutulong ito na mapansin agad ang posibleng breach (NPC Circular 16-03).
+- **Audit log at alerto (mula 1.17.0):** naka-log ang bawat login, maling password, pagpapalit ng password, at bawat pagbabago ng admin (Admin → Audit log). Kapag nag-login mula sa **bagong lugar at bagong device**, o may **5 maling password sa loob ng 15 minuto**, may alerto sa admin at email sa may-ari ng account. Nakikita rin ng user ang sarili niyang mga huling login (Account → Seguridad). Tumutulong ito na mapansin agad ang posibleng breach (NPC Circular 16-03).
 - **Gaano katagal:** ang audit log ay binubura pagkalipas ng 180 araw (kusa, tingnan ang `src/jobs.js`).
 - **Pagbura ng data:** kayang burahin ng admin ang account at lahat ng resulta nito (Admin → Users → pindutin ang pangalan → Burahin ang account). Kasama nang nabubura ang settings (`user_prefs`) at ang sariling login log ng user.
 - **Paalala sa privacy** bago ang unang exam o practice.
@@ -70,7 +70,7 @@ Walang sensitive personal information (hal. edad, relihiyon, kalusugan, governme
 
 ### 1.5 Internet Transactions Act of 2023 (RA 11967) at Consumer Act (RA 7394)
 - Ang nagbebenta online (dito: Premium) ay dapat malinaw sa presyo, sa makukuha ng bumibili, at sa kung paano makikipag-ugnayan. Sa app: nakasulat ang presyo at ilang araw ang Premium, ang mga paraan ng bayad, at may email sa user pagkabayad o pag-approve.
-- **Resibo (mula 1.16.0):** bawat na-approve na bayad ay may resibo (numero `CSE-<taon>-<id>`, petsa, halaga, paraan, reference, at panahon ng Premium). Kasama ito bilang PDF sa email ng pag-approve at makikita sa Premium → Mga bayad mo (PDF at print). Lumalabas dito ang **pangalan ng negosyo at contact** kapag inilagay sa Admin → Settings → Premium.
+- **Resibo (mula 1.17.0):** bawat na-approve na bayad ay may resibo (numero `CSE-<taon>-<id>`, petsa, halaga, paraan, reference, at panahon ng Premium). Kasama ito bilang PDF sa email ng pag-approve at makikita sa Premium → Mga bayad mo (PDF at print). Lumalabas dito ang **pangalan ng negosyo at contact** kapag inilagay sa Admin → Settings → Premium.
 - **Paalala bago matapos ang Premium:** email 3 araw at 1 araw bago matapos at pagkatapos nito, banner sa app 5 araw bago, at notification sa phone app isang araw bago. Para hindi magulat ang user na nawala ang Premium (walang auto-renew).
 - Bawal ang mapanlinlang na claim. Halimbawa: huwag sabihing "garantisadong papasa" o "opisyal na reviewer ng CSC".
 - ⚠️ Kailangang ipakita ng online merchant ang pangalan ng negosyo, address at contact (tingnan ang [Seksyon 8](#8-mga-kulang-pa-at-rekomendasyon)).
@@ -120,7 +120,7 @@ Walang sensitive personal information (hal. edad, relihiyon, kalusugan, governme
 
 **Daloy ng data:** ang user ay nagla-login → ang server ay gumagawa ng session (cookie sa website, token sa apps) → ang exam ay ginagawa ng server o (Premium) mula sa mga tanong na naka-save sa device → ang sagot ay naka-save sa device sa bawat pindot → pagsumite, ang score ay kinukuwenta ng server (o ng device kapag offline, saka ise-save online pagbalik ng internet).
 
-**Mga feature mula 1.16.0 (Libre vs Premium)**
+**Mga feature mula 1.17.0 (Libre vs Premium)**
 
 | Feature | Libre | Premium |
 |---|---|---|
@@ -197,7 +197,7 @@ Kusang hinahanap at inaayos ng app ang mga karaniwang problema, online man o off
 | iPhone (IPA) | iOS 14 pataas (Capacitor 7) | Kailangang i-sign (Apple Developer o Sideloadly/AltStore) |
 | Server | Node.js 20 pataas | Render (libre) + Turso + Brevo |
 
-**Paalala sa pag-aaral:** Android/iPhone app (mula 1.16.0, kailangan ng bagong APK/IPA para sa plugin ng notification): kahit sarado ang app. Website at Windows: habang bukas ang app, o sa email.
+**Paalala sa pag-aaral:** Android/iPhone app (mula 1.17.0, kailangan ng bagong APK/IPA para sa plugin ng notification): kahit sarado ang app. Website at Windows: habang bukas ang app, o sa email.
 
 **Mula saang bersyon gumagana ang bawat feature:** tingnan ang talaan sa ibaba. Ang mga app na na-install bago ang 1.6.0 ay kailangang palitan nang isang beses ng bagong build para gumana ang kusang pag-update; ang face/fingerprint login ay kailangan ng APK/IPA mula 1.7.0 pataas.
 
@@ -207,7 +207,7 @@ Kusang hinahanap at inaayos ng app ang mga karaniwang problema, online man o off
 
 | Bersyon | Petsa | PR | Mga pagbabago |
 |---|---|---|---|
-| **1.16.0** | 2026-11-01 | #16 | **Backup at restore** (kusang naka-save sa account ang settings; Premium: backup file na gumagana offline). **Paalala araw-araw at streak 🔥** (notification sa phone app, sa website habang bukas, at opsyonal na email). **Balikan ang mali** at ranking ng mahihinang topic. **Mock exam na parang totoong CSE:** pace habang nag-e-exam, paalala sa 30/10/5/1 minuto, oras kada bahagi sa resulta. **Admin → Audit log** at alerto sa kahina-hinalang login (email sa user), Account → Seguridad. **Resibo** ng Premium (PDF, print, email) at paalala bago matapos ang Premium. **Dark mode Auto** na sumusunod sa phone (mas malinaw ang label). **Accessibility:** laki ng letra, high contrast, bawas galaw, at screen reader labels |
+| **1.17.0** | 2026-11-01 | #17 | **Backup at restore** (kusang naka-save sa account ang settings; Premium: backup file na gumagana offline). **Paalala araw-araw at streak 🔥** (notification sa phone app, sa website habang bukas, at opsyonal na email). **Balikan ang mali** at ranking ng mahihinang topic. **Mock exam na parang totoong CSE:** pace habang nag-e-exam, paalala sa 30/10/5/1 minuto, oras kada bahagi sa resulta. **Admin → Audit log** at alerto sa kahina-hinalang login (email sa user), Account → Seguridad. **Resibo** ng Premium (PDF, print, email) at paalala bago matapos ang Premium. **Dark mode Auto** na sumusunod sa phone (mas malinaw ang label). **Accessibility:** laki ng letra, high contrast, bawas galaw, at screen reader labels |
 | 1.15.0 | 2026-11-01 | #15 | Account: inalis ang Logout sa tabi ng pamagat (nasa kanang itaas pa rin); Premium at Tulong ay drop down na rin, kaya drop down na lahat mula Premium hanggang Tungkol sa exam. Admin: dropdown menu ang mga tab; sa Users, ang pangalan ng user ang pinipindot para sa mga aksyon (wala nang "Aksyon"); sa Exam sets, drop down ang Professional at Subprofessional; sa Settings, drop down ang Premium (may on/off at presyo sa pamagat). Bagong **Auto Fix** (online at offline). Bagong dokumentasyong ito. Mga ayos: hindi na humihinto ang server sa error sa logout o paglilinis ng session; mas ligtas na pagsumite ng exam kapag nawala ang kopya nito; tamang default na bilang ng tanong sa libreng practice; mga error sa Admin (paghahanap ng user, mga tanong, exam set) ay may malinaw na mensahe na |
 | 1.14.0 | 2026-11-01 | #14 | Premium: pwedeng mag-login offline sa device na nag-login na online dati |
 | 1.13.0 | 2026-11-01 | #13 | Agad na logout sa ibang device (live), exam na parang test paper na may page flip, kitang Logout, tap feedback, mas mabilis na Premium |
@@ -235,5 +235,5 @@ Mga bagay na kailangan ng batas o ng app store pero wala pa sa app. Hindi pa ito
 3. **Sariling pagbura at pag-download ng data** ng user (right to erasure at data portability), hindi lang sa pamamagitan ng admin.
 4. **Data Protection Officer:** magtalaga ng DPO at ilagay ang email niya sa Privacy Policy; i-check kung kailangang magrehistro sa NPC.
 5. **Gaano katagal itatago ang data:** hal. burahin ang screenshot ng resibo pagkalipas ng isang taon, at ang hindi aktibong account pagkalipas ng ilang taon (may paalala muna sa email).
-6. **Impormasyon ng negosyo** (RA 11967): pangalan ng negosyo, address at contact sa Premium page. *Bahagya nang nagawa (1.16.0):* lumalabas sa resibo ang pangalan at contact kapag inilagay sa Admin → Settings → Premium; kulang pa ang sa Premium page mismo.
+6. **Impormasyon ng negosyo** (RA 11967): pangalan ng negosyo, address at contact sa Premium page. *Bahagya nang nagawa (1.17.0):* lumalabas sa resibo ang pangalan at contact kapag inilagay sa Admin → Settings → Premium; kulang pa ang sa Premium page mismo.
 7. **BIR invoice** para sa bawat bayad kapag rehistrado na ang negosyo.
