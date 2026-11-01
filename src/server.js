@@ -980,6 +980,11 @@ app.patch('/api/admin/users/:id', admin, wrap(async (req, res) => {
     const until = days > 0 ? Math.max(Date.now(), u?.premium_until || 0) + days * 864e5 : 0;
     await db.run('UPDATE users SET premium_until = ? WHERE id = ?', until, id);
   }
+  // Exact end date of Premium (0 = none). Used by "Undo" in Admin → Users to put back the date it had before.
+  if (req.body.premium_until !== undefined) {
+    const until = Math.max(0, Math.round(Number(req.body.premium_until) || 0));
+    await db.run('UPDATE users SET premium_until = ? WHERE id = ?', until, id);
+  }
   if (req.body.email_verified !== undefined) await db.run('UPDATE users SET email_verified = ? WHERE id = ?', req.body.email_verified ? 1 : 0, id);
   const what = [];
   if (req.body.role !== undefined) what.push('role: ' + (req.body.role === 'admin' ? 'admin' : 'user'));

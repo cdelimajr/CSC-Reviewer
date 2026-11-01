@@ -2,7 +2,7 @@
 
 Mga batas at patakaran ng gobyerno na sinusunod ng app, paano ito ginawa, paano ito pinapatakbo, saan ito gumagana, at ang kasaysayan ng bawat bersyon.
 
-- **Kasalukuyang bersyon:** 1.18.0 (Nobyembre 1, 2026)
+- **Kasalukuyang bersyon:** 1.19.0 (Nobyembre 1, 2026)
 - **Huling update ng dokumentong ito:** Nobyembre 1, 2026
 
 > **Panuntunan sa pag-update:** sa bawat pagbabago sa app (bawat pull request), i-update ang dokumentong ito: dagdagan ang [Kasaysayan ng bersyon](#7-kasaysayan-ng-bersyon), palitan ang "Kasalukuyang bersyon" sa itaas, ang `APP_VERSION` sa `public/app.js` at ang `version` sa `package.json`, at baguhin ang anumang bahagi sa ibaba na naapektuhan (hal. bagong data na kinokolekta, bagong batas o patakaran ng gobyerno). Nakasulat din ito sa `CLAUDE.md`.
@@ -43,6 +43,7 @@ Mga batas at patakaran ng gobyerno na sinusunod ng app, paano ito ginawa, paano 
 | Oras na ginugol kada bahagi ng exam | `attempts.times` | "Oras kada bahagi" sa resulta (pace ng exam) |
 | Audit log: oras, account, ginawa, **IP address**, uri ng device (hal. "Android · Chrome") | `audit_log` | Seguridad: makita ang login at pagbabago ng admin, at makapagbigay ng alerto sa kahina-hinalang login. **Binubura pagkalipas ng 180 araw.** Uri lang ng device ang naka-save, walang device ID |
 | Panahon ng Premium sa bawat bayad (mula–hanggang) | `payments.period_from/period_to` | Resibo |
+| Pagburang naghihintay (admin) | Sa device (`cse-undo-<user>`) | Ang pagburang nasa Undo bar pa (uri at ID lang, hal. `DELETE /api/admin/sets/7`). Nabubura ito pagkatapos maipadala sa server |
 
 Walang sensitive personal information (hal. edad, relihiyon, kalusugan, government ID) na kinokolekta ang app.
 
@@ -51,7 +52,7 @@ Walang sensitive personal information (hal. edad, relihiyon, kalusugan, governme
 - **Proteksyon ng exam screen:** babala ng RA 10173, watermark ng email ng user, naka-block ang screenshot sa Android at Windows app, nakatago ang tanong kapag lumipat sa ibang app.
 - **Audit log at alerto (mula 1.17.0):** naka-log ang bawat login, maling password, pagpapalit ng password, at bawat pagbabago ng admin (Admin → Audit log). Kapag nag-login mula sa **bagong lugar at bagong device**, o may **5 maling password sa loob ng 15 minuto**, may alerto sa admin at email sa may-ari ng account. Nakikita rin ng user ang sarili niyang mga huling login (Account → Seguridad). Tumutulong ito na mapansin agad ang posibleng breach (NPC Circular 16-03).
 - **Gaano katagal:** ang audit log ay binubura pagkalipas ng 180 araw (kusa, tingnan ang `src/jobs.js`).
-- **Pagbura ng data:** kayang burahin ng admin ang account at lahat ng resulta nito (Admin → Users → pindutin ang pangalan → Burahin ang account). Kasama nang nabubura ang settings (`user_prefs`) at ang sariling login log ng user.
+- **Pagbura ng data:** kayang burahin ng admin ang account at lahat ng resulta nito (Admin → Users → pindutin ang pangalan → Burahin ang account). Kasama nang nabubura ang settings (`user_prefs`) at ang sariling login log ng user. May 10 segundo para i-undo; pagkalipas nito, tuluyan nang nabubura ang data sa server (walang natitirang kopya).
 - **Paalala sa privacy** bago ang unang exam o practice.
 
 > ⚠️ Tungkol sa watermark na "RA 10173 - bawal kunan ng larawan/video": ang RA 10173 ay tungkol sa personal na impormasyon (dito: ang email ng user na nasa watermark). Ang pagkopya ng mga tanong mismo ay mas sakop ng terms of use ng app at ng Intellectual Property Code (RA 8293). Pareho itong tama bilang paalala, pero huwag sabihing krimen sa ilalim ng RA 10173 ang bawat screenshot.
@@ -138,6 +139,11 @@ Mga detalye:
 - **Paalala:** sa Android/iPhone app, notification kahit sarado ang app at offline (plugin `@capacitor/local-notifications`, naka-iskedyul ang susunod na 14 na araw at nilalaktawan ang araw na nakapag-aral na). Sa website at Windows app, habang bukas ang app; may opsyonal na email para kahit sarado.
 - **Accessibility:** lahat ng laki ng letra ay `rem`, kaya sabay-sabay lumalaki sa `--fs`. May skip link, pangalan ang mga button, binabasa ang bawat bagong tanong (`aria-live`), naka-label ang mga form, at bumabalik ang focus pagsara ng window.
 
+**Undo (10 segundo):** `Undo` sa `public/app.js`. May dalawang uri:
+- **Naantalang pagbura** (pagbura ng account, pagtago ng tanong, pagbura ng exam set, pag-alis ng QR, pag-off ng mabilis na login): nawawala agad sa screen, pero sa server ay ipinapadala lang pagkalipas ng 10 segundo. Kaya ang I-undo ay ibinabalik lang ang screen; walang nabura. Naka-save sa device (`cse-undo-<user>`) ang naghihintay na pagbura, kaya kapag naisara ang app o offline, itinutuloy ito pagbukas ulit o pagbalik ng internet (`syncNow`). Bago mag-logout, ipinapadala muna ito.
+- **Naibabalik na pagbabago** (mga aksyon sa user, I-save ang settings, zoom): nase-save agad; ang I-undo ay nagse-save ulit ng dating value. Para sa Premium, ibinabalik ang eksaktong petsa ng pagtatapos (`premium_until` sa `PATCH /api/admin/users/:id`).
+- Isa lang ang bar: kapag may bagong aksyon, tinatapos agad ang nauna. Hindi maa-undo ang pag-approve/reject ng bayad, pag-reset ng password at pagpapadala ng email, dahil may email na agad na naipapadala o hindi na makukuha ang lumang password; may tanong pa rin bago gawin ang mga ito.
+
 **Seguridad:** tingnan ang Seksyon 1.1. Dagdag pa: CORS para sa apps ay token lang (walang cookie), `trust proxy` para sa tamang IP sa limit ng subok, at hindi kailanman naka-cache ng service worker ang `/api`.
 
 ---
@@ -151,6 +157,7 @@ Mga detalye:
 - **Araw-araw:** Admin → Payments, i-check at i-approve o i-reject ang manual na bayad (i-check muna sa sariling GCash/Maya/bangko gamit ang reference number).
 - **Lingguhan:** tingnan ang Admin → Overview (bagong users, passing rate) at Admin → Exam sets (kusang may bagong set bawat linggo).
 - **Kapag may nagreklamo:** Admin → Users → pindutin ang pangalan ng user para sa mga aksyon (Premium, reset password, report, burahin).
+- **Kapag nagkamali ng pindot:** pindutin ang **↶ I-undo** sa bar sa ibaba sa loob ng 10 segundo (pagbura, pagtago, pagbabago sa user, at I-save ang settings). Pagkalipas nito, gawin ulit nang mano-mano ang dating ayos (hal. bigyan ulit ng Premium) o gamitin ang backup ng database.
 
 **Backup:** sa Turso, gamitin ang point-in-time restore o `turso db shell <db> .dump > backup.sql` paminsan-minsan. Sa lokal na SQLite, kopyahin ang file sa `data/`.
 
@@ -207,7 +214,8 @@ Kusang hinahanap at inaayos ng app ang mga karaniwang problema, online man o off
 
 | Bersyon | Petsa | PR | Mga pagbabago |
 |---|---|---|---|
-| **1.18.0** | 2026-11-01 | #18, #19 | Pagsusuri ng buong app at mga ayos. **Mga window na nagtatanong** (privacy, simulan ang exam, mag-logout…): ang pindot sa labas ng window ay parang "Bumalik" na, kaya hindi na naiiwang naka-disable ang button na "Simulan ang practice" o "Sagutan ulit". **Libreng plan:** kapag nagamit na ang mock exam o practice ngayong araw, sinasabi na agad (diretso sa Premium) sa halip na pagkatapos ng dalawang window. **Offline (Premium):** naise-save pa rin online ang mga resultang ginawa offline habang Premium pa, kahit natapos na ang Premium bago bumalik ang internet (dati, hindi na naise-save); naise-save rin ang resulta ng exam set na binura ng admin. **Pagpalit ng password:** ang offline na login sa device ay gumagamit na ng bagong password (dati, gumagana pa ang luma). **Manual na bayad:** ang halaga ay laging ang presyo sa Settings, hindi ang ipinadala ng app. **Admin → Settings:** ang maling numero (hal. presyong "abc" o negatibong araw) ay hindi na nase-save. **Server:** hindi na lumalaki nang walang hanggan ang listahan ng rate limit |
+| **1.19.0** | 2026-11-01 | #16 | Bagong **I-undo sa loob ng 10 segundo**: bar sa ibaba na may ↶ I-undo pagkatapos burahin ang account, itago ang tanong, burahin ang exam set, alisin ang QR o payment account, baguhin ang user (admin, disable, Premium, verified), i-save ang settings, ibalik ang zoom sa 100%, at i-off ang mabilis na login. Ipinapadala lang sa server ang pagbura pagkalipas ng 10 segundo, at itinutuloy ito kahit naisara ang app o offline. Wala nang tanong bago itago ang tanong o burahin ang exam set (may I-undo na) |
+| 1.18.0 | 2026-11-01 | #18, #19 | Pagsusuri ng buong app at mga ayos. **Mga window na nagtatanong** (privacy, simulan ang exam, mag-logout…): ang pindot sa labas ng window ay parang "Bumalik" na, kaya hindi na naiiwang naka-disable ang button na "Simulan ang practice" o "Sagutan ulit". **Libreng plan:** kapag nagamit na ang mock exam o practice ngayong araw, sinasabi na agad (diretso sa Premium) sa halip na pagkatapos ng dalawang window. **Offline (Premium):** naise-save pa rin online ang mga resultang ginawa offline habang Premium pa, kahit natapos na ang Premium bago bumalik ang internet (dati, hindi na naise-save); naise-save rin ang resulta ng exam set na binura ng admin. **Pagpalit ng password:** ang offline na login sa device ay gumagamit na ng bagong password (dati, gumagana pa ang luma). **Manual na bayad:** ang halaga ay laging ang presyo sa Settings, hindi ang ipinadala ng app. **Admin → Settings:** ang maling numero (hal. presyong "abc" o negatibong araw) ay hindi na nase-save. **Server:** hindi na lumalaki nang walang hanggan ang listahan ng rate limit |
 | 1.17.0 | 2026-11-01 | #17 | **Backup at restore** (kusang naka-save sa account ang settings; Premium: backup file na gumagana offline). **Paalala araw-araw at streak 🔥** (notification sa phone app, sa website habang bukas, at opsyonal na email). **Balikan ang mali** at ranking ng mahihinang topic. **Mock exam na parang totoong CSE:** pace habang nag-e-exam, paalala sa 30/10/5/1 minuto, oras kada bahagi sa resulta. **Admin → Audit log** at alerto sa kahina-hinalang login (email sa user), Account → Seguridad. **Resibo** ng Premium (PDF, print, email) at paalala bago matapos ang Premium. **Dark mode Auto** na sumusunod sa phone (mas malinaw ang label). **Accessibility:** laki ng letra, high contrast, bawas galaw, at screen reader labels |
 | 1.15.0 | 2026-11-01 | #15 | Account: inalis ang Logout sa tabi ng pamagat (nasa kanang itaas pa rin); Premium at Tulong ay drop down na rin, kaya drop down na lahat mula Premium hanggang Tungkol sa exam. Admin: dropdown menu ang mga tab; sa Users, ang pangalan ng user ang pinipindot para sa mga aksyon (wala nang "Aksyon"); sa Exam sets, drop down ang Professional at Subprofessional; sa Settings, drop down ang Premium (may on/off at presyo sa pamagat). Bagong **Auto Fix** (online at offline). Bagong dokumentasyong ito. Mga ayos: hindi na humihinto ang server sa error sa logout o paglilinis ng session; mas ligtas na pagsumite ng exam kapag nawala ang kopya nito; tamang default na bilang ng tanong sa libreng practice; mga error sa Admin (paghahanap ng user, mga tanong, exam set) ay may malinaw na mensahe na |
 | 1.14.0 | 2026-11-01 | #14 | Premium: pwedeng mag-login offline sa device na nag-login na online dati |

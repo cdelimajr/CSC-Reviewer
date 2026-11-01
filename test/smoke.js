@@ -426,6 +426,11 @@ const lastCode = (to) => {
   r = await A('GET', '/api/admin/users');
   const juan = r.data.find((u) => u.email === 'juan@test.ph');
   assert.equal((await A('POST', `/api/admin/users/${juan.id}/report`)).status, 200);
+  // Undo in Admin → Users puts back the exact Premium end date.
+  await A('PATCH', `/api/admin/users/${juan.id}`, { premium_days: 30 });
+  await A('PATCH', `/api/admin/users/${juan.id}`, { premium_until: juan.premium_until || 0 });
+  r = await A('GET', '/api/admin/users');
+  assert.equal(r.data.find((u) => u.id === juan.id).premium_until || 0, juan.premium_until || 0, 'premium end date restored');
   await A('PATCH', `/api/admin/users/${juan.id}`, { disabled: true });
   assert.equal((await U('GET', '/api/attempts')).status, 401, 'disabled user logged out');
 
