@@ -1,6 +1,7 @@
 // Gives the screens a few safe desktop features (nothing else from Node or Electron):
 // - Windows Hello (fingerprint, face or PIN) for quick login
 // - encryption of the login key with this Windows account (it cannot be read on another PC or account)
+// - telling the app whether this account is Premium, so it checks for updates more often
 const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('cseDesktop', {
@@ -10,4 +11,5 @@ contextBridge.exposeInMainWorld('cseDesktop', {
   },
   protect: (text) => ipcRenderer.invoke('secure:protect', String(text)),
   unprotect: (data) => ipcRenderer.invoke('secure:unprotect', String(data)),
+  updates: { speed: (premium) => ipcRenderer.send('update:speed', !!premium) },
 });

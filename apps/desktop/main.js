@@ -23,6 +23,10 @@ function createWindow() {
 // Automatic updates from GitHub Releases: a new version downloads quietly in the background and is
 // installed when the user closes the app, so it never interrupts an exam. The next start is the new version.
 // Only the installed app (Setup.exe) can update itself; the portable .exe cannot.
+// Checks: Premium every 15 minutes (and on coming back to the window, at most once a minute);
+// Free every hour (on coming back, at most once every 10 minutes). The screens say which (see app.js).
+let fast = false;
+ipcMain.on('update:speed', (e, on) => { fast = !!on; });
 function autoUpdate() {
   if (!app.isPackaged || process.env.PORTABLE_EXECUTABLE_DIR) return;
   let updater;
@@ -30,9 +34,14 @@ function autoUpdate() {
   updater.autoDownload = true;
   updater.autoInstallOnAppQuit = true;
   updater.on('error', () => {}); // offline or no release yet: try again later
-  const check = () => updater.checkForUpdates().catch(() => {});
-  check();
-  setInterval(check, 4 * 3600e3);
+  let last = 0;
+  const check = (min) => {
+    if (Date.now() - last < min) return;
+    last = Date.now(); updater.checkForUpdates().catch(() => {});
+  };
+  check(0);
+  setInterval(() => check(fast ? 15 * 60e3 : 3600e3), 60e3);
+  app.on('browser-window-focus', () => check(fast ? 60e3 : 10 * 60e3));
 }
 
 // Windows Hello (fingerprint, face or PIN) through the built-in Windows API, run with PowerShell,
