@@ -494,8 +494,13 @@ body.guard { background: var(--desk); }
 }
 .paper-ghost { position: absolute; top: 0; left: 0; right: 0; pointer-events: none; }
 .paper-ghost.top { z-index: 3; }
-.paper-ghost.under { z-index: 0; }
-.flip-shade { position: absolute; inset: 0; border-radius: inherit; pointer-events: none; opacity: 0; background: linear-gradient(to left, rgba(0,0,0,.35), rgba(0,0,0,.05) 60%, transparent); }
+.paper-ghost.under { z-index: 1; } /* above the two sheets peeking out underneath; the page (later in the stack) stays on top */
+/* page curl (see flip() in app.js): the back of the turned part at the fold, and its shadow on the next page */
+.paper.curling { overflow: hidden; }
+.curl-back, .curl-shadow { position: absolute; top: 50%; left: 0; pointer-events: none; z-index: 4; will-change: transform; }
+.curl-back { transform-origin: right center; background: linear-gradient(to right, rgba(0,0,0,0), rgba(0,0,0,.05) 35%, rgba(255,255,255,.5) 72%, rgba(0,0,0,.16)), var(--paper); box-shadow: -10px 0 18px -6px rgba(16,24,40,.28); }
+.curl-shadow { transform-origin: left center; background: linear-gradient(to right, rgba(16,24,40,.26), rgba(16,24,40,.08) 45%, transparent); }
+html[data-theme="dark"] .curl-back { background: linear-gradient(to right, rgba(0,0,0,0), rgba(0,0,0,.12) 35%, rgba(255,255,255,.08) 72%, rgba(0,0,0,.3)), var(--paper); }
 .paper .q-text { font-family: Georgia, "Times New Roman", serif; font-size: 1.1875rem; font-weight: 500; line-height: 1.55; }
 .paper .q-no { font-weight: 800; }
 .paper .passage { font-family: Georgia, "Times New Roman", serif; background: transparent; border: 1px dashed var(--paper-line); border-left: 4px solid var(--accent); }
@@ -524,11 +529,16 @@ body.guard { background: var(--desk); }
 .flip-hint span { display: block; font-size: 1.625rem; animation: swipe 1.1s ease-in-out 3; }
 @keyframes hint { 0% { opacity: 0; } 10%, 85% { opacity: 1; } 100% { opacity: 0; } }
 @keyframes swipe { 0%, 100% { transform: translateX(14px); } 50% { transform: translateX(-14px); } }
-/* exam top bar: question number + answered, timer, ⚑ Marked, ☰ all questions (Submit is there and on the last page) */
+/* exam top bar: question number + answered, timer, ☰ all questions (Submit is there and on the last page). ⚑ Mark is on the paper. */
+.paper-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+.paper-head .q-section { flex: 1; min-width: 0; padding-top: 4px; }
+.paper-flag { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 5px; font: inherit; font-size: 0.8125rem; font-weight: 700; padding: 5px 11px; border-radius: 99px; border: 1px solid var(--paper-line); background: transparent; color: var(--muted); cursor: pointer; position: relative; z-index: 2; }
+.paper-flag:hover { border-color: var(--accent); }
+.paper-flag.on { border-color: transparent; }
 .exam-count { flex: 1; min-width: 0; display: flex; flex-direction: column; line-height: 1.2; }
 .exam-count b { font-variant-numeric: tabular-nums; font-size: 0.9375rem; }
 .exam-count span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.exam-top .flag-btn, .exam-top #navBtn { flex: 0 0 auto; min-width: 42px; padding-left: 10px; padding-right: 10px; font-size: 1.0625rem; }
+.exam-top #navBtn { flex: 0 0 auto; min-width: 42px; padding-left: 10px; padding-right: 10px; font-size: 1.0625rem; }
 @media (max-width: 360px) { .exam-top .inner { gap: 6px; } .exam-top { padding-left: 10px; padding-right: 10px; } .timer { font-size: 1rem; padding: 4px 8px; } }
 @media (prefers-reduced-motion: reduce) { .page-in, .ripple, .flip-hint span { animation: none; } }
 .auth-offline { margin-bottom: 10px; text-align: left; }
@@ -624,6 +634,7 @@ html[data-theme] #undo .u-time { background: var(--primary); }
   .paper { padding: 40px 56px 96px 72px; background-image: linear-gradient(to right, transparent 38px, var(--margin-line) 38px, var(--margin-line) 39px, transparent 39px); }
   .paper .q-section { font-size: 1.125rem; }
   .paper .q-section .pill { font-size: 0.9375rem; }
+  .paper-flag { font-size: 1.0625rem; padding: 8px 16px; }
   .paper .q-num { font-size: 1.25rem; }
   .paper .q-text { font-size: clamp(1.875rem, 0.6rem + 1.75vw, 2.75rem); line-height: 1.5; margin: 16px 0 28px; }
   .paper .passage { font-size: clamp(1.375rem, 0.6rem + 0.95vw, 1.875rem); line-height: 1.6; padding: 20px 24px; max-height: calc(48vh / var(--z)); }
@@ -655,3 +666,29 @@ html[data-theme] #undo .u-time { background: var(--primary); }
 .acc-menu .menu-list > .fold .chev { width: 24px; height: 24px; background: transparent; }
 .acc-menu .menu-list > .fold[open] { background: var(--primary-soft); }
 .acc-menu .menu-list > .fold[open] > .fold-body { background: var(--card); border-radius: 12px; padding: 14px; }
+/* Results: "Your progress" is always open (no drop down). */
+.progress-head { margin: 24px 0 10px; }
+/* Premium → "Or pay manually" (inside the payment card) and "Your payments" open and close. */
+.card .fold.plain.pay-fold { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--line); }
+/* Computer (wide screen + mouse): the whole app is bigger, like the exam. Every text size is in rem, so a bigger
+   root size makes all text, buttons and cards grow together; the page is wider too. Phones and tablets keep the
+   normal size. The exam keeps its own big sizes above (the root size is not raised while an exam is open). */
+@media screen and (min-width: 1024px) and (hover: hover) and (pointer: fine) {
+  html:not(:has(body.guard)) { font-size: calc(118.75% * var(--fs, 1)); }
+  .wrap { max-width: min(1180px, 92vw); padding-left: 24px; padding-right: 24px; }
+  .topbar { padding-left: 28px; padding-right: 28px; }
+  .topbar .link { padding: 8px 12px; }
+  .brand img { width: 34px; height: 34px; }
+  .modal { max-width: 780px; }
+  .auth { max-width: 500px; }
+  .dd { max-width: 440px; }
+  .card { padding: 22px; }
+  .acc-menu .menu-list { margin: 0 -22px -22px; }
+  .acc-menu .menu-list > .fold.card { padding: 16px 22px; }
+}
+@media screen and (min-width: 1600px) and (hover: hover) and (pointer: fine) {
+  html:not(:has(body.guard)) { font-size: calc(125% * var(--fs, 1)); }
+  .wrap { max-width: min(1320px, 90vw); }
+}
+.off-count { display: inline-block; min-width: 1.4em; text-align: center; font-variant-numeric: tabular-nums; }
+.free-acc { margin-top: 14px; }

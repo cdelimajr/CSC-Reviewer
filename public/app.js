@@ -3,7 +3,7 @@
   'use strict';
   const $app = document.getElementById('app');
   const LETTERS = ['A', 'B', 'C', 'D'];
-  const APP_VERSION = '1.23.0'; // keep in step with package.json and docs/DOKUMENTASYON.md
+  const APP_VERSION = '1.24.0'; // keep in step with package.json and docs/DOKUMENTASYON.md
   const S = { user: null, meta: null, exam: null, timer: null, saveT: null };
 
   /* ---------------- helpers ---------------- */
@@ -286,7 +286,7 @@
     if (!!S.offline === on) return;
     S.offline = on;
     let el = document.getElementById('offline');
-    if (!on) { if (el) el.remove(); if (S.offAuth) OffAuth.resume(); syncSoon(); if (S.locked) route(); return; }
+    if (!on) { clearInterval(S.offT); S.offT = 0; if (el) el.remove(); if (S.offAuth) OffAuth.resume(); syncSoon(); if (S.locked) route(); return; }
     if (el) return;
     el = document.createElement('div');
     el.id = 'offline';
@@ -295,10 +295,25 @@
       '📡 <b>You are offline.</b> All practice and mock exams still work. Your results will be saved online when the internet is back.')
       : L('📡 <b>Walang internet.</b> Para sa Premium lang ang offline na paggamit.', '📡 <b>No internet.</b> Offline use is for Premium only.');
     document.body.prepend(el);
-    if (S.user && S.meta && !canOffline() && !S.exam) setTimeout(route);
+    if (S.user && S.meta && !canOffline() && !S.exam) offCountdown(el);
+  }
+  /* Free plan: when the internet drops, the bar counts 1 to 10 (one per second) before the app switches to its
+     offline screen. If the internet comes back during the count, nothing changes. Premium has no count (it works offline). */
+  function offCountdown(el) {
+    clearInterval(S.offT);
+    let n = 1;
+    const paint = () => { el.innerHTML = L(`📡 <b>Nawala ang internet.</b> Lilipat sa offline sa <b class="off-count">${n}</b> / 10…`, `📡 <b>The internet dropped.</b> Going offline in <b class="off-count">${n}</b> / 10…`); };
+    paint();
+    S.offT = setInterval(() => {
+      if (!S.offline || !el.isConnected) { clearInterval(S.offT); S.offT = 0; return; }
+      if (++n <= 10) return paint();
+      clearInterval(S.offT); S.offT = 0;
+      el.innerHTML = L('📡 <b>Walang internet.</b> Para sa Premium lang ang offline na paggamit.', '📡 <b>No internet.</b> Offline use is for Premium only.');
+      if (!S.exam) route();
+    }, 1000);
   }
   window.addEventListener('offline', () => setOffline(true));
-  window.addEventListener('online', () => { if (S.offAuth) OffAuth.resume(); syncSoon(); if (!S.meta) init(); });
+  window.addEventListener('online', () => { if (S.offT) setOffline(false); if (S.offAuth) OffAuth.resume(); syncSoon(); if (!S.meta) init(); });
 
   /* Exams taken offline are kept on the device until they are saved online. */
   const local = {
@@ -504,7 +519,7 @@
       ctx.resume().then(() => { if (ctx.state === 'running') now(); }).catch(() => {});
       setTimeout(() => { done = true; off(); }, 120e3); // too late to mean "updated"
     }
-    // A page of paper being turned: a short rustle of noise that sweeps up, then a soft landing.
+    // A page of paper being turned: a soft paper rustle (soft, warm noise in a few small grains, no sharp "fwip").
     // Made on the device like the other sounds, so it works offline. Follows the Sounds on/off and volume.
     let noise = null;
     function flip() {
@@ -514,23 +529,27 @@
         ctx = ctx || new (window.AudioContext || window.webkitAudioContext)();
         if (ctx.state === 'suspended') ctx.resume();
         if (!noise) {
-          noise = ctx.createBuffer(1, Math.floor(ctx.sampleRate * 0.4), ctx.sampleRate);
-          const d = noise.getChannelData(0);
-          for (let i = 0; i < d.length; i++) d[i] = (Math.random() * 2 - 1) * (0.6 + 0.4 * Math.sin(i / 37)); // a little grain
+          // Soft ("pink-ish") noise: white noise smoothed a little, so it sounds like paper, not hiss.
+          noise = ctx.createBuffer(1, Math.floor(ctx.sampleRate * 0.6), ctx.sampleRate);
+          const d = noise.getChannelData(0); let b = 0;
+          for (let i = 0; i < d.length; i++) { b = 0.82 * b + 0.18 * (Math.random() * 2 - 1); d[i] = b * 3.2; }
         }
-        const t0 = ctx.currentTime + 0.005, v = Math.max(0.0002, st.vol * 0.5);
-        const burst = (at, len, f0, f1, q, peak) => {
-          const src = ctx.createBufferSource(), bp = ctx.createBiquadFilter(), g = ctx.createGain();
-          src.buffer = noise; bp.type = 'bandpass'; bp.Q.value = q;
-          bp.frequency.setValueAtTime(f0, t0 + at); bp.frequency.exponentialRampToValueAtTime(f1, t0 + at + len);
-          g.gain.setValueAtTime(0.0001, t0 + at);
-          g.gain.exponentialRampToValueAtTime(peak, t0 + at + len * 0.25);
-          g.gain.exponentialRampToValueAtTime(0.0001, t0 + at + len);
-          src.connect(bp); bp.connect(g); g.connect(ctx.destination);
-          src.start(t0 + at, Math.random() * 0.1); src.stop(t0 + at + len + 0.02);
+        const t0 = ctx.currentTime + 0.005, v = Math.max(0.0002, st.vol * 0.34);
+        const out = ctx.createBiquadFilter(); out.type = 'lowpass'; out.frequency.value = 3200; out.Q.value = 0.4; out.connect(ctx.destination);
+        const grain = (at, len, f0, f1, peak) => {
+          const src = ctx.createBufferSource(), bp = ctx.createBiquadFilter(), g = ctx.createGain(), s0 = t0 + at;
+          src.buffer = noise; bp.type = 'bandpass'; bp.Q.value = 0.6;
+          bp.frequency.setValueAtTime(f0, s0); bp.frequency.exponentialRampToValueAtTime(f1, s0 + len);
+          g.gain.setValueAtTime(0.0001, s0);
+          g.gain.exponentialRampToValueAtTime(peak, s0 + len * 0.4); // slow rise: soft, not a click
+          g.gain.exponentialRampToValueAtTime(0.0001, s0 + len);
+          src.connect(bp); bp.connect(g); g.connect(out);
+          src.start(s0, Math.random() * 0.2); src.stop(s0 + len + 0.03);
         };
-        burst(0, 0.17, 1400, 4200, 0.9, v);          // the page sweeping over
-        burst(0.12, 0.12, 900, 500, 0.7, v * 0.45);  // and landing
+        const j = () => 0.85 + Math.random() * 0.3; // each turn sounds a little different, like real paper
+        grain(0, 0.16 * j(), 900, 1900, v * 0.7);           // the sheet starts to lift
+        grain(0.07, 0.2 * j(), 1500, 2600, v);              // brushing over the next page
+        grain(0.2, 0.18 * j(), 1100, 600, v * 0.45);        // and settling down
       } catch { /* no sound on this device */ }
     }
     // A very short buzz on Android phones when something is tapped (Account → Sounds → Vibrate).
@@ -1580,7 +1599,7 @@
         <div class="err" id="perr"></div>
         <button class="btn block" id="paynow">💳 ${openPay ? L('Ituloy ang pagbayad', 'Continue payment') : L('Magbayad online', 'Pay online')}</button>
         ${openPay ? `<button class="btn block secondary" id="paycheck" style="margin-top:8px">${L('I-check ang bayad', 'Check payment')}</button>` : ''}` : ''}
-        ${manual ? `${p.online ? `<h3 style="margin-top:18px">${L('O magbayad nang manual', 'Or pay manually')}</h3>` : ''}
+        ${manual ? fold('pay-manual', `<h3>${p.online ? L('O magbayad nang manual', 'Or pay manually') : L('Magbayad nang manual', 'Pay manually')}</h3>${pending ? `<span class="pill warn">${L('Hinihintay', 'Waiting')}</span>` : ''}`, `
         <p class="small" style="margin:6px 0">${L('Pumili kung saan magbabayad:', 'Choose where to pay:')}</p>
         <div class="seg" id="pmSel">${p.methods.map((m, i) => `<button type="button" data-pm="${esc(m.id)}" class="${i ? '' : 'active'}">${esc(m.name)}${p.methods.filter((x) => x.name === m.name).length > 1 && m.account ? ` <span class="small muted">…${esc(m.account.replace(/\s/g, '').slice(-4))}</span>` : ''}</button>`).join('')}</div>
         <div id="pmInfo"></div>
@@ -1589,11 +1608,11 @@
         <form id="payf"><label>Reference number</label><input type="text" id="ref" placeholder="${L('hal.', 'e.g.')} 1012 345 678901" autocomplete="off">
           <label>${L('Screenshot ng resibo (opsyonal, pero mas mabilis ma-approve)', 'Screenshot of the receipt (optional, but approved faster)')}</label>
           <input type="file" id="proof" accept="image/*"><img id="proofPrev" class="proof-prev" alt="" hidden>
-          <div class="err" id="err"></div><button class="btn block ${p.online ? 'secondary' : ''}" type="submit">${L('Ipadala', 'Send')}</button></form>`}` : ''}
+          <div class="err" id="err"></div><button class="btn block ${p.online ? 'secondary' : ''}" type="submit">${L('Ipadala', 'Send')}</button></form>`}`, { card: false, stay: true, cls: 'pay-fold', open: !p.online }) : ''}
         ${!p.online && !manual ? `<div class="notice">${L('Wala pang bukas na paraan ng bayad. Makipag-ugnayan sa admin.', 'No payment method is open yet. Please contact the admin.')}</div>` : ''}
       </div>`}
-      ${p.payments.length ? `<h2>${L('Mga bayad mo', 'Your payments')}</h2><div class="list">${p.payments.map((x) => `<div class="list-item"><div class="grow"><b>₱${esc(x.amount)}</b> · ${esc(x.method)}${x.provider && x.provider !== 'manual' ? '' : ' · ref ' + esc(x.reference)}
-        <div class="muted small">${fmtDate(x.created_at)}${x.note ? ' · ' + esc(x.note) : ''}</div></div>${statusPill[x.status] || ''}${x.status === 'approved' ? `<button type="button" class="btn ghost small" data-rc="${x.id}" aria-label="${L('Resibo', 'Receipt')} ₱${esc(x.amount)}">🧾 ${L('Resibo', 'Receipt')}</button>` : ''}</div>`).join('')}</div>` : ''}`);
+      ${p.payments.length ? fold('pay-history', `<h2>${L('Mga bayad mo', 'Your payments')}</h2><span class="pill">${p.payments.length}</span>`, `<div class="list">${p.payments.map((x) => `<div class="list-item"><div class="grow"><b>₱${esc(x.amount)}</b> · ${esc(x.method)}${x.provider && x.provider !== 'manual' ? '' : ' · ref ' + esc(x.reference)}
+        <div class="muted small">${fmtDate(x.created_at)}${x.note ? ' · ' + esc(x.note) : ''}</div></div>${statusPill[x.status] || ''}${x.status === 'approved' ? `<button type="button" class="btn ghost small" data-rc="${x.id}" aria-label="${L('Resibo', 'Receipt')} ₱${esc(x.amount)}">🧾 ${L('Resibo', 'Receipt')}</button>` : ''}</div>`).join('')}</div>`, { card: false }) : ''}`);
     $$('[data-rc]').forEach((b) => (b.onclick = () => showReceipt(+b.dataset.rc)));
     // PayMongo's checkout page. In the phone and desktop apps it opens in the browser.
     if ($('#paynow')) $('#paynow').onclick = async (e) => {
@@ -2009,7 +2028,6 @@
         <button class="btn ghost small" id="quit" aria-label="${L('Lumabas', 'Exit')}">✕</button>
         <div class="grow exam-count"><b id="pageNo"></b><span class="muted small" id="answered"></span></div>
         ${ex.deadline ? `<div class="timer" id="timer" role="timer" aria-label="${L('Natitirang oras', 'Time left')}">--:--</div>` : ''}
-        <button class="btn ghost small flag-btn" id="flag" title="${L('Markahan para balikan', 'Mark to come back to')}" aria-label="${L('Markahan para balikan', 'Mark to come back to')}">⚑</button>
         <button class="btn secondary small" id="navBtn" title="${L('Lahat ng tanong at Isumite', 'All questions and Submit')}" aria-label="${L('Lahat ng tanong at Isumite', 'All questions and Submit')}">☰</button>
       </div></div>
       <div class="progress"><i id="prog"></i></div>
@@ -2022,7 +2040,8 @@
       if (await confirmBox(L('Lumabas muna?', 'Leave for now?'), L('Naka-save ang mga sagot mo. Maaari mo itong ituloy mamaya mula sa Home.', 'Your answers are saved. You can continue later from Home.') + (ex.deadline ? L(' <b>Tuloy pa rin ang takbo ng oras.</b>', ' <b>The timer keeps running.</b>') : ''), L('Lumabas', 'Leave'))) { stopTimer(); go('#/'); }
     };
     paperSwipe($('#desk'));
-    $('#flag').onclick = () => {
+    // The ⚑ Mark button sits on the paper itself (top right, on the "Part I: …" row), so it is redrawn with each page.
+    ex.toggleFlag = () => {
       ex.flags.has(ex.idx) ? ex.flags.delete(ex.idx) : ex.flags.add(ex.idx);
       try { localStorage.setItem('cse-flag-' + id, JSON.stringify([...ex.flags])); } catch { /* ignore */ }
       paintQ();
@@ -2080,7 +2099,7 @@
      animation with a paper sound (Account → Sounds). ☰ Lahat / the page number opens every question.
      Answers are saved on every tap, as before. Premium turns pages a little faster. */
   const reduceMotion = () => a11y().motion || (window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches);
-  const flipMs = () => (S.premium ? 300 : 420);
+  const flipMs = () => (S.premium ? 440 : 520);
   function turn(d, to) {
     const ex = S.exam; if (!ex || document.querySelector('.modal-bg')) return;
     const n = ex.a.items.length, next = to ?? ex.idx + d;
@@ -2109,7 +2128,7 @@
       if (drag && page() && !reduceMotion()) {
         // The page follows the finger a little, like lifting a sheet.
         const w = desk.clientWidth || 360, k = Math.max(-1, Math.min(1, dx / w));
-        page().style.transform = k < 0 ? `perspective(1600px) rotateY(${k * 28}deg)` : `translateX(${k * 36}px)`;
+        page().style.transform = `translateX(${k * 30}px) rotate(${k * 0.6}deg)`;
       }
     });
     const end = (e) => {
@@ -2127,27 +2146,49 @@
     desk.addEventListener('pointerup', end);
     desk.addEventListener('pointercancel', end);
   }
+  /* Page curl: the sheet turns from its bottom-right corner along a slanted fold, like real paper.
+     The part already turned shows its back (a shaded strip at the fold) and casts a soft shadow on the next page.
+     Only transform, opacity and clip-path change, on one sheet, so it stays smooth on most phones.
+     Less motion (Account) or a low-memory phone: a short, light slide instead. */
+  const lightFlip = () => reduceMotion() || (navigator.deviceMemory && navigator.deviceMemory <= 2);
   function flip(page, ghost, dir) {
     const stack = page.parentNode, dur = flipMs();
     if (S.flipAnim) S.flipAnim.finish();
     ghost.removeAttribute('id'); ghost.classList.add('paper-ghost'); ghost.setAttribute('aria-hidden', 'true'); ghost.inert = true;
     Sound.flip();
-    if (reduceMotion()) { page.animate([{ opacity: 0.3 }, { opacity: 1 }], { duration: 120 }); return; }
-    const shade = document.createElement('div'); shade.className = 'flip-shade';
-    let anim;
-    if (dir > 0) {
-      // Forward: the old page lifts from the right edge and turns over to the left.
-      ghost.classList.add('top'); ghost.appendChild(shade); stack.appendChild(ghost);
-      anim = ghost.animate([{ transform: 'perspective(1800px) rotateY(0deg)' }, { transform: 'perspective(1800px) rotateY(-96deg)' }], { duration: dur, easing: 'cubic-bezier(.35,.05,.3,1)' });
-      shade.animate([{ opacity: 0 }, { opacity: 0.55 }], { duration: dur, easing: 'ease-in' });
-    } else {
-      // Back: the previous page turns back over the current one.
-      ghost.classList.add('under'); stack.insertBefore(ghost, page); page.appendChild(shade);
-      anim = page.animate([{ transform: 'perspective(1800px) rotateY(-96deg)' }, { transform: 'perspective(1800px) rotateY(0deg)' }], { duration: dur, easing: 'cubic-bezier(.35,.05,.3,1)' });
-      shade.animate([{ opacity: 0.55 }, { opacity: 0 }], { duration: dur, easing: 'ease-out' });
+    if (lightFlip()) {
+      const k = reduceMotion() ? 10 : 28;
+      page.animate([{ opacity: 0.25, transform: `translateX(${dir * k}px)` }, { opacity: 1, transform: 'none' }], { duration: reduceMotion() ? 140 : 220, easing: 'cubic-bezier(.2,.7,.3,1)' });
+      return;
     }
+    // Forward: the old page (ghost, on top) curls away. Back: the previous page (page) curls back on top of the old one.
+    const sheet = dir > 0 ? ghost : page, under = dir > 0 ? page : ghost;
+    if (dir > 0) { ghost.classList.add('top'); stack.appendChild(ghost); } else { ghost.classList.add('under'); stack.insertBefore(ghost, page); }
+    const W = stack.clientWidth || 360, H = Math.max(200, sheet.offsetHeight || 600);
+    const s = Math.min(W * 0.35, H * 0.5);               // how far the top of the fold leans right of the bottom
+    const ang = Math.atan2(s, H) * 180 / Math.PI;
+    const B = W * 0.16;                                  // width of the curled strip at the fold
+    const fold = (p) => { const xb = W - p * (W + s); return { xb, xt: xb + s, xm: xb + s / 2 }; };
+    const N = 6, steps = Array.from({ length: N + 1 }, (_, i) => i / N);
+    const clip = steps.map((p) => { const f = fold(p); return { clipPath: `polygon(0px 0px, ${f.xt}px 0px, ${f.xb}px ${H}px, 0px ${H}px)` }; });
+    const bandK = steps.map((p) => { const f = fold(p), k = Math.max(0.001, Math.min(1, (W - f.xm) / B, (f.xm + s) / B)); return { transform: `translateX(${f.xm - B}px) rotate(${ang}deg) scaleX(${k})` }; });
+    const shadeK = steps.map((p, i) => ({ transform: `translateX(${fold(p).xm}px) rotate(${ang}deg)`, opacity: i === N ? 0 : Math.min(1, p * 4) }));
+    const band = document.createElement('div'); band.className = 'curl-back';
+    const shade = document.createElement('div'); shade.className = 'curl-shadow';
+    [band, shade].forEach((el) => { el.style.height = H * 1.8 + 'px'; el.style.marginTop = -H * 0.9 + 'px'; });
+    band.style.width = B + 'px'; shade.style.width = W * 0.14 + 'px';
+    sheet.classList.add('curling'); under.classList.add('curling'); sheet.appendChild(band); under.appendChild(shade);
+    const o = { duration: dur, easing: 'cubic-bezier(.45,.05,.35,1)', direction: dir > 0 ? 'normal' : 'reverse', fill: 'both' };
+    const anim = sheet.animate(clip, o);
+    const a2 = band.animate(bandK, o), a3 = shade.animate(shadeK, o);
     S.flipAnim = anim;
-    const done = () => { ghost.remove(); shade.remove(); if (S.flipAnim === anim) S.flipAnim = null; };
+    let over = false;
+    const done = () => {
+      if (over) return; over = true;
+      a2.cancel(); a3.cancel(); band.remove(); shade.remove(); sheet.classList.remove('curling'); under.classList.remove('curling');
+      if (dir < 0) anim.cancel(); // the page stays; drop the clip
+      ghost.remove(); if (S.flipAnim === anim) S.flipAnim = null;
+    };
     anim.onfinish = done; anim.oncancel = done;
   }
   /* Time on each question (seconds), saved on the device with the answers. Only while the app is in front.
@@ -2181,8 +2222,9 @@
     const last = idx === a.items.length - 1;
     const tag = qTag(a);
     page.innerHTML = `
-      <div class="q-section">${a.mode === 'practice' ? esc(subjName(it.subject)) : `Part ${roman}: ${esc(subjName(it.subject))}`}${sectionStart(a.items, idx) && a.mode !== 'practice' ? ` <span class="pill">${L('Bagong bahagi', 'New part')}</span>` : ''}</div>
-      <div class="row between"><div class="q-num">${L(`${tag} ${idx + 1} sa ${a.items.length}`, `${tag} ${idx + 1} of ${a.items.length}`)} · ${esc(it.topic)}</div>${ex.flags.has(idx) ? `<span class="pill warn">⚑ ${L('Minarkahan', 'Marked')}</span>` : ''}</div>
+      <div class="paper-head"><div class="q-section">${a.mode === 'practice' ? esc(subjName(it.subject)) : `Part ${roman}: ${esc(subjName(it.subject))}`}${sectionStart(a.items, idx) && a.mode !== 'practice' ? ` <span class="pill">${L('Bagong bahagi', 'New part')}</span>` : ''}</div>
+        <button type="button" class="flag-btn paper-flag${ex.flags.has(idx) ? ' on' : ''}" data-flag aria-pressed="${ex.flags.has(idx)}" title="${L('Markahan para balikan', 'Mark to come back to')}">⚑ <span>${ex.flags.has(idx) ? L('Minarkahan', 'Marked') : L('Markahan', 'Mark')}</span></button></div>
+      <div class="q-num">${L(`${tag} ${idx + 1} sa ${a.items.length}`, `${tag} ${idx + 1} of ${a.items.length}`)} · ${esc(it.topic)}</div>
       ${it.passage ? `<div class="passage">${esc(it.passage)}</div>` : ''}
       <div class="q-text"><span class="q-no">${idx + 1}.</span> ${esc(it.question)}</div>
       <div class="choices">${it.choices.map((c, i) => {
@@ -2199,11 +2241,11 @@
     $$('[data-c]', page).forEach((b) => (b.onclick = () => choose(+b.dataset.c)));
     $$('[data-turn]', page).forEach((b) => (b.onclick = () => turn(+b.dataset.turn)));
     if ($('[data-end]', page)) $('[data-end]', page).onclick = submitFlow;
+    $('[data-flag]', page).onclick = (e) => { e.stopPropagation(); ex.toggleFlag(); };
     const n = Object.keys(ex.answers).length;
     $('#answered').textContent = L(`${n}/${a.items.length} nasagutan`, `${n}/${a.items.length} answered`);
     $('#prog').style.width = pct(n, a.items.length) + '%';
     $('#pageNo').textContent = `${tag} ${idx + 1} / ${a.items.length}`;
-    $('#flag').classList.toggle('on', ex.flags.has(idx));
     if (dir) window.scrollTo(0, 0);
     if (ghost) flip(page, ghost, dir);
     // First exam on this device: show once how to turn the page.
@@ -2483,13 +2525,13 @@
     shell('history', `
       <h1>${L('Mga resulta', 'Results')}</h1>
       ${fold('history-all', `<h2>${L('Lahat ng exam', 'All exams')}</h2>${list.length ? `<span class="pill">${list.length}</span>` : ''}`, list.length ? `<div class="list">${list.map(attemptRow).join('')}</div>` : `<div class="card empty">${L('Wala pang resulta.', 'No results yet.')}</div>`, { card: false, cls: 'top' })}
-      ${fold('history-progress', `<h2>${L('Ang progress mo', 'Your progress')}</h2>`, `
+      <h2 class="progress-head">${L('Ang progress mo', 'Your progress')}</h2>
       <div class="grid stats">
         <div class="card stat"><div class="v">${stats.attempts}</div><div class="l">${L('Natapos na exam/practice', 'Exams/practice finished')}</div></div>
         <div class="card stat"><div class="v">${mocks.length}</div><div class="l">${L('Mock exam na natapos', 'Mock exams finished')}</div></div>
         <div class="card stat"><div class="v">${best === null ? '–' : best + '%'}</div><div class="l">${L('Pinakamataas na mock score', 'Highest mock score')}</div></div>
         <div class="card stat"><div class="v">${mocks.filter((m) => m.pct >= 80).length}</div><div class="l">${L('Pasado (80% pataas)', 'Passed (80% and up)')}</div></div>
-      </div>`, { card: false })}
+      </div>
       ${trend.length ? `<div class="card"><h3>${L('Huling mga mock exam', 'Recent mock exams')}</h3>
         <div style="display:flex;align-items:flex-end;gap:6px;height:140px;padding-top:10px;border-bottom:1px dashed var(--line);position:relative">
           <div style="position:absolute;left:0;right:0;bottom:${80 * 1.3}px;border-top:1px dashed var(--ok)"></div>
@@ -2522,7 +2564,7 @@
         <div class="row between lang-row"><span class="small"><b>${L('Wika', 'Language')}</b> <span class="muted">· ${L('pindutin ang flag para magpalit', 'tap the flag to switch')}</span></span>${flagBtn('big')}</div>
         ${showLevel() ? `<div class="row between lang-row"><span class="small"><b>Level</b></span><div class="seg lvl-seg">${Object.entries(LEVELS).map(([k, [c, n]]) => `<button type="button" class="lvl-opt ${k} ${myLevel() === k ? 'active' : ''}" data-level="${k}" title="${n}">${c}</button>`).join('')}</div></div>` : ''}
       </div>
-      ${fold('acc-menu', `<h2>${L('Mga setting at iba pa', 'Settings and more')}</h2>`, `<div class="menu-list">
+      ${S.premium ? fold('acc-menu', `<h2>${L('Mga setting at iba pa', 'Settings and more')}</h2>`, `<div class="menu-list">
       ${fold('acc-premium', `<h3>Premium</h3><span class="pill${premOn ? ' ok' : ''}">${premOn ? L('Aktibo', 'Active') : S.user.role === 'admin' ? 'Admin' : S.config.premium_required ? L('Hindi aktibo', 'Not active') : L('Libre', 'Free')}</span>`, `
         <p class="muted small" style="margin:0 0 10px">${premNote}</p>
         <a class="btn${premOn ? ' secondary' : ''}" href="#/premium">${premOn ? L('Tingnan o i-extend ang Premium', 'See or extend Premium') : L('Kumuha ng Premium', 'Get Premium')} ›</a>`)}
@@ -2572,7 +2614,8 @@
         <p class="muted small" style="margin:0">${L('Sinusunod ng mock exam ang format ng Career Service Exam (pen and paper test) ng Civil Service Commission: Professional na 170 tanong sa loob ng 3 oras at 10 minuto, at Subprofessional na 165 tanong sa loob ng 2 oras at 40 minuto, lahat ay may 4 na pagpipilian at 80% ang passing rate. Hindi inilalabas ng CSC ang eksaktong bilang kada subject, kaya tantiya ang hati ng mga tanong. Ang app na ito ay hindi opisyal na produkto ng CSC.',
           'The mock exam follows the format of the Civil Service Commission\'s Career Service Exam (pen and paper test): Professional has 170 questions in 3 hours and 10 minutes, and Subprofessional has 165 questions in 2 hours and 40 minutes, all with 4 choices and an 80% passing rate. The CSC does not publish the exact count per subject, so the split of questions is an estimate. This app is not an official CSC product.')}</p>
         <p class="muted small" style="margin:10px 0 0">${L('Bersyon', 'Version')} ${APP_VERSION}</p>`)}
-      </div>`, { cls: 'acc-menu', stay: true, open: !!F.key && F.key.startsWith('acc-') && F.key !== 'acc-menu' })}`);
+      </div>`, { cls: 'acc-menu', stay: true, open: !!F.key && F.key.startsWith('acc-') && F.key !== 'acc-menu' }) : freeAccount()}`);
+    if (!S.premium) return; // Free: no "Settings and more" (Premium only), so none of its buttons are on the screen
     const pick = (sel, b) => $$(sel).forEach((x) => { x.classList.toggle('active', x === b); x.setAttribute('aria-pressed', String(x === b)); });
     $$('#themes [data-theme]').forEach((b) => (b.onclick = () => {
       store.set('cse-look', { ...(look() || { zoom: 1 }), theme: b.dataset.theme });
@@ -2623,6 +2666,14 @@
     if ($('#accTour')) $('#accTour').onclick = () => Tour.replay();
     paintFixCard();
     if (window._installPrompt) { const b = $('#install'); b.hidden = false; b.onclick = () => window._installPrompt.prompt(); }
+  }
+
+  // Account for a Free user: "Settings and more" is Premium only. Free users see what Premium adds, and Help.
+  function freeAccount() {
+    return `<div class="card free-acc">
+      <div class="row between"><h3 style="margin:0">Premium</h3><span class="pill">${L('Libre', 'Free')}</span></div>
+      <p class="muted small" style="margin:8px 0 12px">${L('Sa Premium, mabubuksan ang <b>Mga setting at iba pa</b>: itsura at laki ng letra, tunog, paalala sa pag-aaral, backup, seguridad, mabilis na login, password, Auto Fix, at iba pa. Kasama rin ang lahat ng exam set, walang limit, at gumagana offline.', 'With Premium you get <b>Settings and more</b>: look and text size, sounds, study reminder, backup, security, quick login, password, Auto Fix, and more. It also opens all exam sets, no limits, and works offline.')}</p>
+      <div class="row"><a class="btn" href="#/premium">⭐ ${L('Kumuha ng Premium', 'Get Premium')} ›</a><a class="btn ghost" href="#/help">${L('Tulong', 'Help')} ›</a></div></div>`;
   }
 
   // Account → Backup and restore.
@@ -3263,8 +3314,8 @@
       </div>
       <h2>${L('Mga madalas itanong', 'Common questions')}</h2>
       <div class="stack">
-      ${Q('mock', L('Paano mag-mock exam?', 'How do I take a mock exam?'), L(`<ol><li>Sa <a href="#/">Home</a>, piliin ang <b>PRO</b> (Professional) o <b>SUBPRO</b> (Subprofessional).</li><li>Pindutin ang <b>▶ Simulan ang Set 1</b>, o <b>Lahat ng exam set</b> para pumili ng ibang set o <b>Bagong halo</b>.</li><li>Parang papel ang exam: <b>i-swipe</b> pakaliwa o pakanan (o pindutin ang nakatiklop na kanto) para ilipat ang pahina. <b>☰ Lahat</b> para makita ang lahat ng tanong, <b>⚑</b> para markahan at balikan, at <b>Isumite ✓</b> kapag tapos na.</li></ol>Tuloy-tuloy ang timer kahit isara ang app, pero naka-save ang mga sagot mo. Ituloy ito mula sa Home.`,
-        `<ol><li>On <a href="#/">Home</a>, choose <b>PRO</b> (Professional) or <b>SUBPRO</b> (Subprofessional).</li><li>Tap <b>▶ Start Set 1</b>, or <b>All exam sets</b> to pick another set or <b>New mix</b>.</li><li>The exam is like a paper test: <b>swipe</b> left or right (or tap the folded corner) to turn the page. <b>☰ All</b> shows every question, <b>⚑</b> marks one to come back to, and <b>Submit ✓</b> when you are done.</li></ol>The timer keeps running even if you close the app, but your answers are saved. Continue it from Home.`))}
+      ${Q('mock', L('Paano mag-mock exam?', 'How do I take a mock exam?'), L(`<ol><li>Sa <a href="#/">Home</a>, piliin ang <b>PRO</b> (Professional) o <b>SUBPRO</b> (Subprofessional).</li><li>Pindutin ang <b>▶ Simulan ang Set 1</b>, o <b>Lahat ng exam set</b> para pumili ng ibang set o <b>Bagong halo</b>.</li><li>Parang papel ang exam: <b>i-swipe</b> pakaliwa o pakanan (o pindutin ang nakatiklop na kanto) para ilipat ang pahina. <b>☰ Lahat</b> para makita ang lahat ng tanong, <b>⚑ Markahan</b> (kanang itaas ng papel) para balikan, at <b>Isumite ✓</b> kapag tapos na.</li></ol>Tuloy-tuloy ang timer kahit isara ang app, pero naka-save ang mga sagot mo. Ituloy ito mula sa Home.`,
+        `<ol><li>On <a href="#/">Home</a>, choose <b>PRO</b> (Professional) or <b>SUBPRO</b> (Subprofessional).</li><li>Tap <b>▶ Start Set 1</b>, or <b>All exam sets</b> to pick another set or <b>New mix</b>.</li><li>The exam is like a paper test: <b>swipe</b> left or right (or tap the folded corner) to turn the page. <b>☰ All</b> shows every question, <b>⚑ Mark</b> (top right of the paper) marks one to come back to, and <b>Submit ✓</b> when you are done.</li></ol>The timer keeps running even if you close the app, but your answers are saved. Continue it from Home.`))}
       ${Q('set1', L('Ano ang Set 1 at ang mga exam set?', 'What are Set 1 and the exam sets?'), L('Ang <b>Set 1</b> ay laging nasa Home at bukas sa lahat. May bagong set bawat linggo (Set 2, 3…), makikita sa <b>Lahat ng exam set</b>, pinakabago muna. Ang <b>Bagong halo</b> ay bagong random na exam tuwing pipindutin.',
         '<b>Set 1</b> is always on Home and open to everyone. A new set comes every week (Set 2, 3…), listed in <b>All exam sets</b>, newest first. <b>New mix</b> is a new random exam every time.'))}
       ${Q('practice', L('Paano mag-practice kada subject?', 'How do I practice by subject?'), L('Pumunta sa <a href="#/practice">Practice</a>, pumili ng level, subject, ilang tanong at timer, tapos <b>Simulan ang practice</b>. Agad makikita kung tama o mali, kasama ang paliwanag.', 'Go to <a href="#/practice">Practice</a>, pick the level, subject, number of questions and timer, then <b>Start practice</b>. You see right away if you are right or wrong, with an explanation.'))}
@@ -3452,7 +3503,7 @@
     if (!S.user) { if (p0 === 'register') return viewAuth('register'); if (p0 === 'forgot') return viewForgot(); if (p0 === 'otp') return viewOtp(); return viewAuth('login'); }
     if (S.config.verify && !S.user.email_verified) return viewVerify();
     S.locked = false;
-    if (S.offline && !canOffline() && !(p0 === 'exam' && isLocal(p1))) return viewOfflineLocked();
+    if (S.offline && !canOffline() && !S.offT && !(p0 === 'exam' && isLocal(p1))) return viewOfflineLocked(); // S.offT: Free count 1-10 still running
     try {
       if (p0 === 'sets') return await viewSets(p1);
       if (p0 === 'premium') return await viewPremium();
