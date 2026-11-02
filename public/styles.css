@@ -693,3 +693,9 @@ html[data-theme] #undo .u-time { background: var(--primary); }
 }
 .off-count { display: inline-block; min-width: 1.4em; text-align: center; font-variant-numeric: tabular-nums; }
 .free-acc { margin-top: 14px; }
+
+/* Promo code box on the Premium page */
+.promo-box { margin: 10px 0; padding: 10px 12px; border: 1px dashed var(--line); border-radius: 12px; }
+.promo-box label { margin-top: 0; }
+.promo-hide { display: none !important; }
+#promoIn::placeholder, #pcCode::placeholder { text-transform: none; }

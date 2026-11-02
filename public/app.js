@@ -3,7 +3,7 @@
   'use strict';
   const $app = document.getElementById('app');
   const LETTERS = ['A', 'B', 'C', 'D'];
-  const APP_VERSION = '1.29.0'; // keep in step with package.json and docs/DOKUMENTASYON.md
+  const APP_VERSION = '1.30.0'; // keep in step with package.json and docs/DOKUMENTASYON.md
   const S = { user: null, meta: null, exam: null, timer: null, saveT: null };
 
   /* ---------------- helpers ---------------- */
@@ -113,6 +113,18 @@
     'Hindi mabubura ang Set 1. Ito ang libreng set na nasa Home ng lahat.': 'Set 1 cannot be deleted. It is the free set on everyone\'s Home.',
     'Masyadong malaki ang backup.': 'The backup is too big.',
     'Walang resibo para dito.': 'There is no receipt for this.',
+    'Hindi tama o hindi na gumagana ang promo code.': 'The promo code is wrong or no longer works.',
+    'Expired na ang promo code na ito.': 'This promo code has expired.',
+    'Naubos na ang promo code na ito.': 'This promo code has been used up.',
+    'Nagamit mo na ang promo code na ito.': 'You have already used this promo code.',
+    'Libre na ang Premium sa promo code na ito. Pindutin ang "Gamitin ang code".': 'Premium is free with this promo code. Tap "Use the code".',
+    'Hindi libre ang Premium sa code na ito. Magbayad ng natitirang halaga.': 'Premium is not free with this code. Please pay the rest.',
+    'Ang code ay 3 hanggang 30 letra o numero (pwede ang - at _), walang space.': 'The code must be 3 to 30 letters or numbers (- and _ allowed), no spaces.',
+    'Ilagay ang discount (higit sa 0).': 'Enter the discount (more than 0).',
+    'Hanggang 100% lang ang discount.': 'The discount can be at most 100%.',
+    'May promo code na ganito. Pumili ng iba.': 'A promo code like this already exists. Choose another.',
+    'Walang ganitong promo code.': 'No such promo code.',
+    'Nagamit na ang code na ito, kaya hindi ito mabubura. I-off na lang.': 'This code has been used, so it cannot be deleted. Turn it off instead.',
   };
   const serverText = (m) => {
     if (lang !== 'en' || !m) return m;
@@ -1592,7 +1604,11 @@
         <p class="muted small" style="margin:0">${L('Naglo-load…', 'Loading…')}</p></div>` : ''}
       ${S.user.role === 'admin' ? '' : `<div class="card" style="margin-top:12px">
         <h3>${p.active && until ? L('I-extend ang Premium', 'Extend Premium') : L('Kumuha ng Premium', 'Get Premium')}</h3>
-        <p style="margin:6px 0"><span class="pill warn" style="font-size:15px">${L(`₱${esc(p.price)} para sa ${p.plan_days} araw`, `₱${esc(p.price)} for ${p.plan_days} days`)}</span></p>
+        <p style="margin:6px 0" id="priceTag"><span class="pill warn" style="font-size:15px">${L(`₱${esc(p.price)} para sa ${p.plan_days} araw`, `₱${esc(p.price)} for ${p.plan_days} days`)}</span></p>
+        ${p.promo && (p.online || manual) ? `<form id="promoF" class="promo-box" autocomplete="off"><label for="promoIn">${L('May promo code ka?', 'Have a promo code?')}</label>
+          <div class="row" style="flex-wrap:nowrap"><input type="text" id="promoIn" maxlength="30" placeholder="${L('hal.', 'e.g.')} REVIEW20" style="text-transform:uppercase;margin:0" autocapitalize="characters" spellcheck="false">
+          <button class="btn secondary" type="submit" id="promoGo">${L('Gamitin', 'Apply')}</button></div>
+          <div class="err" id="promoErr" role="alert"></div><div id="promoInfo" role="status"></div></form>` : ''}
         ${p.online ? `
         <p class="small" style="margin:8px 0">${L('Magbayad online gamit ang <b>GCash, Maya, card, GrabPay, o QR Ph</b> (para sa bank apps) at iba pa. Awtomatikong bubukas ang Premium pagkatapos magbayad.', 'Pay online with <b>GCash, Maya, card, GrabPay, or QR Ph</b> (for bank apps) and more. Premium opens automatically after you pay.')}</p>
         <div class="err" id="perr"></div>
@@ -1610,15 +1626,54 @@
           <div class="err" id="err"></div><button class="btn block ${p.online ? 'secondary' : ''}" type="submit">${L('Ipadala', 'Send')}</button></form>`}`, { card: false, stay: true, cls: 'pay-fold', open: !p.online }) : ''}
         ${!p.online && !manual ? `<div class="notice">${L('Wala pang bukas na paraan ng bayad. Makipag-ugnayan sa admin.', 'No payment method is open yet. Please contact the admin.')}</div>` : ''}
       </div>`}
-      ${p.payments.length ? fold('pay-history', `<h2>${L('Mga bayad mo', 'Your payments')}</h2><span class="pill">${p.payments.length}</span>`, `<div class="list">${p.payments.map((x) => `<div class="list-item"><div class="grow"><b>₱${esc(x.amount)}</b> · ${esc(x.method)}${x.provider && x.provider !== 'manual' ? '' : ' · ref ' + esc(x.reference)}
+      ${p.payments.length ? fold('pay-history', `<h2>${L('Mga bayad mo', 'Your payments')}</h2><span class="pill">${p.payments.length}</span>`, `<div class="list">${p.payments.map((x) => `<div class="list-item"><div class="grow"><b>₱${esc(x.amount)}</b> · ${esc(x.method)}${x.provider && x.provider !== 'manual' ? '' : ' · ref ' + esc(x.reference)}${x.promo_code ? ` · 🏷️ ${esc(x.promo_code)}` : ''}
         <div class="muted small">${fmtDate(x.created_at)}${x.note ? ' · ' + esc(x.note) : ''}</div></div>${statusPill[x.status] || ''}${x.status === 'approved' ? `<button type="button" class="btn ghost small" data-rc="${x.id}" aria-label="${L('Resibo', 'Receipt')} ₱${esc(x.amount)}">🧾 ${L('Resibo', 'Receipt')}</button>` : ''}</div>`).join('')}</div>`, { card: false }) : ''}`);
     $$('[data-rc]').forEach((b) => (b.onclick = () => showReceipt(+b.dataset.rc)));
     if (p.paid) appDownloads($('#appDl'));
     // PayMongo's checkout page. In the phone and desktop apps it opens in the browser.
     // One button; the user picks GCash, Maya, card, QR Ph, etc. on PayMongo's page.
+    /* Promo code: the server checks it and works out the new price (and again on payment, so the price here
+       is only for showing). A 100%-off code turns on Premium right away with "Use the code". */
+    let promo = null;
+    const peso = (n) => '₱' + (Number.isInteger(+n) ? String(+n) : (+n).toFixed(2));
+    const priceNow = () => (promo ? peso(promo.amount) : '₱' + p.price);
+    const paintPromo = () => {
+      const tag = $('#priceTag');
+      if (tag) tag.innerHTML = promo
+        ? `<span class="pill warn" style="font-size:15px"><s class="muted">₱${esc(p.price)}</s> ${esc(priceNow())} ${L(`para sa ${p.plan_days} araw`, `for ${p.plan_days} days`)}</span> <span class="pill ok">${esc(promo.code)} −${esc(promo.kind === 'percent' ? promo.value + '%' : peso(promo.value))}</span>`
+        : `<span class="pill warn" style="font-size:15px">${L(`₱${esc(p.price)} para sa ${p.plan_days} araw`, `₱${esc(p.price)} for ${p.plan_days} days`)}</span>`;
+      const info = $('#promoInfo');
+      if (info) info.innerHTML = !promo ? '' : promo.free
+        ? `<div class="notice" style="margin:8px 0">🎉 ${L(`Libre ang Premium (${p.plan_days} araw) sa code na ito. Walang babayaran.`, `Premium (${p.plan_days} days) is free with this code. Nothing to pay.`)}</div>
+          <button class="btn block" type="button" id="promoFree">🎁 ${L('Gamitin ang code', 'Use the code')}</button>`
+        : `<p class="small" style="margin:6px 0">✅ ${L(`Bawas na ang <b>${esc(peso(promo.discount))}</b>. Babayaran: <b>${esc(priceNow())}</b>.`, `<b>${esc(peso(promo.discount))}</b> off. You pay: <b>${esc(priceNow())}</b>.`)}
+          ${promo.online > promo.amount ? `<br><span class="muted">${L(`Sa online na bayad, ₱${promo.online} ang pinakamababa (patakaran ng PayMongo).`, `Online payment is at least ₱${promo.online} (PayMongo's rule).`)}</span>` : ''}
+          <a href="#" id="promoX">${L('Alisin ang code', 'Remove the code')}</a></p>`;
+      // With a free code there is nothing to pay, so the pay buttons are hidden.
+      $$('#paynow, .pay-fold').forEach((x) => x.classList.toggle('promo-hide', !!(promo && promo.free)));
+      if ($('#promoX')) $('#promoX').onclick = (e) => { e.preventDefault(); promo = null; $('#promoIn').value = ''; paintPromo(); pmInfo(); };
+      if ($('#promoFree')) $('#promoFree').onclick = async (e) => {
+        const b = e.currentTarget; b.disabled = true;
+        try {
+          await api('POST', '/api/promo/redeem', { code: promo.code });
+          toast(L('Aktibo na ang Premium mo! 🎉', 'Your Premium is active! 🎉'));
+          await refreshMe().catch(() => {}); viewPremium();
+        } catch (err) { $('#promoErr').textContent = err.message; b.disabled = false; }
+      };
+    };
+    if ($('#promoF')) $('#promoF').onsubmit = async (e) => {
+      e.preventDefault();
+      const code = $('#promoIn').value.trim();
+      $('#promoErr').textContent = '';
+      if (!code) return;
+      $('#promoGo').disabled = true;
+      try { promo = await api('POST', '/api/promo/check', { code }); } catch (err) { promo = null; $('#promoErr').textContent = err.message; }
+      $('#promoGo').disabled = false;
+      paintPromo(); pmInfo();
+    };
     $$('#paynow').forEach((b) => (b.onclick = async () => {
       b.disabled = true;
-      try { const r = await api('POST', '/api/payments/checkout', {}); location.href = r.url; } catch (err) { $('#perr').textContent = err.message; b.disabled = false; }
+      try { const r = await api('POST', '/api/payments/checkout', promo ? { code: promo.code } : {}); location.href = r.url; } catch (err) { $('#perr').textContent = err.message; b.disabled = false; }
     }));
     // Manual payment: the chosen account's details and QR code.
     let pm = p.methods[0], proof = null;
@@ -1626,7 +1681,7 @@
       if (!pm || !$('#pmInfo')) return;
       const acct = /^https?:\/\//.test(pm.account) ? `<a href="${esc(pm.account)}" target="_blank" rel="noopener">${esc(pm.account)}</a>` : `<b>${esc(pm.account)}</b>`;
       $('#pmInfo').innerHTML = `<ol class="small" style="padding-left:18px">
-        <li>${L('Magpadala ng', 'Send')} <b>₱${esc(p.price)}</b> ${L('sa', 'to')} <b>${esc(pm.name)}</b>${pm.bank && pm.bank !== pm.name ? ` (${esc(pm.bank)})` : ''}${pm.account ? `: ${acct}` : ''}${pm.account_name ? ` · ${esc(pm.account_name)}` : ''}.</li>
+        <li>${L('Magpadala ng', 'Send')} <b>${esc(priceNow())}</b> ${L('sa', 'to')} <b>${esc(pm.name)}</b>${pm.bank && pm.bank !== pm.name ? ` (${esc(pm.bank)})` : ''}${pm.account ? `: ${acct}` : ''}${pm.account_name ? ` · ${esc(pm.account_name)}` : ''}.</li>
         <li>${L('Kopyahin ang <b>reference number</b> (o transaction ID) mula sa resibo.', 'Copy the <b>reference number</b> (or transaction ID) from the receipt.')}</li>
         <li>${L('Ilagay ito sa ibaba, kasama ang screenshot ng resibo. Makakatanggap ka ng email kapag na-approve na.', 'Enter it below, with a screenshot of the receipt. You will get an email once it is approved.')}</li></ol>
         ${pm.has_qr ? `<img class="pay-qr" src="${API}/api/pay/qr/${encodeURIComponent(pm.id)}" alt="QR ${esc(pm.name)}"><p class="muted small" style="text-align:center;margin:4px 0 0">${L('I-scan ang QR sa app ng', 'Scan the QR in the app of')} ${esc(pm.name)}</p>` : ''}
@@ -1643,7 +1698,7 @@
     if (f) f.onsubmit = async (e) => {
       e.preventDefault();
       const btn = $('button[type=submit]', f); btn.disabled = true;
-      try { await api('POST', '/api/payments', { method_id: pm && pm.id, reference: $('#ref').value, proof }); toast(L('Naipadala! Hintayin ang email ng confirmation.', 'Sent! Wait for the confirmation email.')); viewPremium(); } catch (err) { $('#err').textContent = err.message; btn.disabled = false; }
+      try { await api('POST', '/api/payments', { method_id: pm && pm.id, reference: $('#ref').value, proof, ...(promo ? { code: promo.code } : {}) }); toast(L('Naipadala! Hintayin ang email ng confirmation.', 'Sent! Wait for the confirmation email.')); viewPremium(); } catch (err) { $('#err').textContent = err.message; btn.disabled = false; }
     };
   }
 
@@ -1712,6 +1767,7 @@
         ${r.period_from ? `<tr><td>${L('Premium mula', 'Premium period')}</td><td>${esc(day(r.period_from))} – ${esc(day(r.period_to))}</td></tr>` : ''}
         <tr><td>${L('Paraan', 'Method')}</td><td>${esc(r.method)}</td></tr>
         ${r.reference ? `<tr><td>Reference</td><td>${esc(r.reference)}</td></tr>` : ''}
+        ${r.promo_code ? `<tr><td>Promo code</td><td>${esc(r.promo_code)} (−₱${esc(r.discount)} ${L('mula', 'from')} ₱${esc(r.list_price)})</td></tr>` : ''}
         <tr class="rc-total"><td><b>${L('Kabuuan', 'Total')}</b></td><td><b>₱${esc(r.amount)}</b> · <span style="color:var(--ok)">${L('Bayad na', 'Paid')}</span></td></tr>
       </tbody></table>
       <p class="muted small">${L('Patunay ito ng bayad sa app. Hindi ito BIR invoice.', 'This is proof of payment in the app. It is not a BIR invoice.')}</p></div>`;
@@ -2825,7 +2881,7 @@
   /* ---------------- admin ---------------- */
   async function viewAdmin(tab = 'overview') {
     if (S.user.role !== 'admin') return go('#/');
-    const tabs = [['overview', 'Overview', '📊'], ['payments', 'Payments', '💳'], ['users', 'Users', '👥'], ['sets', 'Exam sets', '🗂️'], ['questions', L('Mga tanong', 'Questions'), '❓'], ['results', L('Resulta', 'Results'), '📈'], ['audit', 'Audit log', '🛡️'], ['settings', 'Settings', '⚙️']];
+    const tabs = [['overview', 'Overview', '📊'], ['payments', 'Payments', '💳'], ['promos', L('Promo code', 'Promo codes'), '🏷️'], ['users', 'Users', '👥'], ['sets', 'Exam sets', '🗂️'], ['questions', L('Mga tanong', 'Questions'), '❓'], ['results', L('Resulta', 'Results'), '📈'], ['audit', 'Audit log', '🛡️'], ['settings', 'Settings', '⚙️']];
     if (!tabs.some(([k]) => k === tab)) return go('#/admin');
     /* The tabs are one dropdown menu. Switching tabs only changes the part below it:
        the menu is not drawn again and the screen does not jump. */
@@ -2844,6 +2900,7 @@
       else if (tab === 'users') await admUsers(el);
       else if (tab === 'questions') await admQuestions(el);
       else if (tab === 'payments') await admPayments(el);
+      else if (tab === 'promos') await admPromos(el);
       else if (tab === 'sets') await admSets(el);
       else if (tab === 'settings') await admSettings(el);
       else if (tab === 'audit') await admAudit(el);
@@ -3029,7 +3086,7 @@
       <p class="muted small">${L('I-check sa app ng GCash, Maya, PayPal o bangko mo kung pumasok ang bayad (gamit ang reference number at resibo) bago i-approve.', 'Check in your GCash, Maya, PayPal or bank app that the payment came in (using the reference number and receipt) before approving.')}</p>
       <div class="list">${rows.map((p) => `<div class="review-item">
         <div class="row between"><div><b>${esc(p.name)}</b> <span class="muted small">${esc(p.email)}</span></div><span class="muted small">${fmtDate(p.created_at)}</span></div>
-        <div style="margin:6px 0">₱${esc(p.amount)} · ${esc(p.method)} · Ref: <b>${esc(p.reference)}</b>${p.note ? ` · ${esc(p.note)}` : ''}</div>
+        <div style="margin:6px 0">₱${esc(p.amount)} · ${esc(p.method)} · Ref: <b>${esc(p.reference)}</b>${p.promo_code ? ` · 🏷️ ${esc(p.promo_code)} (−₱${esc(p.discount)} ${L('mula', 'from')} ₱${esc(p.list_price)})` : ''}${p.note ? ` · ${esc(p.note)}` : ''}</div>
         ${p.has_proof ? `<button class="btn ghost small" data-proof="${p.id}" style="margin-bottom:8px">🧾 ${L('Tingnan ang resibo', 'See the receipt')}</button>` : ''}
         ${status === 'pending' ? `<div class="row"><button class="btn small" data-ok="${p.id}">✓ ${L('I-approve', 'Approve')}</button><button class="btn ghost small" data-no="${p.id}">✕ ${L('I-reject', 'Reject')}</button></div>` : ''}
       </div>`).join('') || `<div class="card empty">${L('Walang bayad dito.', 'No payments here.')}</div>`}</div>`;
@@ -3049,6 +3106,82 @@
       $('[data-x]', bg).onclick = close;
       $('[data-go]', bg).onclick = async () => { try { await api('POST', '/api/admin/payments/' + b.dataset.no, { action: 'reject', note: $('#why', bg).value }); close(); toast(L('Na-reject.', 'Rejected.')); admPayments(el, status); } catch (e) { toast(e.message); } };
     })));
+  }
+  /* Admin → Promo codes: a percent or peso discount on Premium, with an optional end date and limit of users.
+     Each account can use a code once. A 100% code turns on Premium with no payment. A used code cannot be
+     deleted (it is on receipts), only turned off. */
+  async function admPromos(el) {
+    const r = await api('GET', '/api/admin/promos');
+    const day = (ms) => new Date(ms).toLocaleDateString('en-PH', { year: 'numeric', month: 'short', day: 'numeric' });
+    const off = (x) => (x.kind === 'percent' ? `${x.value}%` : `₱${x.value}`);
+    const state = (x) => (!x.active ? `<span class="pill">${L('Naka-off', 'Off')}</span>`
+      : x.expires_at && x.expires_at <= Date.now() ? '<span class="pill bad">Expired</span>'
+      : x.max_uses && x.used >= x.max_uses ? `<span class="pill bad">${L('Ubos na', 'Used up')}</span>` : `<span class="pill ok">${L('Bukas', 'On')}</span>`);
+    el.innerHTML = `<div class="card"><h3 style="margin-top:0">+ ${L('Bagong promo code', 'New promo code')}</h3>
+      <form id="pcF" autocomplete="off">
+        <label for="pcCode">Code</label><input type="text" id="pcCode" maxlength="30" placeholder="${L('hal.', 'e.g.')} REVIEW20" style="text-transform:uppercase" spellcheck="false">
+        <label>${L('Discount', 'Discount')}</label>
+        <div class="row" style="flex-wrap:nowrap"><select id="pcKind" style="max-width:150px;margin:0"><option value="percent">% ${L('bawas', 'off')}</option><option value="fixed">₱ ${L('bawas', 'off')}</option></select>
+          <input type="number" id="pcVal" min="1" step="any" placeholder="20" style="margin:0"></div>
+        <label for="pcExp">${L('Hanggang kailan (opsyonal)', 'Ends on (optional)')}</label><input type="date" id="pcExp">
+        <label for="pcMax">${L('Ilang tao ang pwedeng gumamit (0 = walang limit)', 'How many people can use it (0 = no limit)')}</label><input type="number" id="pcMax" min="0" step="1" value="0">
+        <label for="pcNote">${L('Tala (para sa admin lang, opsyonal)', 'Note (for admins only, optional)')}</label><input type="text" id="pcNote" maxlength="200">
+        <p class="muted small" id="pcPrev"></p>
+        <div class="err" id="pcErr" role="alert"></div><button class="btn" type="submit">${L('Gumawa ng code', 'Create code')}</button></form>
+      <p class="muted small" style="margin:10px 0 0">${L(`Presyo ngayon: ₱${esc(r.price)}. Isang beses lang magagamit ng bawat account ang isang code. Sa online na bayad, ₱${r.min_online} ang pinakamababa (PayMongo). Ang 100% na code ay nagbubukas agad ng Premium nang walang bayad (hindi ito kasama sa download ng app, na para sa may bayad lang).`, `Price now: ₱${esc(r.price)}. Each account can use a code once. Online payments are at least ₱${r.min_online} (PayMongo). A 100% code turns on Premium right away with no payment (it does not include the app download, which is for paid users only).`)}</p></div>
+      <div class="list" style="margin-top:12px">${r.rows.map((x) => `<div class="review-item">
+        <div class="row between"><div><b style="font-family:monospace;font-size:15px">${esc(x.code)}</b> · −${esc(off(x))} ${state(x)}</div><span class="muted small">₱${esc(r.price)} → <b>₱${esc(Number(x.amount).toFixed(Number.isInteger(+x.amount) ? 0 : 2))}</b>${x.free ? ` (${L('libre', 'free')})` : ''}</span></div>
+        <div class="muted small" style="margin:4px 0">${L('Nagamit', 'Used')}: <b>${x.used}</b>${x.max_uses ? ` / ${x.max_uses}` : ''} · ${x.expires_at ? L(`Hanggang ${day(x.expires_at)}`, `Until ${day(x.expires_at)}`) : L('Walang katapusan', 'No end date')} · ${L('Ginawa', 'Made')} ${fmtDate(x.created_at)}${x.note ? ` · ${esc(x.note)}` : ''}</div>
+        <div class="row"><button class="btn small ${x.active ? 'ghost' : ''}" data-tog="${x.id}" data-on="${x.active ? 0 : 1}">${x.active ? L('I-off', 'Turn off') : L('I-on', 'Turn on')}</button>
+          <button class="btn ghost small" data-edit="${x.id}">✏️ ${L('Baguhin', 'Edit')}</button>
+          ${x.used ? `<button class="btn ghost small" data-uses="${x.id}">👥 ${L('Sino ang gumamit', 'Who used it')}</button>` : `<button class="btn ghost small" data-del="${x.id}">${L('Burahin', 'Delete')}</button>`}</div></div>`).join('') || `<div class="card empty">${L('Wala pang promo code.', 'No promo codes yet.')}</div>`}</div>`;
+    const dateMs = (v) => (v ? new Date(v + 'T23:59:59+08:00').getTime() : 0); // end of that day, Philippine time
+    const dateIn = (ms) => (ms ? new Date(ms + 8 * 3600e3).toISOString().slice(0, 10) : '');
+    const prev = () => {
+      const v = Number($('#pcVal').value) || 0, price = Number(r.price) || 0;
+      const disc = Math.min(price, $('#pcKind').value === 'percent' ? price * v / 100 : v);
+      const left = Math.max(0, Math.round((price - disc) * 100) / 100);
+      $('#pcPrev').textContent = v > 0 ? L(`Presyo sa code: ₱${left}${left === 0 ? ' (libre ang Premium)' : ''}`, `Price with the code: ₱${left}${left === 0 ? ' (Premium is free)' : ''}`) : '';
+    };
+    ['#pcVal', '#pcKind'].forEach((k) => ($(k).oninput = prev));
+    $('#pcF').onsubmit = async (e) => {
+      e.preventDefault();
+      const btn = $('button[type=submit]', e.target); btn.disabled = true;
+      try {
+        await api('POST', '/api/admin/promos', { code: $('#pcCode').value, kind: $('#pcKind').value, value: $('#pcVal').value, expires_at: dateMs($('#pcExp').value), max_uses: $('#pcMax').value, note: $('#pcNote').value });
+        toast(L('Nagawa ang promo code.', 'Promo code created.')); admPromos(el);
+      } catch (err) { $('#pcErr').textContent = err.message; btn.disabled = false; }
+    };
+    const find = (id) => r.rows.find((x) => x.id === +id);
+    $$('[data-tog]', el).forEach((b) => (b.onclick = async () => {
+      try { await api('PATCH', '/api/admin/promos/' + b.dataset.tog, { active: b.dataset.on === '1' }); admPromos(el); } catch (e) { toast(e.message); }
+    }));
+    $$('[data-del]', el).forEach((b) => (b.onclick = async () => {
+      if (!(await confirmBox(L('Burahin ang promo code?', 'Delete the promo code?'), esc(find(b.dataset.del).code), L('Burahin', 'Delete'), true))) return;
+      try { await api('DELETE', '/api/admin/promos/' + b.dataset.del); toast(L('Nabura.', 'Deleted.')); admPromos(el); } catch (e) { toast(e.message); }
+    }));
+    $$('[data-edit]', el).forEach((b) => (b.onclick = () => {
+      const x = find(b.dataset.edit);
+      modal(`<h2 style="margin-top:0">${esc(x.code)} · −${esc(off(x))}</h2>
+        <label for="peExp">${L('Hanggang kailan (blangko = walang katapusan)', 'Ends on (blank = no end date)')}</label><input type="date" id="peExp" value="${dateIn(x.expires_at)}">
+        <label for="peMax">${L('Ilang tao ang pwedeng gumamit (0 = walang limit)', 'How many people can use it (0 = no limit)')}</label><input type="number" id="peMax" min="0" step="1" value="${x.max_uses}">
+        <label for="peNote">${L('Tala', 'Note')}</label><input type="text" id="peNote" maxlength="200" value="${esc(x.note)}">
+        <div class="err" id="peErr"></div>
+        <div class="row" style="justify-content:flex-end;margin-top:12px"><button class="btn ghost" data-x>${L('Bumalik', 'Back')}</button><button class="btn" data-go>${L('I-save', 'Save')}</button></div>`, (bg, close) => {
+        $('[data-x]', bg).onclick = close;
+        $('[data-go]', bg).onclick = async () => {
+          try { await api('PATCH', '/api/admin/promos/' + x.id, { expires_at: dateMs($('#peExp', bg).value), max_uses: $('#peMax', bg).value, note: $('#peNote', bg).value }); close(); toast(L('Na-save.', 'Saved.')); admPromos(el); } catch (e) { $('#peErr', bg).textContent = e.message; }
+        };
+      });
+    }));
+    $$('[data-uses]', el).forEach((b) => (b.onclick = async () => {
+      try {
+        const rows = await api('GET', `/api/admin/promos/${b.dataset.uses}/uses`);
+        modal(`<div class="row between"><h2 style="margin:0">${esc(find(b.dataset.uses).code)}</h2><button class="btn ghost small" data-x>${L('Isara', 'Close')}</button></div>
+          <div class="list" style="margin-top:10px">${rows.map((u) => `<div class="list-item"><div class="grow"><b>${esc(u.name || L('(nabura)', '(deleted)'))}</b> <span class="muted small">${esc(u.email || '')}</span>
+          <div class="muted small">${fmtDate(u.at)} · ₱${esc(u.price)} − ₱${esc(u.discount)} = <b>₱${esc(u.amount)}</b></div></div></div>`).join('') || `<p class="muted">${L('Wala pa.', 'None yet.')}</p>`}</div>`, (bg, close) => { $('[data-x]', bg).onclick = close; });
+      } catch (e) { toast(e.message); }
+    }));
   }
   async function admSets(el) {
     const rows = (await api('GET', '/api/admin/sets')).filter((r) => !Undo.waiting('set:' + r.id)); // deleted ones on the Undo bar are left out
@@ -3215,6 +3348,8 @@
     admin_settings: L('Binago ang settings', 'Changed settings'), admin_pay_qr: L('Binago ang QR ng bayad', 'Changed a payment QR'), admin_set_new: L('Bagong exam set', 'New exam set'), admin_set_delete: L('Binura ang exam set', 'Deleted an exam set'),
     admin_question_add: L('Bagong tanong', 'New question'), admin_question_edit: L('In-edit ang tanong', 'Edited a question'), admin_question_hide: L('Itinago ang tanong', 'Hid a question'), admin_question_import: L('Import ng tanong', 'Imported questions'),
     payment_approve: L('Na-approve ang bayad', 'Approved a payment'), payment_reject: L('Ni-reject ang bayad', 'Rejected a payment'), payment_paid_online: L('Bayad online', 'Paid online'),
+    promo_create: L('Bagong promo code', 'New promo code'), promo_update: L('Binago ang promo code', 'Changed a promo code'), promo_delete: L('Binura ang promo code', 'Deleted a promo code'),
+    promo_redeem: L('Ginamit ang 100% promo code', 'Used a 100% promo code'),
   });
   async function admAudit(el, filter = 'all', q = '') {
     const r = await api('GET', `/api/admin/audit?filter=${filter}&q=${encodeURIComponent(q)}`);

@@ -18,7 +18,7 @@ const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<
 function receiptHtml(r) {
   const row = (k, v) => `<tr><td style="padding:4px 0;color:#5b6478">${k}</td><td style="text-align:right">${esc(v)}</td></tr>`;
   return `<h3 style="margin:16px 0 6px;font-size:16px">Resibo ${esc(r.no)}</h3><table style="width:100%;border-collapse:collapse;font-size:14px">
-    ${r.business ? row('Mula kay', r.business) : ''}${row('Petsa', dateText(r.date))}${row('Halaga', '₱' + r.amount)}${row('Paraan', r.method)}${r.reference ? row('Reference', r.reference) : ''}
+    ${r.business ? row('Mula kay', r.business) : ''}${row('Petsa', dateText(r.date))}${r.promo_code ? row('Promo code', `${r.promo_code} (−₱${r.discount} mula ₱${r.list_price})`) : ''}${row('Halaga', '₱' + r.amount)}${row('Paraan', r.method)}${r.reference ? row('Reference', r.reference) : ''}
     ${r.period_from ? row('Premium', `${dateText(r.period_from)} – ${dateText(r.period_to)}`) : ''}</table>
     <p style="font-size:12px;color:#5b6478">Patunay ito ng bayad sa app. Hindi ito BIR invoice.</p>`;
 }
