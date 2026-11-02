@@ -3,7 +3,7 @@
   'use strict';
   const $app = document.getElementById('app');
   const LETTERS = ['A', 'B', 'C', 'D'];
-  const APP_VERSION = '1.22.0'; // keep in step with package.json and docs/DOKUMENTASYON.md
+  const APP_VERSION = '1.23.0'; // keep in step with package.json and docs/DOKUMENTASYON.md
   const S = { user: null, meta: null, exam: null, timer: null, saveT: null };
 
   /* ---------------- helpers ---------------- */
@@ -575,6 +575,8 @@
   // The level of an exam: from the mock exam itself, or from the practice title "Practice (Subpro): ...".
   const levelOf = (a) => (a && LEVELS[a.mode] ? a.mode : /^Practice \((Pro|Subpro)\)/.exec((a && a.title) || '')?.[1] === 'Subpro' ? 'subpro'
     : /^Practice \(Pro\)/.test((a && a.title) || '') ? 'pro' : null);
+  // In the exam, each item is counted as "Pro 12" or "Subpro 12" (the exam's level) instead of "Question 12".
+  const qTag = (a) => ((levelOf(a) || myLevel()) === 'subpro' ? 'Subpro' : 'Pro');
   const levelChip = (lv, cls = '') => (lv ? `<span class="lvl-chip ${lv} ${cls}" title="${LEVELS[lv][1]}">${LEVELS[lv][0]}</span>` : '');
   const setNo = (a) => (/Set (\d+)/.exec((a && a.title) || '') || [])[1];
   const setChip = (a) => (setNo(a) ? `<span class="set-chip">Set ${setNo(a)}</span>` : '');
@@ -1203,8 +1205,9 @@
   const F = { key: null, el: null, t: 0 }; // the open section; its key survives a refresh of the same screen
   store.del('cse-fold'); // older versions remembered open sections
   // stay: the section does not close by itself after 30 seconds (Admin → Settings, where the admin fills in forms).
-  function fold(key, title, body, { card = true, id = '', stay = false } = {}) {
-    return `<details class="fold${card ? ' card' : ' plain'}" data-fold="${key}"${id ? ` id="${id}"` : ''}${stay ? ' data-stay="1"' : ''}${F.key === key ? ' open' : ''}>
+  // open: also starts open (a menu that holds the section a link asked for).
+  function fold(key, title, body, { card = true, id = '', stay = false, cls = '', open = false } = {}) {
+    return `<details class="fold${card ? ' card' : ' plain'}${cls ? ' ' + cls : ''}" data-fold="${key}"${id ? ` id="${id}"` : ''}${stay ? ' data-stay="1"' : ''}${F.key === key || open ? ' open' : ''}>
       <summary><span class="fold-title">${title}</span><span class="chev" aria-hidden="true"></span></summary><div class="fold-body">${body}</div></details>`;
   }
   const topGap = () => { const bar = $('.topbar'); return (bar ? bar.getBoundingClientRect().bottom : 0) + 8; };
@@ -1239,7 +1242,7 @@
   document.addEventListener('toggle', (e) => {
     const d = e.target;
     if (!d.matches || !d.matches('details.fold')) return;
-    if (d.open) { F.key = d.dataset.fold; F.el = d; foldTimer(); } else if (d === F.el) { clearTimeout(F.t); F.el = null; F.key = null; }
+    if (d.open) { F.key = d.dataset.fold; F.el = d; foldTimer(); } else if (d === F.el || (F.el && d.contains(F.el))) { clearTimeout(F.t); F.el = null; F.key = null; }
   }, true);
   // Using the open section starts the 30 seconds over.
   ['pointerdown', 'keydown', 'input', 'wheel', 'touchmove', 'focusin'].forEach((ev) => document.addEventListener(ev, (e) => {
@@ -1718,10 +1721,12 @@
         `🆓 <b>Free plan:</b> ${S.config.free.practice_daily} practice a day (up to ${S.config.free.practice_items} questions), and ${S.config.free.mock_daily === 1 ? 'one' : S.config.free.mock_daily} mock exam a day (Set 1 only). The review shows only the letter of the correct answer. Has ads and needs internet.<br>⭐ <b>Premium:</b> no limits and no ads, all exam sets, full review with explanations, PDF/print/email of results, and works offline. Get Premium →`)}</a>` : ''}
       ${freeMockDone ? `<div class="notice" style="margin:8px 0;background:var(--warn-soft)">${L('✅ Nagamit mo na ang libreng mock exam ngayong araw. Bumalik bukas, o <a href="#/premium">kumuha ng Premium</a> para walang limit.', '✅ You have used today\'s free mock exam. Come back tomorrow, or <a href="#/premium">get Premium</a> for no limit.')}</div>` : ''}
       <p class="muted" style="margin-top:0">${L('Pumili ng mock exam. Nasa <a href="#/practice">Practice</a> ang practice kada subject.', 'Choose a mock exam. Practice by subject is in <a href="#/practice">Practice</a>.')}</p>
-      ${open.length ? `<div class="notice" style="margin:12px 0">${L('May hindi ka pa natatapos na exam:', 'You have an unfinished exam:')} <b>${esc(open[0].title)}</b>. <a href="#/exam/${open[0].id}">${L('Ituloy ito →', 'Continue →')}</a></div>` : ''}
       ${list.some((a) => a.pending && a.finished_at) ? `<p class="muted small">${L('⏳ May mga resulta kang ginawa offline. Ise-save ang mga ito online kapag may internet na.', '⏳ You have results made offline. They will be saved online when the internet is back.')}</p>` : ''}
       ${levelHome()}
-      ${fold('home-recent', `<h2>${L('Mga huling exam', 'Recent exams')}</h2>`, done.length ? `<div class="list">${done.slice(0, 5).map(attemptRow).join('')}</div><p><a href="#/history">${L('Tingnan lahat →', 'See all →')}</a></p>` : `<div class="card empty">${L('Wala ka pang natatapos na exam. Subukan ang isang mock exam!', 'You have not finished an exam yet. Try a mock exam!')}</div>`, { card: false })}
+      <section class="home-open">
+        <h2>${L('Mga hindi natapos na exam', 'Unfinished exams')}${open.length ? ` <span class="pill warn">${open.length}</span>` : ''}</h2>
+        ${open.length ? `<div class="list">${open.map(attemptRow).join('')}</div>` : `<div class="card empty">${L('Wala kang hindi natapos na exam. 👍', 'You have no unfinished exams. 👍')}${done.length ? ` <a href="#/history">${L('Tingnan ang mga resulta →', 'See your results →')}</a>` : ''}</div>`}
+      </section>
     `);
     $$('.level-switch [data-level]').forEach((b) => (b.onclick = () => { if (b.dataset.level !== myLevel()) { setLevel(b.dataset.level); paintHome(l0, s0); } }));
     $$('[data-set1]').forEach((b) => (b.onclick = () => startSet1(b.dataset.set1)));
@@ -1747,10 +1752,10 @@
   function attemptRow(a) {
     const p = pct(a.score, a.total);
     const pass = p >= (a.passing || 80);
-    return `<a class="list-item" href="#/result/${a.id}">
+    return `<a class="list-item" href="#/${a.finished_at ? 'result' : 'exam'}/${a.id}">
       ${showLevel() ? levelChip(levelOf(a)) : ''}
       <div class="grow"><div class="ellipsis"><b>${esc(a.title)}</b></div><div class="muted small">${fmtDate(a.finished_at || a.started_at)}${a.pending ? ' · ⏳ Offline' : ''}</div></div>
-      ${a.finished_at ? `<span class="pill ${a.mode === 'practice' ? '' : pass ? 'ok' : 'bad'}">${p}%</span>` : `<span class="pill warn">${L('Hindi tapos', 'Not finished')}</span>`}
+      ${a.finished_at ? `<span class="pill ${a.mode === 'practice' ? '' : pass ? 'ok' : 'bad'}">${p}%</span>` : `<span class="pill warn">${L('Ituloy', 'Continue')} ›</span>`}
     </a>`;
   }
 
@@ -2174,9 +2179,10 @@
     const partNo = parts.indexOf(it.subject) + 1;
     const roman = ['I', 'II', 'III', 'IV', 'V'][partNo - 1] || partNo;
     const last = idx === a.items.length - 1;
+    const tag = qTag(a);
     page.innerHTML = `
       <div class="q-section">${a.mode === 'practice' ? esc(subjName(it.subject)) : `Part ${roman}: ${esc(subjName(it.subject))}`}${sectionStart(a.items, idx) && a.mode !== 'practice' ? ` <span class="pill">${L('Bagong bahagi', 'New part')}</span>` : ''}</div>
-      <div class="row between"><div class="q-num">${L(`Tanong ${idx + 1} sa ${a.items.length}`, `Question ${idx + 1} of ${a.items.length}`)} · ${esc(it.topic)}</div>${ex.flags.has(idx) ? `<span class="pill warn">⚑ ${L('Minarkahan', 'Marked')}</span>` : ''}</div>
+      <div class="row between"><div class="q-num">${L(`${tag} ${idx + 1} sa ${a.items.length}`, `${tag} ${idx + 1} of ${a.items.length}`)} · ${esc(it.topic)}</div>${ex.flags.has(idx) ? `<span class="pill warn">⚑ ${L('Minarkahan', 'Marked')}</span>` : ''}</div>
       ${it.passage ? `<div class="passage">${esc(it.passage)}</div>` : ''}
       <div class="q-text"><span class="q-no">${idx + 1}.</span> ${esc(it.question)}</div>
       <div class="choices">${it.choices.map((c, i) => {
@@ -2196,7 +2202,7 @@
     const n = Object.keys(ex.answers).length;
     $('#answered').textContent = L(`${n}/${a.items.length} nasagutan`, `${n}/${a.items.length} answered`);
     $('#prog').style.width = pct(n, a.items.length) + '%';
-    $('#pageNo').textContent = L(`Tanong ${idx + 1} / ${a.items.length}`, `Question ${idx + 1} / ${a.items.length}`);
+    $('#pageNo').textContent = `${tag} ${idx + 1} / ${a.items.length}`;
     $('#flag').classList.toggle('on', ex.flags.has(idx));
     if (dir) window.scrollTo(0, 0);
     if (ghost) flip(page, ghost, dir);
@@ -2470,12 +2476,13 @@
     const { list, stats } = withLocal(l0, s0);
     const trend = stats.mocks.slice(-10), mocks = stats.mocks;
     const best = mocks.length ? Math.max(...mocks.map((m) => m.pct)) : null;
-    // Premium only: the streak and "Go over your mistakes" cards (Home stays clean for every user).
+    // "All exams" is at the top. Premium only: the streak and "Go over your mistakes" cards are at the bottom
+    // (Home stays clean for every user).
     const prem = S.premium ? `${streakCard()}
       <a class="card review-link" href="#/review"><span class="ic" aria-hidden="true">🎯</span><span class="grow"><b>${L('Balikan ang mga mali', 'Go over your mistakes')}</b><span class="muted small">${L('Sagutan ulit ang mga namali mo at alamin ang pinakamahinang topic mo.', 'Answer your mistakes again and see your weakest topics.')}</span></span><span aria-hidden="true">›</span></a>` : '';
     shell('history', `
       <h1>${L('Mga resulta', 'Results')}</h1>
-      ${prem}
+      ${fold('history-all', `<h2>${L('Lahat ng exam', 'All exams')}</h2>${list.length ? `<span class="pill">${list.length}</span>` : ''}`, list.length ? `<div class="list">${list.map(attemptRow).join('')}</div>` : `<div class="card empty">${L('Wala pang resulta.', 'No results yet.')}</div>`, { card: false, cls: 'top' })}
       ${fold('history-progress', `<h2>${L('Ang progress mo', 'Your progress')}</h2>`, `
       <div class="grid stats">
         <div class="card stat"><div class="v">${stats.attempts}</div><div class="l">${L('Natapos na exam/practice', 'Exams/practice finished')}</div></div>
@@ -2490,7 +2497,7 @@
           ${trend.map((m) => `<div title="${m.pct}%" style="flex:1;max-width:48px;height:${m.pct * 1.3}px;background:${m.pct >= 80 ? 'var(--ok)' : 'var(--primary)'};border-radius:6px 6px 0 0"></div>`).join('')}
         </div><p class="muted small">${L('Bawat bar ay isang mock exam (luma → bago).', 'Each bar is one mock exam (old → new).')}</p></div>` : ''}
       ${Object.keys(stats.subjects).length ? `<div class="card" style="margin-top:12px"><h3>${L('Kabuuang score kada subject', 'Overall score by subject')}</h3>${subjectBars(stats.subjects)}<p class="muted small">${L('Tip: pag-aralan muna ang subject na may pinakamababang score.', 'Tip: study the subject with the lowest score first.')} <a href="#/review">${L('Tingnan ang mahihinang topic →', 'See your weak topics →')}</a></p></div>` : ''}
-      ${fold('history-all', `<h2>${L('Lahat ng exam', 'All exams')}</h2>${list.length ? `<span class="pill">${list.length}</span>` : ''}`, list.length ? `<div class="list">${list.map(attemptRow).join('')}</div>` : `<div class="card empty">${L('Wala pang resulta.', 'No results yet.')}</div>`, { card: false })}`);
+      ${prem ? `<div class="prem-cards">${prem}</div>` : ''}`);
     $$('.list-item').forEach((el) => {
       const id = el.getAttribute('href').split('/').pop();
       const a = list.find((x) => String(x.id) === id && !x.pending) || list.find((x) => String(x.id) === id);
@@ -2515,11 +2522,11 @@
         <div class="row between lang-row"><span class="small"><b>${L('Wika', 'Language')}</b> <span class="muted">· ${L('pindutin ang flag para magpalit', 'tap the flag to switch')}</span></span>${flagBtn('big')}</div>
         ${showLevel() ? `<div class="row between lang-row"><span class="small"><b>Level</b></span><div class="seg lvl-seg">${Object.entries(LEVELS).map(([k, [c, n]]) => `<button type="button" class="lvl-opt ${k} ${myLevel() === k ? 'active' : ''}" data-level="${k}" title="${n}">${c}</button>`).join('')}</div></div>` : ''}
       </div>
-      <div class="stack">
-      ${fold('acc-premium', `<h3>⭐ Premium</h3><span class="pill${premOn ? ' ok' : ''}">${premOn ? L('Aktibo', 'Active') : S.user.role === 'admin' ? 'Admin' : S.config.premium_required ? L('Hindi aktibo', 'Not active') : L('Libre', 'Free')}</span>`, `
+      ${fold('acc-menu', `<h2>${L('Mga setting at iba pa', 'Settings and more')}</h2>`, `<div class="menu-list">
+      ${fold('acc-premium', `<h3>Premium</h3><span class="pill${premOn ? ' ok' : ''}">${premOn ? L('Aktibo', 'Active') : S.user.role === 'admin' ? 'Admin' : S.config.premium_required ? L('Hindi aktibo', 'Not active') : L('Libre', 'Free')}</span>`, `
         <p class="muted small" style="margin:0 0 10px">${premNote}</p>
         <a class="btn${premOn ? ' secondary' : ''}" href="#/premium">${premOn ? L('Tingnan o i-extend ang Premium', 'See or extend Premium') : L('Kumuha ng Premium', 'Get Premium')} ›</a>`)}
-      ${fold('acc-help', `<h3>❓ ${L('Tulong at gabay', 'Help and guide')}</h3>`, `
+      ${fold('acc-help', `<h3>${L('Tulong at gabay', 'Help and guide')}</h3>`, `
         <p class="muted small" style="margin:0 0 10px">${L('Paano gamitin ang app, mga madalas itanong, at ulitin ang gabay.', 'How to use the app, common questions, and replay the guide.')}</p>
         <div class="row"><a class="btn secondary" href="#/help">${L('Buksan ang Tulong', 'Open Help')} ›</a><button type="button" class="btn ghost" id="accTour">▶ ${L('Ipakita ulit ang gabay', 'Show the guide again')}</button></div>`)}
       ${fold('acc-look', `<h3>${L('Itsura at madaling basahin', 'Look and easy reading')}</h3>`, `
@@ -2531,7 +2538,7 @@
         <label class="check"><input type="checkbox" id="axContrast" ${a11y().contrast ? 'checked' : ''}> ${L('Mas malinaw na kulay (high contrast)', 'Stronger colors (high contrast)')}</label>
         <label class="check"><input type="checkbox" id="axMotion" ${a11y().motion ? 'checked' : ''}> ${L('Bawasan ang galaw (walang page-flip animation)', 'Less motion (no page-flip animation)')}</label>
         <p class="muted small" style="margin:10px 0 0">${L('Para sa lahat ito, libre man o Premium. Gumagana rin ang screen reader (TalkBack, VoiceOver, Narrator): may pangalan ang bawat button at binabasa ang bawat bagong tanong.', 'This is for everyone, free or Premium. Screen readers work too (TalkBack, VoiceOver, Narrator): every button has a name and each new question is read out.')}</p>`, { id: 'lookCard' })}
-      ${fold('acc-remind', `<h3>⏰ ${L('Paalala sa pag-aaral', 'Study reminder')}</h3><span class="pill${Reminders.get().on ? ' ok' : ''}" id="rmPill">${Reminders.get().on ? fmtClock(Reminders.get().time) : L('Naka-off', 'Off')}</span>`, `
+      ${fold('acc-remind', `<h3>${L('Paalala sa pag-aaral', 'Study reminder')}</h3><span class="pill${Reminders.get().on ? ' ok' : ''}" id="rmPill">${Reminders.get().on ? fmtClock(Reminders.get().time) : L('Naka-off', 'Off')}</span>`, `
         <p class="muted small" style="margin:0 0 10px">${L('Isang paalala araw-araw sa oras na pipiliin mo, kung hindi ka pa nakakapag-practice o exam sa araw na iyon. Tumutulong ito para tuloy ang streak mo 🔥.', 'One reminder a day at the time you choose, if you have not practiced or taken an exam that day. It helps keep your streak 🔥.')}</p>
         <label class="check"><input type="checkbox" id="rmOn" ${Reminders.get().on ? 'checked' : ''}> ${L('Paalalahanan ako araw-araw', 'Remind me every day')}</label>
         <label for="rmTime">${L('Oras', 'Time')}</label><input type="time" id="rmTime" value="${esc(Reminders.get().time)}" style="max-width:180px">
@@ -2539,12 +2546,12 @@
         <p class="muted small" style="margin:8px 0 0">${Reminders.native() ? L('Sa app na ito, darating ang paalala bilang notification kahit sarado ang app at kahit offline.', 'In this app, the reminder comes as a notification even when the app is closed and offline.')
           : L('Sa website at Windows app, lalabas ang notification habang bukas ang app (o nasa background). Para kahit sarado, i-on ang email, o gamitin ang Android/iPhone app.', 'On the website and Windows app, the notification shows while the app is open (or in the background). For when it is closed, turn on email, or use the Android/iPhone app.')}</p>
         <button type="button" class="btn ghost small" id="rmTest" style="margin-top:10px">▶ ${L('Subukan ang paalala', 'Test the reminder')}</button>`)}
-      ${fold('acc-backup', `<h3>☁️ ${L('Backup at restore', 'Backup and restore')}</h3><span class="pill ok">${L('Naka-on', 'On')}</span>`, `<div id="bkCard"></div>`)}
-      ${fold('acc-sec', `<h3>🔐 ${L('Seguridad: mga huling login', 'Security: recent logins')}</h3>`, `<div id="secCard"><p class="muted small" style="margin:0">${L('Buksan para makita…', 'Open to see…')}</p></div>`)}
+      ${fold('acc-backup', `<h3>${L('Backup at restore', 'Backup and restore')}</h3><span class="pill ok">${L('Naka-on', 'On')}</span>`, `<div id="bkCard"></div>`)}
+      ${fold('acc-sec', `<h3>${L('Seguridad: mga huling login', 'Security: recent logins')}</h3>`, `<div id="secCard"><p class="muted small" style="margin:0">${L('Buksan para makita…', 'Open to see…')}</p></div>`)}
       ${fold('acc-bio', `<h3>${L('Mabilis na login', 'Quick login')}</h3><span class="pill ok" id="bioPill" style="display:none"></span>${S.premium ? '' : '<span class="pill">🔒 Premium</span>'}`, S.premium
         ? `<div id="bioCard"><p class="muted small" style="margin:0">${L('Tinitingnan…', 'Checking…')}</p></div>`
         : `<p class="muted small" style="margin:0 0 10px">${L('Mag-login gamit ang face, fingerprint o Windows Hello, walang password. Para sa Premium ito. Pwede ka pa ring mag-login gamit ang <b>code sa email</b>.', 'Log in with your face, fingerprint or Windows Hello, no password. This is for Premium. You can still log in with an <b>email code</b>.')}</p><a class="btn secondary" href="#/premium">⭐ ${L('Kumuha ng Premium', 'Get Premium')}</a>`)}
-      ${fold('acc-sound', `<h3>🔊 ${L('Tunog', 'Sounds')}</h3><span class="pill" id="sndPill">${Sound.get().on ? L('Naka-on', 'On') : L('Naka-off', 'Off')}</span>`, `
+      ${fold('acc-sound', `<h3>${L('Tunog', 'Sounds')}</h3><span class="pill" id="sndPill">${Sound.get().on ? L('Naka-on', 'On') : L('Naka-off', 'Off')}</span>`, `
         <p class="muted small" style="margin:0 0 10px">${L('Maiikling tunog kapag pumindot, pag-flip ng pahina sa exam, tama o mali sa practice, natapos ang exam, at 5 minutong natitira. Gumagana offline.', 'Short sounds when you tap, a page turn in the exam, right or wrong in practice, when an exam ends, and at 5 minutes left. Works offline.')}</p>
         <label class="check"><input type="checkbox" id="sndOn" ${Sound.get().on ? 'checked' : ''}> ${L('Naka-on ang tunog', 'Sounds on')}</label>
         ${navigator.vibrate ? `<label class="check"><input type="checkbox" id="sndBuzz" ${Sound.get().buzz !== false ? 'checked' : ''}> ${L('Bahagyang vibrate kapag pumindot', 'Light vibration when you tap')}</label>` : ''}
@@ -2560,12 +2567,12 @@
         <p class="muted small" style="margin:0 0 10px">${L('<b>Android (Chrome):</b> pindutin ang ⋮ menu → "Add to Home screen" o "Install app".<br><b>iPhone (Safari):</b> pindutin ang Share (□↑) → "Add to Home Screen".<br>Sa Premium, gumagana ito kahit offline. Kailangan ng internet para mag-login, magbayad, at makatanggap ng email.',
           '<b>Android (Chrome):</b> tap the ⋮ menu → "Add to Home screen" or "Install app".<br><b>iPhone (Safari):</b> tap Share (□↑) → "Add to Home Screen".<br>With Premium, it works even offline. You need internet to log in, pay, and get emails.')}</p>
         <button class="btn secondary" id="install" hidden>${L('I-install ang app', 'Install the app')}</button>`)}
-      ${fold('acc-fix', `<h3>🛠️ Auto Fix</h3><span class="pill ok" id="fixPill">${L('Naka-on', 'On')}</span>`, `<div id="fixCard"></div>`)}
+      ${fold('acc-fix', `<h3>Auto Fix</h3><span class="pill ok" id="fixPill">${L('Naka-on', 'On')}</span>`, `<div id="fixCard"></div>`)}
       ${fold('acc-about', `<h3>${L('Tungkol sa exam', 'About the exam')}</h3>`, `
         <p class="muted small" style="margin:0">${L('Sinusunod ng mock exam ang format ng Career Service Exam (pen and paper test) ng Civil Service Commission: Professional na 170 tanong sa loob ng 3 oras at 10 minuto, at Subprofessional na 165 tanong sa loob ng 2 oras at 40 minuto, lahat ay may 4 na pagpipilian at 80% ang passing rate. Hindi inilalabas ng CSC ang eksaktong bilang kada subject, kaya tantiya ang hati ng mga tanong. Ang app na ito ay hindi opisyal na produkto ng CSC.',
           'The mock exam follows the format of the Civil Service Commission\'s Career Service Exam (pen and paper test): Professional has 170 questions in 3 hours and 10 minutes, and Subprofessional has 165 questions in 2 hours and 40 minutes, all with 4 choices and an 80% passing rate. The CSC does not publish the exact count per subject, so the split of questions is an estimate. This app is not an official CSC product.')}</p>
         <p class="muted small" style="margin:10px 0 0">${L('Bersyon', 'Version')} ${APP_VERSION}</p>`)}
-      </div>`);
+      </div>`, { cls: 'acc-menu', stay: true, open: !!F.key && F.key.startsWith('acc-') && F.key !== 'acc-menu' })}`);
     const pick = (sel, b) => $$(sel).forEach((x) => { x.classList.toggle('active', x === b); x.setAttribute('aria-pressed', String(x === b)); });
     $$('#themes [data-theme]').forEach((b) => (b.onclick = () => {
       store.set('cse-look', { ...(look() || { zoom: 1 }), theme: b.dataset.theme });

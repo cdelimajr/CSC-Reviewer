@@ -608,20 +608,50 @@ html[data-theme] #undo .u-time { background: var(--primary); }
 #updating b { display: block; font-size: 1.125rem; margin-top: 14px; }
 .upd-spin { width: 44px; height: 44px; margin: 0 auto; border-radius: 50%; border: 4px solid var(--line); border-top-color: var(--primary); animation: updspin .9s linear infinite; }
 @keyframes updspin { to { transform: rotate(360deg); } }
-/* Exam on a computer (wide screen + mouse): a bigger test paper with bigger question and choices, so they are easy to read.
+/* Exam on a computer (wide screen + mouse): a big test paper with big question and choices, so they are easy to read
+   from a normal sitting distance. The top bar (Pro/Subpro number, timer, buttons) grows too.
    Phones and tablets keep the normal size. It grows a little more on very wide screens. */
 @media (min-width: 1024px) and (hover: hover) and (pointer: fine) {
-  .paper-desk { max-width: min(1100px, 92vw); padding-top: 22px; }
-  .exam-top .inner { max-width: min(1100px, 92vw); }
-  .paper { padding: 34px 44px 84px 56px; background-image: linear-gradient(to right, transparent 30px, var(--margin-line) 30px, var(--margin-line) 31px, transparent 31px); }
-  .paper .q-section { font-size: 0.9375rem; }
-  .paper .q-num { font-size: 1rem; }
-  .paper .q-text { font-size: clamp(1.625rem, 0.5rem + 1.4vw, 2.25rem); line-height: 1.5; margin: 12px 0 24px; }
-  .paper .passage { font-size: clamp(1.1875rem, 0.55rem + 0.75vw, 1.5rem); line-height: 1.6; padding: 16px 20px; max-height: calc(45vh / var(--z)); }
-  .paper .choices { gap: 14px; }
-  .paper .choice { font-size: clamp(1.25rem, 0.5rem + 1vw, 1.75rem); line-height: 1.45; padding: 18px 20px; gap: 16px; min-height: 68px; align-items: center; }
-  .paper .choice .letter { flex-basis: 40px; height: 40px; font-size: 1.125rem; }
-  .paper .page-no { font-size: 1rem; }
-  .exam-count b { font-size: 1.0625rem; }
-  .timer { font-size: 1.375rem; }
+  .paper-desk { max-width: min(1320px, 95vw); padding-top: 24px; }
+  .exam-top { padding-top: 12px; padding-bottom: 12px; }
+  .exam-top .inner { max-width: min(1320px, 95vw); gap: 14px; }
+  .exam-top .btn.small { font-size: 1.25rem; min-height: 50px; min-width: 54px; padding: 8px 16px; }
+  .exam-count b { font-size: 1.5rem; }
+  .exam-count span { font-size: 1.0625rem; }
+  .timer { font-size: 1.875rem; padding: 6px 16px; border-radius: 12px; }
+  .exam-top + .progress { height: 8px; }
+  .privacy-strip { font-size: 0.9375rem; padding: 6px 16px; }
+  .paper { padding: 40px 56px 96px 72px; background-image: linear-gradient(to right, transparent 38px, var(--margin-line) 38px, var(--margin-line) 39px, transparent 39px); }
+  .paper .q-section { font-size: 1.125rem; }
+  .paper .q-section .pill { font-size: 0.9375rem; }
+  .paper .q-num { font-size: 1.25rem; }
+  .paper .q-text { font-size: clamp(1.875rem, 0.6rem + 1.75vw, 2.75rem); line-height: 1.5; margin: 16px 0 28px; }
+  .paper .passage { font-size: clamp(1.375rem, 0.6rem + 0.95vw, 1.875rem); line-height: 1.6; padding: 20px 24px; max-height: calc(48vh / var(--z)); }
+  .paper .choices { gap: 16px; }
+  .paper .choice { font-size: clamp(1.5rem, 0.6rem + 1.25vw, 2.125rem); line-height: 1.45; padding: 20px 24px; gap: 20px; min-height: 80px; align-items: center; border-width: 2px; }
+  .paper .choice .letter { flex-basis: 50px; height: 50px; font-size: 1.375rem; }
+  .paper .explain { font-size: 1.375rem; line-height: 1.55; padding: 18px 22px; }
+  .paper .page-no { font-size: 1.25rem; bottom: 24px; }
+  .paper-end { font-size: 1.25rem; }
+  .paper-end .btn { font-size: 1.25rem; padding: 14px 28px; }
+  .corner { width: 72px; height: 72px; }
+  .corner::before { width: 40px; height: 40px; }
+  .corner:hover::before, .corner.pressed::before { width: 52px; height: 52px; }
 }
+
+/* Home: the unfinished exams, right below the mock exam. */
+.home-open { margin-top: 24px; }
+.home-open h2 { margin: 0 0 10px; }
+/* Results: "All exams" at the top, the Premium streak and mistakes cards at the bottom. */
+.fold.plain.top { margin-top: 12px; }
+.prem-cards { margin-top: 24px; }
+/* Account: every section other than name, language and level is in one drop-down menu,
+   shown as a plain list of rows (each row opens and closes too). No icons in front of the rows. */
+.acc-menu { margin-top: 14px; }
+.acc-menu .menu-list { margin: 0 -18px -18px; border-top: 1px solid var(--line); }
+.acc-menu .menu-list > .fold.card { background: transparent; box-shadow: none; border: 0; border-radius: 0; border-bottom: 1px solid var(--line); margin: 0; padding: 14px 18px; }
+.acc-menu .menu-list > .fold.card:last-child { border-bottom: 0; }
+.acc-menu .menu-list > .fold > summary h3 { font-size: 1rem; font-weight: 600; }
+.acc-menu .menu-list > .fold .chev { width: 24px; height: 24px; background: transparent; }
+.acc-menu .menu-list > .fold[open] { background: var(--primary-soft); }
+.acc-menu .menu-list > .fold[open] > .fold-body { background: var(--card); border-radius: 12px; padding: 14px; }
