@@ -3,7 +3,7 @@
   'use strict';
   const $app = document.getElementById('app');
   const LETTERS = ['A', 'B', 'C', 'D'];
-  const APP_VERSION = '1.27.0'; // keep in step with package.json and docs/DOKUMENTASYON.md
+  const APP_VERSION = '1.28.0'; // keep in step with package.json and docs/DOKUMENTASYON.md
   const S = { user: null, meta: null, exam: null, timer: null, saveT: null };
 
   /* ---------------- helpers ---------------- */
@@ -1566,7 +1566,6 @@
     const p = await api('GET', '/api/premium');
     const until = p.until > Date.now() ? new Date(p.until).toLocaleDateString('en-PH', { year: 'numeric', month: 'long', day: 'numeric' }) : '';
     const pending = p.payments.find((x) => x.status === 'pending');
-    const openOther = p.payments.find((x) => x.status === 'checkout' && x.checkout_url && x.method !== 'Card');
     const manual = p.manual && p.methods.length; // manual payment: on in Admin → Settings, with at least one account
     const statusPill = { pending: `<span class="pill warn">${L('Hinihintay', 'Waiting')}</span>`, checkout: `<span class="pill warn">${L('Hindi pa bayad', 'Not paid yet')}</span>`, approved: `<span class="pill ok">${L('Bayad na', 'Paid')}</span>`, rejected: `<span class="pill bad">${L('Hindi approved', 'Not approved')}</span>`, expired: '<span class="pill">Expired</span>' };
     if (S.user.role !== 'admin' && p.active && p.until !== S.user.premium_until) refreshMe().catch(() => {}); // Premium just started or was extended
@@ -1593,9 +1592,8 @@
         ${p.online ? `
         <p class="small" style="margin:8px 0">${L('Magbayad online gamit ang <b>GCash, Maya, card, GrabPay, o QR Ph</b> (para sa bank apps) at iba pa. Awtomatikong bubukas ang Premium pagkatapos magbayad.', 'Pay online with <b>GCash, Maya, card, GrabPay, or QR Ph</b> (for bank apps) and more. Premium opens automatically after you pay.')}</p>
         <div class="err" id="perr"></div>
-        ${p.card ? `<button class="btn block" id="paycard" data-m="card">💳 ${L('Card (Visa / Mastercard)', 'Card (Visa / Mastercard)')}</button>
-        <p class="muted small" style="margin:4px 0 8px">${L('Card details lang ang ilalagay mo; naka-fill na ang pangalan at email mula sa account mo. Sa PayMongo mo ita-type ang card, hindi sa app na ito.', 'You only type the card details; your name and email are filled in from your account. You type the card on PayMongo, not in this app.')}</p>` : ''}
-        <button class="btn block ${p.card ? 'secondary' : ''}" id="paynow">${p.card ? '📱 ' : '💳 '}${openOther ? L('Ituloy ang pagbayad', 'Continue payment') : p.card ? L('GCash, Maya, QR Ph at iba pa', 'GCash, Maya, QR Ph and more') : L('Magbayad online', 'Pay online')}</button>` : ''}
+        <button class="btn block" id="paynow">💳 ${L('Ituloy ang pagbayad', 'Continue payment')}</button>
+        <p class="muted small" style="margin:4px 0 0">${L('Sa PayMongo ka pipili ng GCash, Maya, card (Visa / Mastercard), QR Ph at iba pa; naka-fill na ang pangalan at email mo.', 'On PayMongo you choose GCash, Maya, card (Visa / Mastercard), QR Ph and more; your name and email are already filled in.')}</p>` : ''}
         ${manual ? fold('pay-manual', `<h3>${p.online ? L('O magbayad nang manual', 'Or pay manually') : L('Magbayad nang manual', 'Pay manually')}</h3>${pending ? `<span class="pill warn">${L('Hinihintay', 'Waiting')}</span>` : ''}`, `
         <p class="small" style="margin:6px 0">${L('Pumili kung saan magbabayad:', 'Choose where to pay:')}</p>
         <div class="seg" id="pmSel">${p.methods.map((m, i) => `<button type="button" data-pm="${esc(m.id)}" class="${i ? '' : 'active'}">${esc(m.name)}${p.methods.filter((x) => x.name === m.name).length > 1 && m.account ? ` <span class="small muted">…${esc(m.account.replace(/\s/g, '').slice(-4))}</span>` : ''}</button>`).join('')}</div>
@@ -1612,10 +1610,10 @@
         <div class="muted small">${fmtDate(x.created_at)}${x.note ? ' · ' + esc(x.note) : ''}</div></div>${statusPill[x.status] || ''}${x.status === 'approved' ? `<button type="button" class="btn ghost small" data-rc="${x.id}" aria-label="${L('Resibo', 'Receipt')} ₱${esc(x.amount)}">🧾 ${L('Resibo', 'Receipt')}</button>` : ''}</div>`).join('')}</div>`, { card: false }) : ''}`);
     $$('[data-rc]').forEach((b) => (b.onclick = () => showReceipt(+b.dataset.rc)));
     // PayMongo's checkout page. In the phone and desktop apps it opens in the browser.
-    // 💳 Card opens PayMongo's card form right away (name and email already filled in from the account).
-    $$('#paynow, #paycard').forEach((b) => (b.onclick = async () => {
+    // One button; the user picks GCash, Maya, card, QR Ph, etc. on PayMongo's page.
+    $$('#paynow').forEach((b) => (b.onclick = async () => {
       b.disabled = true;
-      try { const r = await api('POST', '/api/payments/checkout', b.dataset.m ? { method: b.dataset.m } : {}); location.href = r.url; } catch (err) { $('#perr').textContent = err.message; b.disabled = false; }
+      try { const r = await api('POST', '/api/payments/checkout', {}); location.href = r.url; } catch (err) { $('#perr').textContent = err.message; b.disabled = false; }
     }));
     // Manual payment: the chosen account's details and QR code.
     let pm = p.methods[0], proof = null;
