@@ -174,6 +174,7 @@
     if (r.period_from) row(L('Premium mula', 'Premium period'), `${day(r.period_from)} - ${day(r.period_to)}`);
     row(L('Paraan ng bayad', 'Payment method'), r.method);
     if (r.reference) row(L('Reference no.', 'Reference no.'), r.reference);
+    if (r.promo_code) row('Promo code', `${r.promo_code} (-PHP ${r.discount} ${L('mula', 'from')} PHP ${r.list_price})`);
     doc.space(6).rule();
     doc.text(`${L('KABUUAN', 'TOTAL')}:  PHP ${r.amount}`, { size: 14, bold: true, color: GREEN, after: 6 });
     doc.text(L('Bayad na. Salamat!', 'Paid. Thank you!'), { size: 11, after: 10 });

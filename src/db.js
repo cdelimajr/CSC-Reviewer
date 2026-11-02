@@ -123,6 +123,32 @@ CREATE TABLE IF NOT EXISTS audit_log (
 );
 CREATE INDEX IF NOT EXISTS idx_audit_at ON audit_log(at);
 CREATE INDEX IF NOT EXISTS idx_audit_user ON audit_log(user_id, at);
+-- Promo codes for Premium (Admin → Promo codes). kind: percent or fixed (pesos off). 0 = no end date / no limit.
+CREATE TABLE IF NOT EXISTS promo_codes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  code TEXT NOT NULL UNIQUE COLLATE NOCASE,
+  kind TEXT NOT NULL DEFAULT 'percent',
+  value REAL NOT NULL,
+  expires_at INTEGER NOT NULL DEFAULT 0,
+  max_uses INTEGER NOT NULL DEFAULT 0,
+  used INTEGER NOT NULL DEFAULT 0,
+  active INTEGER NOT NULL DEFAULT 1,
+  note TEXT NOT NULL DEFAULT '',
+  created_by INTEGER,
+  created_at INTEGER NOT NULL
+);
+-- Who used each promo code (one use per account), and on which payment.
+CREATE TABLE IF NOT EXISTS promo_redemptions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  promo_id INTEGER NOT NULL,
+  user_id INTEGER NOT NULL,
+  payment_id INTEGER,
+  price TEXT NOT NULL DEFAULT '',
+  discount TEXT NOT NULL DEFAULT '',
+  amount TEXT NOT NULL DEFAULT '',
+  at INTEGER NOT NULL,
+  UNIQUE(promo_id, user_id)
+);
 `;
 
 // Convert libSQL rows into plain objects.
@@ -156,6 +182,11 @@ const db = {
       'ALTER TABLE payments ADD COLUMN period_to INTEGER',
       // Premium expiry emails already sent ("<premium_until>:<days before>").
       `ALTER TABLE users ADD COLUMN expiry_notice TEXT NOT NULL DEFAULT ''`,
+      // Promo code on a payment: the code, the price before the discount, and the discount (pesos).
+      'ALTER TABLE payments ADD COLUMN promo_id INTEGER',
+      'ALTER TABLE payments ADD COLUMN promo_code TEXT',
+      'ALTER TABLE payments ADD COLUMN list_price TEXT',
+      'ALTER TABLE payments ADD COLUMN discount TEXT',
     ]) {
       try { await client.execute(sql); } catch (e) { if (!/duplicate column/i.test(e.message)) throw e; }
     }

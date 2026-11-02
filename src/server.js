@@ -15,6 +15,7 @@ const audit = require('./audit');
 const review = require('./review');
 const jobs = require('./jobs');
 const releases = require('./releases');
+const promo = require('./promo');
 
 const PORT = Number(process.env.PORT) || 3000;
 const ADMIN_EMAIL = (process.env.ADMIN_EMAIL || '').trim().toLowerCase();
@@ -810,7 +811,7 @@ app.get('/api/premium', auth, wrap(async (req, res) => {
     for (const p of open) await syncCheckout(p).catch((e) => console.error('PayMongo check failed:', e.message));
     if (open.length) user = await db.get('SELECT * FROM users WHERE id = ?', user.id);
   }
-  const payments = await db.all(`SELECT id, amount, method, reference, status, note, created_at, decided_at, provider, (proof IS NOT NULL) AS has_proof,
+  const payments = await db.all(`SELECT id, amount, method, reference, status, note, created_at, decided_at, provider, (proof IS NOT NULL) AS has_proof, promo_code, discount,
     CASE WHEN status = 'checkout' THEN checkout_url END AS checkout_url FROM payments
     WHERE user_id = ? AND NOT (provider = 'xendit' AND status = 'checkout') ORDER BY created_at DESC LIMIT 20`, user.id);
   res.json({
@@ -819,6 +820,7 @@ app.get('/api/premium', auth, wrap(async (req, res) => {
     manual: manualPayOn(st), methods: manualPayOn(st) ? payMethods(st).filter((m) => m.on) : [],
     price: st.price, plan_days: Number(st.plan_days) || 30, note: st.pay_note, payments,
     paid: await paidUser(user), // can download the app installers (GET /api/app/installers)
+    promo: !!(await db.get('SELECT 1 FROM promo_codes WHERE active = 1 LIMIT 1')), // show the promo code box
   });
 }));
 
@@ -846,17 +848,20 @@ async function markPaid(p, method) {
     ['UPDATE users SET premium_until = ? WHERE id = ?', [to, p.user_id]],
     ['UPDATE payments SET period_from = ?, period_to = ?, days = ? WHERE id = ?', [from, to, days, p.id]],
   ]);
+  await promo.used(p);
   const u = await db.get('SELECT * FROM users WHERE id = ?', p.user_id);
   if (u) mail.payment(u.email, u.name, 'approved', u.premium_until, '', await receiptOf(p.id), await releases.latest());
-  await audit.log(null, 'payment_paid_online', { userId: p.user_id, actorId: null, detail: `₱${p.amount} · ${method || 'Online'}` });
+  await audit.log(null, 'payment_paid_online', { userId: p.user_id, actorId: null, detail: `₱${p.amount} · ${method || 'Online'}${promoText(p)}` });
   return true;
 }
 
 /* App installers for paid users: the newest Android .apk and Windows .exe from the latest GitHub Release
    (src/releases.js), shown on the Premium page with an install guide. Only for a user whose payment was
    approved (online or by the admin) and whose Premium is still running, and for admins. */
+// A 100%-off promo code (provider 'promo', ₱0) is not a payment, so it does not count here.
 const paidUser = async (u) => u.role === 'admin' || ((u.premium_until || 0) > Date.now()
-  && !!(await db.get(`SELECT 1 FROM payments WHERE user_id = ? AND status = 'approved' LIMIT 1`, u.id)));
+  && !!(await db.get(`SELECT 1 FROM payments WHERE user_id = ? AND status = 'approved' AND provider != 'promo' LIMIT 1`, u.id)));
+const promoText = (p) => (p.promo_code ? ` · promo ${p.promo_code} (−₱${p.discount} mula ₱${p.list_price})` : '');
 app.get('/api/app/installers', auth, verified, wrap(async (req, res) => {
   if (!(await paidUser(req.user))) return res.status(403).json({ error: 'Para sa may bayad na Premium lang ang download ng app.', code: 'not_paid' });
   const rel = await releases.latest();
@@ -873,7 +878,8 @@ async function receiptOf(id) {
   const date = p.decided_at || p.created_at;
   return {
     id: p.id, no: `CSE-${new Date(date + 8 * 3600e3).getUTCFullYear()}-${String(p.id).padStart(5, '0')}`, date, name: p.name, email: p.email,
-    amount: p.amount, method: p.method, reference: p.provider === 'paymongo' ? '' : p.reference, provider: p.provider,
+    amount: p.amount, method: p.method, reference: ['paymongo', 'promo'].includes(p.provider) ? '' : p.reference, provider: p.provider,
+    promo_code: p.promo_code || '', discount: p.discount || '', list_price: p.list_price || '',
     days: p.days || (p.period_to && p.period_from ? Math.round((p.period_to - p.period_from) / 864e5) : null),
     period_from: p.period_from || null, period_to: p.period_to || null, business: st.biz_name, contact: st.biz_contact,
   };
@@ -906,7 +912,12 @@ async function syncCheckout(p) {
 app.post('/api/payments/checkout', auth, verified, wrap(async (req, res) => {
   const st = await getSettings();
   if (!onlinePayOn(st)) return res.status(404).json({ error: 'Hindi pa naka-set up ang online na bayad.' });
-  const amount = Number(st.price);
+  // A promo code: the server works out the price (the app only sends the code).
+  const pc = await promoFor(req, st);
+  if (pc && !pc.ok) return res.status(400).json({ error: pc.error, code: 'promo' });
+  if (pc && pc.free) return res.status(400).json({ error: 'Libre na ang Premium sa promo code na ito. Pindutin ang "Gamitin ang code".', code: 'promo_free' });
+  const amount = pc ? pc.online : Number(st.price);
+  const promoId = pc ? pc.promo.id : null;
   // "Card": a checkout with only the card option, so PayMongo opens the card form right away.
   const card = req.body && req.body.method === 'card' && paymongo.methods.includes('card');
   const kind = card ? 'Card' : 'Online';
@@ -915,7 +926,7 @@ app.post('/api/payments/checkout', auth, verified, wrap(async (req, res) => {
   // Reuse an unpaid checkout from the last 23 hours (the link lasts 24 hours).
   const open = await db.get(`SELECT * FROM payments WHERE user_id = ? AND provider = 'paymongo' AND status = 'checkout' AND method = ? AND created_at > ? ORDER BY id DESC LIMIT 1`,
     req.user.id, kind, Date.now() - 23 * 3600e3);
-  if (open && Number(open.amount) === amount && open.checkout_url) return res.json({ url: open.checkout_url });
+  if (open && Number(open.amount) === amount && (open.promo_id || null) === promoId && open.checkout_url) return res.json({ url: open.checkout_url });
   if (limited('checkout:' + req.user.id, 10, 60 * 60 * 1000)) return res.status(429).json({ error: 'Masyadong maraming subok. Maghintay muna.' });
   const days = Number(st.plan_days) || 30;
   const reference = `cse-${req.user.id}-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`;
@@ -923,15 +934,16 @@ app.post('/api/payments/checkout', auth, verified, wrap(async (req, res) => {
   try {
     cs = await paymongo.createCheckout({
       reference, amount, email: req.user.email, name: req.user.name, types: card ? ['card'] : null,
-      description: `CSE Reviewer Premium (${days} araw)`, returnUrl: publicUrl(req) + '/#/premium',
+      description: `CSE Reviewer Premium (${days} araw)${pc ? ` · promo ${pc.promo.code}` : ''}`, returnUrl: publicUrl(req) + '/#/premium',
     });
   } catch (e) {
     console.error('PayMongo checkout failed:', e.message);
     return res.status(502).json({ error: 'Hindi mabuksan ang bayaran ngayon. Subukan ulit mamaya.' });
   }
   const url = cs.attributes.checkout_url;
-  await db.run(`INSERT INTO payments (user_id, amount, method, reference, status, provider, invoice_id, checkout_url, days, created_at)
-    VALUES (?, ?, ?, ?, 'checkout', 'paymongo', ?, ?, ?, ?)`, req.user.id, String(amount), kind, reference, cs.id, url, days, Date.now());
+  await db.run(`INSERT INTO payments (user_id, amount, method, reference, status, provider, invoice_id, checkout_url, days, created_at, promo_id, promo_code, list_price, discount)
+    VALUES (?, ?, ?, ?, 'checkout', 'paymongo', ?, ?, ?, ?, ?, ?, ?, ?)`, req.user.id, String(amount), kind, reference, cs.id, url, days, Date.now(),
+    promoId, pc ? pc.promo.code : null, pc ? String(pc.price) : null, pc ? String(Math.round((pc.price - amount) * 100) / 100) : null);
   res.json({ url });
 }));
 
@@ -966,12 +978,56 @@ app.post('/api/payments', auth, verified, wrap(async (req, res) => {
   if (await db.get(`SELECT 1 FROM payments WHERE user_id = ? AND status = 'pending'`, req.user.id)) {
     return res.status(409).json({ error: 'May nakabinbin ka pang bayad na hinihintay ma-check.' });
   }
-  // The amount is the current price (not what the app sends), so the admin sees what the user should have paid.
-  const p = { amount: String(st.price).slice(0, 20), method: m.name, reference };
-  await db.run('INSERT INTO payments (user_id, amount, method, reference, created_at, proof) VALUES (?, ?, ?, ?, ?, ?)', req.user.id, p.amount, p.method, p.reference, Date.now(), proof);
+  const pc = await promoFor(req, st);
+  if (pc && !pc.ok) return res.status(400).json({ error: pc.error, code: 'promo' });
+  if (pc && pc.free) return res.status(400).json({ error: 'Libre na ang Premium sa promo code na ito. Pindutin ang "Gamitin ang code".', code: 'promo_free' });
+  // The amount is the current price (not what the app sends), less the promo code, so the admin sees what the user should have paid.
+  const p = { amount: String(pc ? pc.amount : st.price).slice(0, 20), method: m.name, reference, promo_code: pc ? pc.promo.code : null, discount: pc ? String(pc.discount) : null, list_price: pc ? String(pc.price) : null };
+  await db.run('INSERT INTO payments (user_id, amount, method, reference, created_at, proof, promo_id, promo_code, list_price, discount) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    req.user.id, p.amount, p.method, p.reference, Date.now(), proof, pc ? pc.promo.id : null, p.promo_code, p.list_price, p.discount);
   const admins = await db.all(`SELECT email FROM users WHERE role = 'admin' AND disabled = 0`);
   admins.forEach((a) => mail.newPayment(a.email, req.user, p));
   res.json({ ok: true });
+}));
+
+/* Promo codes (src/promo.js). The user types a code on the Premium page and sees the new price;
+   the server works out the price again on every payment. */
+// The code in the request, checked for this user, or null when there is none.
+async function promoFor(req, st) {
+  const code = req.body && req.body.code ? String(req.body.code) : '';
+  if (!code.trim()) return null;
+  return promo.check(req.user.id, code, st.price);
+}
+const promoOut = (pc) => ({ code: pc.promo.code, kind: pc.promo.kind, value: pc.promo.value, price: pc.price, discount: pc.discount, amount: pc.amount, online: pc.online, free: pc.free });
+app.post('/api/promo/check', auth, verified, wrap(async (req, res) => {
+  // Stop guessing codes one after another.
+  if (limited('promo:' + req.user.id, 15, 10 * 60 * 1000)) return res.status(429).json({ error: 'Masyadong maraming subok. Maghintay muna ng ilang minuto.' });
+  const pc = await promoFor(req, await getSettings());
+  if (!pc) return res.status(400).json({ error: promo.ERR.bad, code: 'promo' });
+  if (!pc.ok) return res.status(400).json({ error: pc.error, code: 'promo' });
+  res.json(promoOut(pc));
+}));
+// A 100%-off code: Premium starts now, with no payment. Kept as a ₱0 "payment" (provider 'promo') so it is in
+// the user's list, the receipt, the admin's Approved list and the audit log.
+app.post('/api/promo/redeem', auth, verified, wrap(async (req, res) => {
+  if (limited('promo:' + req.user.id, 15, 10 * 60 * 1000)) return res.status(429).json({ error: 'Masyadong maraming subok. Maghintay muna ng ilang minuto.' });
+  const st = await getSettings();
+  const pc = await promoFor(req, st);
+  if (!pc) return res.status(400).json({ error: promo.ERR.bad, code: 'promo' });
+  if (!pc.ok) return res.status(400).json({ error: pc.error, code: 'promo' });
+  if (!pc.free) return res.status(400).json({ error: 'Hindi libre ang Premium sa code na ito. Magbayad ng natitirang halaga.', code: 'promo_paid' });
+  const claim = await promo.claimFree(pc.promo, req.user.id, pc.price);
+  if (!claim.ok) return res.status(409).json({ error: claim.error, code: 'promo' });
+  const days = Number(st.plan_days) || 30;
+  const u = await db.get('SELECT * FROM users WHERE id = ?', req.user.id);
+  const from = Math.max(Date.now(), u.premium_until || 0), to = from + days * 864e5, now = Date.now();
+  const r = await db.run(`INSERT INTO payments (user_id, amount, method, reference, status, provider, days, created_at, decided_at, period_from, period_to, promo_id, promo_code, list_price, discount)
+    VALUES (?, '0', 'Promo code', ?, 'approved', 'promo', ?, ?, ?, ?, ?, ?, ?, ?, ?)`, u.id, pc.promo.code, days, now, now, from, to, pc.promo.id, pc.promo.code, String(pc.price), String(pc.discount));
+  await db.run('UPDATE users SET premium_until = ? WHERE id = ?', to, u.id);
+  await promo.linkPayment(pc.promo.id, u.id, r.lastInsertRowid);
+  mail.payment(u.email, u.name, 'approved', to, '', await receiptOf(r.lastInsertRowid), null);
+  await audit.log(req, 'promo_redeem', { userId: u.id, detail: `${pc.promo.code} · 100% libre · Premium +${days} araw (₱${pc.price})` });
+  res.json({ ok: true, until: to });
 }));
 
 /* ------------------------------ admin ------------------------------ */
@@ -1065,7 +1121,7 @@ app.post('/api/admin/users/:id/report', admin, wrap(async (req, res) => {
 app.get('/api/admin/payments', admin, wrap(async (req, res) => {
   const status = ['pending', 'approved', 'rejected'].includes(req.query.status) ? req.query.status : 'pending';
   res.json(await db.all(`SELECT p.id, p.user_id, p.amount, p.method, p.reference, p.status, p.note, p.created_at, p.decided_at, p.provider,
-      (p.proof IS NOT NULL) AS has_proof, u.name, u.email, u.premium_until FROM payments p JOIN users u ON u.id = p.user_id
+      (p.proof IS NOT NULL) AS has_proof, p.promo_code, p.list_price, p.discount, u.name, u.email, u.premium_until FROM payments p JOIN users u ON u.id = p.user_id
     WHERE p.status = ? ORDER BY p.created_at DESC LIMIT 200`, status));
 }));
 
@@ -1092,8 +1148,9 @@ app.post('/api/admin/payments/:id', admin, wrap(async (req, res) => {
     stmts.push(['UPDATE payments SET period_from = ?, period_to = ?, days = ? WHERE id = ?', [from, until, days, p.id]]);
   }
   await db.batch(stmts);
+  if (approve) await promo.used(p);
   if (u) mail.payment(u.email, u.name, approve ? 'approved' : 'rejected', until, note, approve ? await receiptOf(p.id) : null, approve ? await releases.latest() : null);
-  await audit.log(req, approve ? 'payment_approve' : 'payment_reject', { userId: p.user_id, detail: `₱${p.amount} · ${p.method} · ref ${p.reference}${note ? ' · ' + note : ''}` });
+  await audit.log(req, approve ? 'payment_approve' : 'payment_reject', { userId: p.user_id, detail: `₱${p.amount} · ${p.method} · ref ${p.reference}${promoText(p)}${note ? ' · ' + note : ''}` });
   res.json({ ok: true, until });
 }));
 
@@ -1229,11 +1286,52 @@ app.get('/api/admin/attempts', admin, wrap(async (req, res) => {
   res.json(rows);
 }));
 
+/* Admin → Promo codes: make, turn off/on, change the end date or limit, delete an unused code, see who used it. */
+app.get('/api/admin/promos', admin, wrap(async (req, res) => {
+  const st = await getSettings();
+  const rows = await db.all('SELECT * FROM promo_codes ORDER BY id DESC LIMIT 500');
+  res.json({ price: st.price, min_online: promo.MIN_ONLINE, rows: rows.map((p) => ({ ...p, ...promo.priceAfter(p, st.price) })) });
+}));
+app.post('/api/admin/promos', admin, wrap(async (req, res) => {
+  const c = promo.clean(req.body || {}, { creating: true });
+  if (c.error) return res.status(400).json({ error: c.error });
+  if (await db.get('SELECT 1 FROM promo_codes WHERE code = ?', c.code)) return res.status(409).json({ error: 'May promo code na ganito. Pumili ng iba.' });
+  const r = await db.run(`INSERT INTO promo_codes (code, kind, value, expires_at, max_uses, active, note, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    c.code, c.kind, c.value, c.expires_at || 0, c.max_uses || 0, c.active ?? 1, c.note || '', req.user.id, Date.now());
+  await audit.log(req, 'promo_create', { detail: `${c.code} · ${promo.label(c)}${c.max_uses ? ` · ${c.max_uses} gamit` : ''}${c.expires_at ? ` · hanggang ${new Date(c.expires_at).toISOString().slice(0, 10)}` : ''}` });
+  res.json(await db.get('SELECT * FROM promo_codes WHERE id = ?', r.lastInsertRowid));
+}));
+app.patch('/api/admin/promos/:id', admin, wrap(async (req, res) => {
+  const p = await db.get('SELECT * FROM promo_codes WHERE id = ?', Number(req.params.id));
+  if (!p) return res.status(404).json({ error: 'Walang ganitong promo code.' });
+  const c = promo.clean(req.body || {}, { creating: false });
+  const keys = Object.keys(c);
+  if (keys.length) await db.run(`UPDATE promo_codes SET ${keys.map((k) => k + ' = ?').join(', ')} WHERE id = ?`, ...keys.map((k) => c[k]), p.id);
+  const what = keys.filter((k) => String(c[k]) !== String(p[k])).map((k) => (k === 'active' ? (c.active ? 'binuksan' : 'pinatay') : k));
+  if (what.length) await audit.log(req, 'promo_update', { detail: `${p.code}: ${what.join(', ')}` });
+  res.json(await db.get('SELECT * FROM promo_codes WHERE id = ?', p.id));
+}));
+app.delete('/api/admin/promos/:id', admin, wrap(async (req, res) => {
+  const p = await db.get('SELECT * FROM promo_codes WHERE id = ?', Number(req.params.id));
+  if (!p) return res.status(404).json({ error: 'Walang ganitong promo code.' });
+  // A used code stays (for the receipts and the audit); turn it off instead.
+  if (p.used > 0 || await db.get('SELECT 1 FROM payments WHERE promo_id = ? LIMIT 1', p.id)) {
+    return res.status(409).json({ error: 'Nagamit na ang code na ito, kaya hindi ito mabubura. I-off na lang.' });
+  }
+  await db.run('DELETE FROM promo_codes WHERE id = ?', p.id);
+  await audit.log(req, 'promo_delete', { detail: p.code });
+  res.json({ ok: true });
+}));
+app.get('/api/admin/promos/:id/uses', admin, wrap(async (req, res) => {
+  res.json(await db.all(`SELECT r.at, r.price, r.discount, r.amount, r.payment_id, u.name, u.email FROM promo_redemptions r
+    LEFT JOIN users u ON u.id = r.user_id WHERE r.promo_id = ? ORDER BY r.id DESC LIMIT 500`, Number(req.params.id)));
+}));
+
 /* Admin → Audit log: logins, failed logins and admin changes, newest first. "alerts" shows only suspicious ones. */
 app.get('/api/admin/audit', admin, wrap(async (req, res) => {
   const where = [], args = [];
   if (req.query.filter === 'alerts') where.push('l.alert = 1');
-  else if (req.query.filter === 'admin') where.push(`l.action LIKE 'admin_%' OR l.action LIKE 'payment_%'`);
+  else if (req.query.filter === 'admin') where.push(`l.action LIKE 'admin_%' OR l.action LIKE 'payment_%' OR l.action LIKE 'promo_%'`);
   else if (req.query.filter === 'logins') where.push(`l.action LIKE 'login%' OR l.action IN ('logout', 'password_change', 'password_reset')`);
   if (req.query.q) { where.push('(u.email LIKE ? OR u.name LIKE ? OR l.ip LIKE ?)'); const q = `%${String(req.query.q).trim()}%`; args.push(q, q, q); }
   const rows = await db.all(`SELECT l.id, l.at, l.action, l.detail, l.ip, l.device, l.alert, l.user_id, l.actor_id, u.name, u.email, a.name AS actor_name

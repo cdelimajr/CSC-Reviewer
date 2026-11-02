@@ -255,6 +255,66 @@ const lastCode = (to) => {
   assert.deepEqual(Object.values(sessions).at(-1).attributes.payment_method_types, ['card']);
   assert.equal((await U('POST', '/api/payments/checkout', { method: 'card' })).data.url, cardUrl, 'unpaid card checkout reused');
   assert.equal((await U('POST', '/api/payments/checkout', {})).data.url, other, 'other checkout reused');
+
+  // 🏷️ Promo codes: made by the admin, checked and priced by the server, one use per account
+  assert.equal((await U('GET', '/api/premium')).data.promo, false, 'no promo box without codes');
+  assert.equal((await U('POST', '/api/admin/promos', { code: 'X', kind: 'percent', value: 10 })).status, 403, 'admins only');
+  assert.equal((await A('POST', '/api/admin/promos', { code: 'a b', kind: 'percent', value: 10 })).status, 400, 'no spaces');
+  assert.equal((await A('POST', '/api/admin/promos', { code: 'BIG', kind: 'percent', value: 150 })).status, 400, 'at most 100%');
+  assert.equal((await A('POST', '/api/admin/promos', { code: 'review20', kind: 'percent', value: 20, max_uses: 1 })).data.code, 'REVIEW20', 'code in capitals');
+  assert.equal((await A('POST', '/api/admin/promos', { code: 'Review20', kind: 'fixed', value: 5 })).status, 409, 'no two codes alike');
+  await A('POST', '/api/admin/promos', { code: 'OLD', kind: 'fixed', value: 10, expires_at: Date.now() - 1000 });
+  await A('POST', '/api/admin/promos', { code: 'MINUS90', kind: 'fixed', value: 90 });
+  await A('POST', '/api/admin/promos', { code: 'FREE', kind: 'percent', value: 100, max_uses: 1 });
+  assert.equal((await U('GET', '/api/premium')).data.promo, true, 'promo box shown');
+  assert.equal((await U('POST', '/api/promo/check', { code: 'NOPE' })).status, 400, 'unknown code');
+  assert.match((await U('POST', '/api/promo/check', { code: 'old' })).data.error, /Expired/, 'expired code');
+  r = await U('POST', '/api/promo/check', { code: ' review20 ', price: 1 });
+  assert.deepEqual([r.data.price, r.data.discount, r.data.amount, r.data.free], [99, 19.8, 79.2, false], 'price from the server, not the app');
+  assert.equal((await U('POST', '/api/promo/check', { code: 'MINUS90' })).data.online, 20, 'online at least ₱20');
+  assert.equal((await U('POST', '/api/payments/checkout', { code: 'NOPE' })).status, 400, 'bad code stops the checkout');
+  const promoUrl = (await U('POST', '/api/payments/checkout', { code: 'REVIEW20', amount: 1 })).data.url;
+  assert.notEqual(promoUrl, other, 'own checkout for the promo price');
+  const csP = Object.values(sessions).at(-1);
+  assert.equal(csP.attributes.line_items[0].amount, 7920, 'PayMongo charges the discounted price');
+  assert.equal((await U('POST', '/api/payments/checkout', { code: 'REVIEW20' })).data.url, promoUrl, 'promo checkout reused');
+  const untilP = (await U('GET', '/api/premium')).data.until;
+  payIt(csP, 'gcash'); await hook(csP.id); await hook(csP.id);
+  r = await U('GET', '/api/premium');
+  assert.ok(Math.abs(r.data.until - (untilP + 30 * 864e5)) < 5000, 'promo payment adds the days');
+  const pp = r.data.payments.find((x) => x.promo_code === 'REVIEW20');
+  assert.equal(pp.amount, '79.2'); assert.equal(pp.discount, '19.8');
+  assert.match((await U('GET', `/api/payments/${pp.id}/receipt`)).data.promo_code, /REVIEW20/, 'promo on the receipt');
+  assert.match((await U('POST', '/api/promo/check', { code: 'REVIEW20' })).data.error, /Nagamit mo na/, 'one use per account');
+  let promos = (await A('GET', '/api/admin/promos')).data.rows;
+  assert.equal(promos.find((x) => x.code === 'REVIEW20').used, 1, 'counted once');
+  assert.equal((await A('GET', `/api/admin/promos/${promos.find((x) => x.code === 'REVIEW20').id}/uses`)).data[0].email, 'juan@test.ph');
+  assert.equal((await A('DELETE', '/api/admin/promos/' + promos.find((x) => x.code === 'REVIEW20').id)).status, 409, 'used code cannot be deleted');
+  assert.equal((await A('DELETE', '/api/admin/promos/' + promos.find((x) => x.code === 'OLD').id)).status, 200, 'unused code deleted');
+  // 100% off: no PayMongo; Premium starts now, a ₱0 entry is kept, and it is in the audit log
+  assert.equal((await U('POST', '/api/payments/checkout', { code: 'FREE' })).data.code, 'promo_free', 'free code needs no checkout');
+  assert.equal((await U('POST', '/api/promo/redeem', { code: 'MINUS90' })).status, 400, 'only a free code is redeemed');
+  const nCs = Object.keys(sessions).length, untilF = (await U('GET', '/api/premium')).data.until;
+  r = await U('POST', '/api/promo/redeem', { code: 'free' });
+  assert.equal(r.status, 200); assert.ok(Math.abs(r.data.until - (untilF + 30 * 864e5)) < 5000, 'free code adds the days');
+  assert.equal(Object.keys(sessions).length, nCs, 'no PayMongo checkout');
+  assert.equal((await U('POST', '/api/promo/redeem', { code: 'FREE' })).status, 400, 'free code once only');
+  r = await U('GET', '/api/premium');
+  const fp = r.data.payments.find((x) => x.provider === 'promo');
+  assert.equal(fp.amount, '0'); assert.equal(fp.status, 'approved');
+  assert.equal((await U('GET', `/api/payments/${fp.id}/receipt`)).data.amount, '0');
+  r = await A('GET', '/api/admin/audit?filter=admin');
+  assert.ok(['promo_create', 'promo_delete', 'promo_redeem'].every((a) => r.data.rows.some((x) => x.action === a)), 'promo changes in the audit log');
+  assert.ok(r.data.rows.some((x) => x.action === 'payment_paid_online' && x.detail.includes('promo REVIEW20')), 'promo on the payment log');
+  // Used up, and turned off by the admin
+  const F2 = client();
+  await F2('POST', '/api/auth/register', { name: 'Ana', email: 'ana@test.ph', password: 'password123' });
+  await F2('POST', '/api/auth/verify', { code: lastCode('ana@test.ph') });
+  assert.match((await F2('POST', '/api/promo/check', { code: 'FREE' })).data.error, /Naubos/, 'limit reached');
+  promos = (await A('GET', '/api/admin/promos')).data.rows;
+  await A('PATCH', '/api/admin/promos/' + promos.find((x) => x.code === 'MINUS90').id, { active: false });
+  assert.equal((await F2('POST', '/api/promo/check', { code: 'MINUS90' })).status, 400, 'turned-off code refused');
+  await A('PATCH', '/api/admin/promos/' + promos.find((x) => x.code === 'MINUS90').id, { active: true });
   fake.close();
 
   // Offline: question pack, then sync results taken without internet (saved once only)
@@ -405,6 +465,13 @@ const lastCode = (to) => {
   assert.equal((await U('GET', '/api/premium')).data.methods.find((m) => m.id === 'maya').has_qr, true);
   assert.equal((await U('POST', '/api/payments', { method_id: 'coins', reference: 'PP123456' })).status, 400, 'turned-off account refused');
   assert.equal((await U('POST', '/api/payments', { method_id: 'maya', reference: 'MY123456', proof: 'data:text/html;base64,AAAA' })).status, 400, 'proof must be an image');
+  // Manual payment with a promo code: the admin sees the discounted price; the code counts once approved
+  assert.equal((await F2('POST', '/api/payments', { method_id: 'maya', reference: 'PROMO1234', code: 'MINUS90' })).status, 200);
+  const mpp = (await A('GET', '/api/admin/payments')).data.find((x) => x.reference === 'PROMO1234');
+  assert.deepEqual([mpp.amount, mpp.promo_code, mpp.list_price], ['9', 'MINUS90', '99'], 'manual amount after the code');
+  assert.equal((await A('GET', '/api/admin/promos')).data.rows.find((x) => x.code === 'MINUS90').used, 0, 'not counted while waiting');
+  await A('POST', `/api/admin/payments/${mpp.id}`, { action: 'approve' });
+  assert.equal((await A('GET', '/api/admin/promos')).data.rows.find((x) => x.code === 'MINUS90').used, 1, 'counted when approved');
   assert.equal((await U('POST', '/api/payments', { method_id: 'maya', reference: 'MY123456', proof: png })).status, 200);
   r = await A('GET', '/api/admin/payments');
   const mp = r.data.find((x) => x.reference === 'MY123456');
@@ -453,7 +520,7 @@ const lastCode = (to) => {
 
   // Admin
   assert.equal((await U('GET', '/api/admin/users')).status, 403, 'user blocked from admin');
-  r = await A('GET', '/api/admin/overview'); assert.equal(r.data.users, 3); assert.equal(r.data.premiumUsers, 1);
+  r = await A('GET', '/api/admin/overview'); assert.equal(r.data.users, 4); assert.equal(r.data.premiumUsers, 2); // Ana got Premium with a promo code
   r = await A('POST', '/api/admin/sets', { mode: 'subpro' }); assert.equal(r.data.number, 4);
   r = await A('POST', '/api/admin/questions', { subject: 'general', topic: 'Test', question: 'Q?', choices: ['a', 'b', 'c', 'd'], answer: 2 });
   assert.ok(r.data.id);
