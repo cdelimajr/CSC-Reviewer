@@ -2,7 +2,7 @@
 
 Mga batas at patakaran ng gobyerno na sinusunod ng app, paano ito ginawa, paano ito pinapatakbo, saan ito gumagana, at ang kasaysayan ng bawat bersyon.
 
-- **Kasalukuyang bersyon:** 1.28.0 (Nobyembre 2, 2026)
+- **Kasalukuyang bersyon:** 1.29.0 (Nobyembre 2, 2026)
 - **Huling update ng dokumentong ito:** Nobyembre 2, 2026
 
 > **Panuntunan sa pag-update:** sa bawat pagbabago sa app (bawat pull request), i-update ang dokumentong ito: dagdagan ang [Kasaysayan ng bersyon](#7-kasaysayan-ng-bersyon), palitan ang "Kasalukuyang bersyon" sa itaas, ang `APP_VERSION` sa `public/app.js` at ang `version` sa `package.json`, at baguhin ang anumang bahagi sa ibaba na naapektuhan (hal. bagong data na kinokolekta, bagong batas o patakaran ng gobyerno). Nakasulat din ito sa `CLAUDE.md`.
@@ -109,6 +109,7 @@ Walang sensitive personal information (hal. edad, relihiyon, kalusugan, governme
 | Mga tanong | `src/bank*.js`, `src/generators*.js`, `src/blueprint.js`, `src/sets.js` | Nakasulat na tanong, generator, hati ng tanong kada subject, at mga exam set |
 | Email | `src/mail.js` | Brevo o Resend |
 | Bayad | `src/paymongo.js` | PayMongo checkout at webhook |
+| Download ng app (may bayad) | `src/releases.js` | Pinakabagong .apk at .exe mula sa GitHub Releases (kada 10 minuto lang tinatanong ang GitHub); para sa Premium page at email pagkatapos magbayad. `GITHUB_REPO` (default `cdelimajr/CSC-Reviewer`), opsyonal na `GITHUB_TOKEN` |
 | Mga screen | `public/` (`index.html`, `app.js`, `styles.css`, `pdf.js`) | Isang page na app, walang build step |
 | Offline (website) | `public/sw.js` | Service worker: naka-save ang files ng app sa device |
 | Android/iPhone | `apps/mobile` (Capacitor 7) | Kasama ang mga screen sa loob ng app; nag-a-update mula sa server |
@@ -186,6 +187,8 @@ Dina-download sa background. Kapag handa na, **nagtatanong ang app sa user o adm
 
 **Backup:** sa Turso, gamitin ang point-in-time restore o `turso db shell <db> .dump > backup.sql` paminsan-minsan. Sa lokal na SQLite, kopyahin ang file sa `data/`.
 
+**Download ng app pagkatapos magbayad:** kapag na-confirm ang bayad, ang email na "Aktibo na ang Premium mo" ay may link ng pinakabagong Android (.apk) at Windows (.exe) at gabay sa pag-install; nasa Premium page din ito (📲 I-download ang app). Kinukuha ito sa pinakabagong GitHub Release, kaya walang kailangang gawin ang admin basta pumasa ang "Build apps". Paalala: pampubliko ang mga file sa GitHub Releases ng pampublikong repo, kaya ang app at email lang ang nagtatago ng link sa hindi pa nagbabayad.
+
 **Mga email na kusa:** paalala sa pag-aaral (kung pinili ng user), 3 araw at 1 araw bago matapos ang Premium, at pagkatapos nito, kada 10 minuto ang check. Kailangan ng email provider (Brevo/Resend).
 
 **Mga log:** sa Render → Logs. Dito lumalabas ang mga error ng server (hindi na humihinto ang server dahil sa isang error; tingnan ang Auto Fix).
@@ -239,7 +242,8 @@ Kusang hinahanap at inaayos ng app ang mga karaniwang problema, online man o off
 
 | Bersyon | Petsa | PR | Mga pagbabago |
 |---|---|---|---|
-| **1.28.0** | 2026-11-02 | #28 | **Premium page (Kumuha ng Premium):** tinanggal ang button na **Card (Visa / Mastercard)**. Iisang button na lang, **💳 Ituloy ang pagbayad**, na nagbubukas ng PayMongo; doon pipili ng GCash, Maya, card (Visa / Mastercard), QR Ph at iba pa. Naka-fill pa rin ang pangalan at email mula sa account. Sa website, Android, iPhone at Windows |
+| **1.29.0** | 2026-11-02 | #29 | **Installer at gabay pagkatapos magbayad:** kapag na-confirm ang bayad (PayMongo o na-approve ng admin), may bagong card na **📲 I-download ang app** sa Premium page na may pinakabagong **Android (.apk)** at **Windows (.exe: Setup at portable)** mula sa pinakabagong GitHub Release, at drop down na **Paano i-install at gamitin** (hakbang-hakbang para sa Android, Windows, at paggamit ng app). Kasama rin ang mga link at gabay sa email na "Aktibo na ang Premium mo". Para lang sa user na may na-approve na bayad at tumatakbong Premium (at admin); walang .ipa, .blockmap o latest.yml. Bagong `src/releases.js` at `GET /api/app/installers`. Sa website, Android, iPhone at Windows |
+| 1.28.0 | 2026-11-02 | #28 | **Premium page (Kumuha ng Premium):** tinanggal ang button na **Card (Visa / Mastercard)**. Iisang button na lang, **💳 Ituloy ang pagbayad**, na nagbubukas ng PayMongo; doon pipili ng GCash, Maya, card (Visa / Mastercard), QR Ph at iba pa. Naka-fill pa rin ang pangalan at email mula sa account. Sa website, Android, iPhone at Windows |
 | 1.27.0 | 2026-11-02 | #27 | **Libreng plan, review:** pagkatapos ng mock exam o practice, may review ng **unang 5 tanong kada subject** (tanong, sagot mo, tamang sagot at paliwanag); sa Premium ang buong review. Server ang nagtatago ng iba (`attemptView` sa `src/server.js`). Wala na ang dating "Susi sa pagwawasto" (letra lang). **Libreng plan, mock exam ng Pro at Subpro:** 5 tanong kada subject lang mula sa Set 1 (20 tanong), at hinati rin ang oras ayon sa pace ng buong exam. **Resulta:** tinanggal ang **Home** button sa tabi ng "Buong review sa Premium" at "Ulitin". **Premium page:** tinanggal ang "Ituloy ang bayad gamit ang card" (laging "Card (Visa / Mastercard)" na) at ang "I-check ang bayad" (kusang chine-check ang bayad pagbukas ng Premium page). Sa website, Android, iPhone at Windows |
 | 1.26.0 | 2026-11-02 | #26 | **Bagong flip ng pahina (smooth slide):** dumudulas pakaliwa ang pahina na may malambot na anino; ang tunog ay **gentle tick** (napakaikli at mahinang "tik"). Maikling fade sa "Bawasan ang galaw" o mahinang phone. **Practice sa libreng plan: hanggang 10 tanong** (naka-🔒 ang 20, 30 at 50, may paalala at link sa Premium); ang dating naka-save na 20 sa Admin → Settings ay ginawang 10 nang isang beses. **Walang "Review ng mga sagot" pagkatapos ng practice sa libreng plan**; ⭐ Premium card ang kapalit. **Offline countdown ng libreng user: 1 hanggang 60** segundo na (dati 1 hanggang 10) bago lumipat sa offline na screen; walang countdown sa Premium. **Mas maliit na letra sa exam:** phone (tanong 17px, pagpipilian 15px, talata at paliwanag 14px) at computer (tanong 24–34px, pagpipilian 20–28px, talata 18–24px); gumagana pa rin ang Laki ng letra. Sa website, Android, iPhone at Windows |
 | 1.25.0 | 2026-11-02 | #25 | **⚑ icon na lang:** wala nang salitang "Markahan"/"Minarkahan" sa button ng exam; icon na lang (nagiging dilaw kapag minarkahan), may label pa rin para sa screen reader. **Bagong flip ng pahina (lift and turn):** bahagyang umaangat ang papel, umiikot sa gilid nang 3D, tapos lumalapag; ang tunog ay malinaw na "fwip" (crisp page turn). Maikling slide pa rin sa "Bawasan ang galaw" o mahinang phone. **Card na bayad:** bagong button na **💳 Card** sa Premium page na diretso sa card form ng PayMongo; naka-fill na ang pangalan at email mula sa account, kaya card details lang ang ilalagay. Nasa hiwalay na button ang GCash, Maya, QR Ph at iba pa. Sa website, Android, iPhone at Windows |

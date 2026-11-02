@@ -3,7 +3,7 @@
   'use strict';
   const $app = document.getElementById('app');
   const LETTERS = ['A', 'B', 'C', 'D'];
-  const APP_VERSION = '1.28.0'; // keep in step with package.json and docs/DOKUMENTASYON.md
+  const APP_VERSION = '1.29.0'; // keep in step with package.json and docs/DOKUMENTASYON.md
   const S = { user: null, meta: null, exam: null, timer: null, saveT: null };
 
   /* ---------------- helpers ---------------- */
@@ -70,6 +70,8 @@
     'Ang bagong password ay dapat may 8 characters o higit pa.': 'The new password must have 8 or more characters.',
     'May account na ang email na ito. Mag-login na lang.': 'This email already has an account. Please log in.',
     'Mali ang email o password.': 'Wrong email or password.',
+    'Para sa may bayad na Premium lang ang download ng app.': 'The app download is only for paid Premium.',
+    'Hindi makuha ang pinakabagong app ngayon. Subukan ulit mamaya.': 'The newest app cannot be fetched right now. Please try again later.',
     'Naka-disable ang account na ito. Makipag-ugnayan sa admin.': 'This account is disabled. Please contact the admin.',
     'Mali o expired na ang code. Humingi ng bagong code.': 'The code is wrong or expired. Ask for a new code.',
     'Mali o expired na ang code.': 'The code is wrong or expired.',
@@ -1586,6 +1588,8 @@
             <tr><td>${L('Bilis', 'Speed')}</td><td>${L('Hinihintay ang server', 'Waits for the server')}</td><td>${L('Agad-agad (naka-save sa device)', 'Instant (saved on the device)')}</td></tr>
             <tr><td>Login</td><td>${L('Password o code sa email', 'Password or email code')}</td><td>${L('Pati fingerprint / face / Windows Hello', 'Also fingerprint / face / Windows Hello')}</td></tr></table>`}
       </div>
+      ${p.paid ? `<div class="card" style="margin-top:12px" id="appDl"><h3>📲 ${L('I-download ang app', 'Download the app')}</h3>
+        <p class="muted small" style="margin:0">${L('Naglo-load…', 'Loading…')}</p></div>` : ''}
       ${S.user.role === 'admin' ? '' : `<div class="card" style="margin-top:12px">
         <h3>${p.active && until ? L('I-extend ang Premium', 'Extend Premium') : L('Kumuha ng Premium', 'Get Premium')}</h3>
         <p style="margin:6px 0"><span class="pill warn" style="font-size:15px">${L(`₱${esc(p.price)} para sa ${p.plan_days} araw`, `₱${esc(p.price)} for ${p.plan_days} days`)}</span></p>
@@ -1609,6 +1613,7 @@
       ${p.payments.length ? fold('pay-history', `<h2>${L('Mga bayad mo', 'Your payments')}</h2><span class="pill">${p.payments.length}</span>`, `<div class="list">${p.payments.map((x) => `<div class="list-item"><div class="grow"><b>₱${esc(x.amount)}</b> · ${esc(x.method)}${x.provider && x.provider !== 'manual' ? '' : ' · ref ' + esc(x.reference)}
         <div class="muted small">${fmtDate(x.created_at)}${x.note ? ' · ' + esc(x.note) : ''}</div></div>${statusPill[x.status] || ''}${x.status === 'approved' ? `<button type="button" class="btn ghost small" data-rc="${x.id}" aria-label="${L('Resibo', 'Receipt')} ₱${esc(x.amount)}">🧾 ${L('Resibo', 'Receipt')}</button>` : ''}</div>`).join('')}</div>`, { card: false }) : ''}`);
     $$('[data-rc]').forEach((b) => (b.onclick = () => showReceipt(+b.dataset.rc)));
+    if (p.paid) appDownloads($('#appDl'));
     // PayMongo's checkout page. In the phone and desktop apps it opens in the browser.
     // One button; the user picks GCash, Maya, card, QR Ph, etc. on PayMongo's page.
     $$('#paynow').forEach((b) => (b.onclick = async () => {
@@ -1640,6 +1645,55 @@
       const btn = $('button[type=submit]', f); btn.disabled = true;
       try { await api('POST', '/api/payments', { method_id: pm && pm.id, reference: $('#ref').value, proof }); toast(L('Naipadala! Hintayin ang email ng confirmation.', 'Sent! Wait for the confirmation email.')); viewPremium(); } catch (err) { $('#err').textContent = err.message; btn.disabled = false; }
     };
+  }
+
+  /* App installers for paid Premium: the newest Android .apk and Windows .exe (latest GitHub Release, the same
+     files the Windows app updates from) with a step-by-step guide to install and use the app. The server only
+     gives the links to users with an approved payment and running Premium (GET /api/app/installers).
+     The same links and guide are in the "Premium is active" email. Links open in the browser in the apps. */
+  async function appDownloads(box) {
+    if (!box) return;
+    let rel;
+    try { rel = await api('GET', '/api/app/installers'); } catch (e) {
+      if (box.isConnected) box.innerHTML = `<h3>📲 ${L('I-download ang app', 'Download the app')}</h3><p class="muted small" style="margin:0">${esc(e.message)}</p>`;
+      return;
+    }
+    if (!box.isConnected) return;
+    const ua = navigator.userAgent || '';
+    const here = /Android/i.test(ua) ? 'apk' : /Windows/i.test(ua) ? 'setup' : '';
+    const NAMES = { apk: 'Android (.apk)', setup: L('Windows installer (Setup .exe)', 'Windows installer (Setup .exe)'), portable: L('Windows portable (.exe, walang install)', 'Windows portable (.exe, no install)'), exe: 'Windows (.exe)' };
+    const size = (n) => (n ? ` · ${Math.round(n / 1048576)} MB` : '');
+    const steps = (list) => `<ol class="small" style="padding-left:18px;margin:6px 0">${list.map((x) => `<li>${x}</li>`).join('')}</ol>`;
+    box.innerHTML = `<h3>📲 ${L('I-download ang app', 'Download the app')}</h3>
+      <p class="muted small" style="margin:0 0 8px">${S.user.role === 'admin' ? L(`Pinakabagong bersyon: ${esc(rel.version)}.`, `Newest version: ${esc(rel.version)}.`)
+        : L(`Salamat sa bayad! Narito ang pinakabagong bersyon (${esc(rel.version)}). Ipinadala rin namin ito sa email mo.`, `Thank you for paying! Here is the newest version (${esc(rel.version)}). We also sent it to your email.`)}</p>
+      <div class="list">${rel.files.map((f) => `<div class="list-item"><div class="grow"><b>${esc(NAMES[f.kind])}</b>${f.kind === here ? ` <span class="pill ok">${L('Para sa device na ito', 'For this device')}</span>` : ''}
+        <div class="muted small">${esc(f.name)}${size(f.size)}</div></div>
+        <a class="btn small${f.kind === here ? '' : ' secondary'}" href="${esc(f.url)}" target="_blank" rel="noopener" download>⬇️ ${L('I-download', 'Download')}</a></div>`).join('')}</div>
+      ${fold('app-guide', `<h3>${L('Paano i-install at gamitin', 'How to install and use')}</h3>`, `
+        <h4 style="margin:8px 0 0">${L('Android (phone o tablet)', 'Android (phone or tablet)')}</h4>
+        ${steps([
+          L('Pindutin ang <b>I-download</b> sa Android (.apk) at hintaying matapos.', 'Tap <b>Download</b> on Android (.apk) and wait until it finishes.'),
+          L('Buksan ang <b>CSE-Reviewer.apk</b> (sa notification o sa Files → Downloads).', 'Open <b>CSE-Reviewer.apk</b> (from the notification or Files → Downloads).'),
+          L('Kapag may tanong na i-allow ang source na ito, pindutin ang <b>Settings</b>, i-on ang <b>Allow from this source</b>, at bumalik.', 'If asked to allow this source, tap <b>Settings</b>, turn on <b>Allow from this source</b>, and go back.'),
+          L('Pindutin ang <b>Install</b>, tapos <b>Open</b>. Kung ayaw mag-install dahil may lumang app, i-uninstall muna ang luma.', 'Tap <b>Install</b>, then <b>Open</b>. If it will not install because an old app is there, uninstall the old one first.'),
+        ])}
+        <h4 style="margin:8px 0 0">Windows</h4>
+        ${steps([
+          L('I-download ang <b>Setup .exe</b> at buksan ito.', 'Download the <b>Setup .exe</b> and open it.'),
+          L('Kapag lumabas ang "Windows protected your PC", pindutin ang <b>More info</b> → <b>Run anyway</b>.', 'If "Windows protected your PC" shows, click <b>More info</b> → <b>Run anyway</b>.'),
+          L('Sundan ang installer (Next → Install → Finish). Nasa Start menu at desktop ang <b>CSE Reviewer</b>, at kusa itong nag-a-update.', 'Follow the installer (Next → Install → Finish). <b>CSE Reviewer</b> is in the Start menu and on the desktop, and it updates itself.'),
+          L('Ayaw mag-install? Gamitin ang <b>portable .exe</b>: i-download at buksan lang.', 'Cannot install? Use the <b>portable .exe</b>: just download and open it.'),
+        ])}
+        <h4 style="margin:8px 0 0">${L('Paano gamitin', 'How to use')}</h4>
+        ${steps([
+          L('Mag-login gamit ang <b>parehong email at password</b>. Kasama na ang Premium mo.', 'Log in with the <b>same email and password</b>. Your Premium comes with it.'),
+          L('Piliin ang level (Professional o Subprofessional) sa Home.', 'Choose the level (Professional or Subprofessional) on Home.'),
+          L('<b>Practice</b>: pumili ng subject at bilang ng tanong; may tama/mali at paliwanag agad.', '<b>Practice</b>: pick a subject and number of questions; you see right/wrong and the explanation right away.'),
+          L('<b>Mock exam</b>: pumili ng exam set sa Home; may timer na parang totoong exam. Pagkatapos, tingnan ang review at score kada topic, at i-save bilang PDF.', '<b>Mock exam</b>: pick an exam set on Home; it is timed like the real exam. Afterwards, see the review and score by topic, and save it as a PDF.'),
+          L('<b>Resulta</b>: progress mo, streak, at "Balikan ang mga mali".', '<b>Results</b>: your progress, streak, and "Go over your mistakes".'),
+          L('Gumagana kahit <b>offline</b> pagkatapos ng unang login online. Mag-online kahit isang beses bawat 30 araw.', 'Works <b>offline</b> after the first online login. Go online at least once every 30 days.'),
+        ])}`, { card: false, stay: true })}`;
   }
 
   /* Receipt of a Premium payment: shown in the app, saved as PDF or printed. Proof of payment, not a BIR invoice.

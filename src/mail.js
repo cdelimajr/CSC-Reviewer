@@ -23,6 +23,36 @@ function receiptHtml(r) {
     <p style="font-size:12px;color:#5b6478">Patunay ito ng bayad sa app. Hindi ito BIR invoice.</p>`;
 }
 
+// The newest installers (from the latest GitHub Release, see src/releases.js) and a short guide, for paid users.
+const KIND_NAMES = { apk: 'Android (.apk)', setup: 'Windows installer (Setup .exe)', portable: 'Windows portable (.exe, walang install)', exe: 'Windows (.exe)' };
+const mb = (n) => (n ? ` · ${Math.round(n / 1048576)} MB` : '');
+function appsHtml(apps) {
+  if (!apps || !apps.files || !apps.files.length) return '';
+  const links = apps.files.map((f) => `<p style="margin:6px 0"><a href="${esc(f.url)}" style="display:inline-block;background:#1e40af;color:#fff;text-decoration:none;padding:10px 14px;border-radius:8px;font-weight:bold">⬇ ${esc(KIND_NAMES[f.kind])}</a> <span style="font-size:12px;color:#5b6478">${esc(f.name)}${mb(f.size)}</span></p>`).join('');
+  return `<h3 style="margin:18px 0 6px;font-size:16px">I-download ang app (bersyon ${esc(apps.version)})</h3>${links}
+    <h4 style="margin:14px 0 4px">Paano i-install sa Android</h4>
+    <ol style="font-size:14px;padding-left:18px;margin:0">
+      <li>Buksan ang link na <b>Android (.apk)</b> sa phone at hintaying matapos ang download.</li>
+      <li>Buksan ang <b>CSE-Reviewer.apk</b> (sa notification o sa Files → Downloads).</li>
+      <li>Kapag may tanong na "I-allow mula sa source na ito", pindutin ang <b>Settings</b> at i-on ang <b>Allow from this source</b>, saka bumalik.</li>
+      <li>Pindutin ang <b>Install</b>, tapos <b>Open</b>. Kung ayaw mag-install dahil may lumang app, i-uninstall muna ang luma.</li></ol>
+    <h4 style="margin:14px 0 4px">Paano i-install sa Windows</h4>
+    <ol style="font-size:14px;padding-left:18px;margin:0">
+      <li>I-download ang <b>Setup .exe</b> sa computer at buksan ito.</li>
+      <li>Kapag lumabas ang "Windows protected your PC", pindutin ang <b>More info</b> → <b>Run anyway</b>.</li>
+      <li>Sundan ang installer (Next → Install → Finish). Bubukas ito sa Start menu at desktop bilang <b>CSE Reviewer</b>. Kusa na itong nag-a-update.</li>
+      <li>Ayaw mag-install? Gamitin ang <b>portable .exe</b>: i-download at buksan lang, walang install.</li></ol>
+    <h4 style="margin:14px 0 4px">Paano gamitin</h4>
+    <ol style="font-size:14px;padding-left:18px;margin:0">
+      <li>Mag-login gamit ang <b>parehong email at password</b> ng account na ito. Kasama na ang Premium mo.</li>
+      <li>Piliin ang level (Professional o Subprofessional) sa Home.</li>
+      <li><b>Practice</b>: pumili ng subject at bilang ng tanong; may tama/mali at paliwanag agad.</li>
+      <li><b>Mock exam</b>: pumili ng exam set sa Home; may timer na parang totoong exam. Pagkatapos, tingnan ang review, score kada topic, at i-save bilang PDF.</li>
+      <li><b>Resulta</b>: progress mo, streak, at "Balikan ang mga mali".</li>
+      <li>Gumagana ito kahit <b>offline</b> pagkatapos ng unang login online. Mag-online kahit isang beses bawat 30 araw para ma-save ang resulta at makakuha ng bagong tanong.</li></ol>
+    <p style="font-size:12px;color:#5b6478">Nasa app din ang mga link at gabay na ito: Account → Premium → I-download ang app.</p>`;
+}
+
 function layout(title, bodyHtml) {
   return `<!doctype html><html><body style="margin:0;background:#f4f6fb;font-family:Arial,Helvetica,sans-serif;color:#172033">
   <div style="max-width:560px;margin:0 auto;padding:24px 16px">
@@ -116,16 +146,17 @@ const templates = {
       `Hi ${name},\n\nNatapos na exam: ${stats.attempts}. Huling mock exams: ${last}.`);
   },
   // receipt (when approved): the receipt details, also attached as a PDF (see public/pdf.js receipt()).
-  payment(to, name, status, until, note, receipt) {
+  // apps (when approved): the newest installers and the install guide (see appsHtml), or null.
+  payment(to, name, status, until, note, receipt, apps) {
     const ok = status === 'approved';
     const untilText = until ? dateText(until) : '';
     const rc = ok && receipt ? receiptHtml(receipt) : '';
     const files = ok && receipt ? [{ name: `Resibo-${receipt.no}.pdf`, content: Buffer.from(PDF.receipt(receipt)) }] : [];
     return safeSend(to, ok ? `Aktibo na ang Premium mo${receipt ? ` · Resibo ${receipt.no}` : ''}` : 'Tungkol sa iyong bayad',
       layout(ok ? 'Salamat! Aktibo na ang Premium' : 'Hindi na-approve ang bayad', ok
-        ? `<p>Hi ${esc(name)},</p><p>Na-confirm na ang bayad mo. Pwede mo nang gamitin ang lahat ng mock exam hanggang <b>${esc(untilText)}</b>.</p>${note ? `<p>${esc(note)}</p>` : ''}${rc}`
+        ? `<p>Hi ${esc(name)},</p><p>Na-confirm na ang bayad mo. Pwede mo nang gamitin ang lahat ng mock exam hanggang <b>${esc(untilText)}</b>.</p>${note ? `<p>${esc(note)}</p>` : ''}${rc}${appsHtml(apps)}`
         : `<p>Hi ${esc(name)},</p><p>Hindi namin ma-confirm ang bayad mo.</p>${note ? `<p>Dahilan: ${esc(note)}</p>` : ''}<p>Pakisubukan ulit o mag-reply sa email na ito.</p>`),
-      ok ? `Hi ${name}, aktibo na ang Premium mo hanggang ${untilText}.${receipt ? ` Resibo ${receipt.no}: ₱${receipt.amount}, ${receipt.method}, ref ${receipt.reference}.` : ''}` : `Hi ${name}, hindi na-approve ang bayad mo. ${note || ''}`,
+      ok ? `Hi ${name}, aktibo na ang Premium mo hanggang ${untilText}.${receipt ? ` Resibo ${receipt.no}: ₱${receipt.amount}, ${receipt.method}, ref ${receipt.reference}.` : ''}${apps && apps.files.length ? `\n\nI-download ang app (bersyon ${apps.version}):\n${apps.files.map((f) => `${KIND_NAMES[f.kind]}: ${f.url}`).join('\n')}\nNasa app ang gabay sa pag-install: Account → Premium → I-download ang app.` : ''}` : `Hi ${name}, hindi na-approve ang bayad mo. ${note || ''}`,
       files);
   },
   // Login from a new place and a new device.
