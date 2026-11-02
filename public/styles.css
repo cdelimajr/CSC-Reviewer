@@ -357,12 +357,6 @@ html[data-theme] .set-chip { color: var(--warn-text); }
 .result-tools { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 14px; }
 .result-tools .btn { padding: 10px 6px; font-size: 0.875rem; }
 @media (max-width: 420px) { .result-tools { grid-template-columns: 1fr; } }
-.key-head { margin: 12px 0 6px; font-size: 0.875rem; }
-.keygrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(52px, 1fr)); gap: 6px; }
-.key { display: flex; align-items: baseline; justify-content: center; gap: 4px; padding: 6px 4px; border-radius: 8px; font-weight: 800; font-size: 0.9375rem; }
-.key i { font-style: normal; font-weight: 600; font-size: 0.6875rem; opacity: .75; }
-.key.ok { background: var(--ok-soft); color: var(--ok); }
-.key.bad { background: var(--bad-soft); color: var(--bad); }
 #printArea { display: none; }
 @media print {
   body.printing > *:not(#printArea) { display: none !important; }
