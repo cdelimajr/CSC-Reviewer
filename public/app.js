@@ -3,7 +3,7 @@
   'use strict';
   const $app = document.getElementById('app');
   const LETTERS = ['A', 'B', 'C', 'D'];
-  const APP_VERSION = '1.29.0'; // keep in step with package.json and docs/DOKUMENTASYON.md
+  const APP_VERSION = '1.30.0'; // keep in step with package.json and docs/DOKUMENTASYON.md
   const S = { user: null, meta: null, exam: null, timer: null, saveT: null };
 
   /* ---------------- helpers ---------------- */
@@ -21,6 +21,22 @@
     del(k) { try { localStorage.removeItem(k); } catch { /* ignore */ } },
   };
   const uk = (k) => `${k}-${S.user ? S.user.id : 0}`; // key for the logged-in user
+
+  /* Update status for Account → About the app. The updater of each platform (website, Android/iPhone,
+     Windows; at the bottom of this file) fills it in. state: unknown, checking, latest, downloading,
+     ready (a new version is downloaded), offline, error, none (this copy cannot update itself).
+     check(): look for a new version now. apply(): ask "Update now?" right away. */
+  const Upd = {
+    state: 'unknown', at: 0, check: null, apply: null,
+    set(st) { this.state = st; if (st !== 'checking' && st !== 'unknown') this.at = Date.now(); paintAbout(); },
+    async run() {
+      if (!this.check) return this.set('none');
+      if (this.state === 'checking') return;
+      if (!navigator.onLine) return this.set(this.state === 'ready' ? 'ready' : 'offline');
+      this.set('checking');
+      try { this.set(await this.check()); } catch { this.set(navigator.onLine ? 'error' : 'offline'); }
+    },
+  };
 
   /* ---------------- language: Tagalog or English ----------------
      Every text on screen is written in both languages side by side: L('Tagalog', 'English').
@@ -2642,11 +2658,13 @@
           '<b>Android (Chrome):</b> tap the ⋮ menu → "Add to Home screen" or "Install app".<br><b>iPhone (Safari):</b> tap Share (□↑) → "Add to Home Screen".<br>With Premium, it works even offline. You need internet to log in, pay, and get emails.')}</p>
         <button class="btn secondary" id="install" hidden>${L('I-install ang app', 'Install the app')}</button>`)}
       ${fold('acc-fix', `<h3>Auto Fix</h3><span class="pill ok" id="fixPill">${L('Naka-on', 'On')}</span>`, `<div id="fixCard"></div>`)}
+      ${aboutFold()}
       ${fold('acc-about', `<h3>${L('Tungkol sa exam', 'About the exam')}</h3>`, `
         <p class="muted small" style="margin:0">${L('Sinusunod ng mock exam ang format ng Career Service Exam (pen and paper test) ng Civil Service Commission: Professional na 170 tanong sa loob ng 3 oras at 10 minuto, at Subprofessional na 165 tanong sa loob ng 2 oras at 40 minuto, lahat ay may 4 na pagpipilian at 80% ang passing rate. Hindi inilalabas ng CSC ang eksaktong bilang kada subject, kaya tantiya ang hati ng mga tanong. Ang app na ito ay hindi opisyal na produkto ng CSC.',
           'The mock exam follows the format of the Civil Service Commission\'s Career Service Exam (pen and paper test): Professional has 170 questions in 3 hours and 10 minutes, and Subprofessional has 165 questions in 2 hours and 40 minutes, all with 4 choices and an 80% passing rate. The CSC does not publish the exact count per subject, so the split of questions is an estimate. This app is not an official CSC product.')}</p>
-        <p class="muted small" style="margin:10px 0 0">${L('Bersyon', 'Version')} ${APP_VERSION}</p>`)}
-      </div>`, { cls: 'acc-menu', stay: true, open: !!F.key && F.key.startsWith('acc-') && F.key !== 'acc-menu' }) : freeAccount()}`);
+`)}
+      </div>`, { cls: 'acc-menu', stay: true, open: !!F.key && F.key.startsWith('acc-') && F.key !== 'acc-menu' }) : freeAccount() + aboutFold()}`);
+    wireAbout();
     if (!S.premium) return; // Free: no "Settings and more" (Premium only), so none of its buttons are on the screen
     const pick = (sel, b) => $$(sel).forEach((x) => { x.classList.toggle('active', x === b); x.setAttribute('aria-pressed', String(x === b)); });
     $$('#themes [data-theme]').forEach((b) => (b.onclick = () => {
@@ -2706,6 +2724,57 @@
       <div class="row between"><h3 style="margin:0">Premium</h3><span class="pill">${L('Libre', 'Free')}</span></div>
       <p class="muted small" style="margin:8px 0 12px">${L('Sa Premium, mabubuksan ang <b>Mga setting at iba pa</b>: itsura at laki ng letra, tunog, paalala sa pag-aaral, backup, seguridad, mabilis na login, password, Auto Fix, at iba pa. Kasama rin ang lahat ng exam set, walang limit, at gumagana offline.', 'With Premium you get <b>Settings and more</b>: look and text size, sounds, study reminder, backup, security, quick login, password, Auto Fix, and more. It also opens all exam sets, no limits, and works offline.')}</p>
       <div class="row"><a class="btn" href="#/premium">⭐ ${L('Kumuha ng Premium', 'Get Premium')} ›</a><a class="btn ghost" href="#/help">${L('Tulong', 'Help')} ›</a></div></div>`;
+  }
+
+  /* Account → About the app: name, version, where it runs, update status (up to date or a new version
+     ready, from the updater of each platform), and contact. Free: under the Premium card. Premium: in
+     "Settings and more". Opening it checks for a new version (at most once a minute). */
+  function platformName() {
+    if (window.cseDesktop) return L('Windows app', 'Windows app');
+    if (capNative) return (window.Capacitor.getPlatform && Capacitor.getPlatform() === 'ios') ? L('iPhone app', 'iPhone app') : L('Android app', 'Android app');
+    const standalone = window.matchMedia && matchMedia('(display-mode: standalone)').matches;
+    return standalone ? L('Naka-install mula sa website', 'Installed from the website') : 'Website';
+  }
+  function aboutFold() {
+    const contact = S.config && S.config.contact;
+    return fold('acc-app', `<h3>${L('Tungkol sa app', 'About the app')}</h3><span class="pill" id="abPill">v${APP_VERSION}</span>`, `
+      <div class="about-head"><img src="icons/icon-192.png" alt="" width="48" height="48"><div><b>CSE Reviewer</b>
+        <div class="muted small">${L('Reviewer para sa Career Service Exam ng Civil Service Commission (Professional at Subprofessional)', 'Reviewer for the Civil Service Commission\'s Career Service Exam (Professional and Subprofessional)')}</div></div></div>
+      <dl class="about-list">
+        <dt>${L('Bersyon', 'Version')}</dt><dd><b>${APP_VERSION}</b>${window.CSE_BUILD ? ` <span class="muted small">(build ${esc(String(window.CSE_BUILD).slice(0, 12))})</span>` : ''}</dd>
+        <dt>${L('Gamit mo ngayon', 'You are using')}</dt><dd>${platformName()}</dd>
+        <dt>Update</dt><dd id="abUpd"></dd>
+        <dt>${L('Contact', 'Contact')}</dt><dd>${contact ? esc(contact) + '<br>' : ''}<a href="#/help">${L('Tulong at mga madalas itanong', 'Help and common questions')} ›</a></dd>
+      </dl>
+      <p class="muted small" style="margin:10px 0 0">${L('Ang app na ito ay hindi opisyal na produkto ng CSC.', 'This app is not an official CSC product.')} © ${new Date().getFullYear()} CSE Reviewer</p>`);
+  }
+  function paintAbout() {
+    const el = document.getElementById('abUpd'); if (!el) return;
+    const st = Upd.state;
+    const text = {
+      unknown: L('Hindi pa natitingnan', 'Not checked yet'),
+      checking: L('Tinitingnan kung may bagong bersyon…', 'Checking for a new version…'),
+      latest: '✅ ' + L('Pinakabago na ang app', 'The app is up to date'),
+      downloading: '⬇️ ' + L('May bagong bersyon, dina-download pa…', 'A new version is downloading…'),
+      ready: '🔄 ' + L('May bagong bersyon na handang i-install', 'A new version is ready to install'),
+      offline: L('Offline: hindi matingnan ngayon. Titingnan ulit kapag may internet.', 'Offline: cannot check now. It checks again when the internet is back.'),
+      error: L('Hindi natingnan. Subukan ulit mamaya.', 'Could not check. Try again later.'),
+      none: L('Hindi kusang nag-a-update ang kopyang ito. Kunin ang pinakabago sa website o sa installer.', 'This copy does not update itself. Get the newest one from the website or the installer.'),
+    }[st] || '';
+    el.innerHTML = `${st === 'ready' ? `<b>${text}</b>` : text}${Upd.at && st !== 'checking' ? `<div class="muted small">${L('Huling tingin', 'Last checked')}: ${fmtDate(Upd.at)}</div>` : ''}
+      <div class="row" style="margin-top:8px">${st === 'ready' && Upd.apply ? `<button type="button" class="btn small" id="abApply">${L('I-update ngayon', 'Update now')}</button>` : ''}
+      ${Upd.check && st !== 'checking' ? `<button type="button" class="btn ghost small" id="abCheck">${L('Tingnan kung may bago', 'Check for updates')}</button>` : ''}</div>`;
+    const pill = document.getElementById('abPill');
+    if (pill) { pill.classList.toggle('warn', st === 'ready'); pill.textContent = st === 'ready' ? L('May update', 'Update ready') : 'v' + APP_VERSION; }
+    if ($('#abApply')) $('#abApply').onclick = () => Upd.apply();
+    if ($('#abCheck')) $('#abCheck').onclick = () => Upd.run();
+  }
+  function wireAbout() {
+    paintAbout();
+    const d = $('[data-fold="acc-app"]'); if (!d) return;
+    // The website's updater starts when the page has loaded; until then there is nothing to ask.
+    const look = () => { if (d.open && (Upd.check ? Date.now() - Upd.at > 60e3 : document.readyState === 'complete' && Upd.state === 'unknown')) Upd.run(); };
+    d.addEventListener('toggle', look); look();
   }
 
   // Account → Backup and restore.
@@ -3650,8 +3719,9 @@
       document.body.appendChild(el);
     }
     // apply(): switch to the new version (the app restarts by itself).
-    function ask(apply) {
-      if (asking || busy() || Date.now() - later < laterWait() || document.getElementById('updating')) return;
+    // now: the user tapped "Update now" in Account → About the app, so ask right away.
+    function ask(apply, now = false) {
+      if (asking || document.getElementById('updating') || (!now && (busy() || Date.now() - later < laterWait()))) return;
       asking = true;
       modal(`<h2 style="margin-top:0">🔄 ${L('May bagong bersyon ng app', 'A new version of the app is ready')}</h2>
         <p class="muted">${L('I-update na ngayon? Ilang segundo lang ito. Naka-save ang lahat ng resulta at settings mo.', 'Update now? It takes a few seconds. All your results and settings are saved.')}</p>
@@ -3678,14 +3748,29 @@
       try { reg = await navigator.serviceWorker.register('/sw.js', { updateViaCache: 'none' }); } catch { return; }
       let controlled = !!navigator.serviceWorker.controller, accepted = false, otherTab = false, last = Date.now();
       // A new version is downloaded and waiting: ask.
-      const offer = () => {
-        if (!reg.waiting || !navigator.serviceWorker.controller || document.hidden) return;
+      const ready = () => !!(reg.waiting && navigator.serviceWorker.controller);
+      const offer = (now = false) => {
+        if (!ready() || (document.hidden && !now)) return;
+        Upd.set('ready');
         UpdAsk.ask(() => new Promise((ok, fail) => {
           if (!reg.waiting) return fail(new Error('gone'));
           accepted = true; reg.waiting.postMessage('skip-waiting');
           setTimeout(() => fail(new Error('slow')), 20000); // the reload below normally comes first
-        }));
+        }), now);
       };
+      // Account → About the app: look now, and wait (up to 1 minute) while a new version downloads.
+      Upd.apply = () => offer(true);
+      Upd.check = async () => {
+        if (ready()) return 'ready';
+        await reg.update();
+        const w = reg.installing;
+        if (w) {
+          Upd.set('downloading');
+          await new Promise((done) => { const t = setTimeout(done, 60e3); w.addEventListener('statechange', () => { if (w.state !== 'installing') { clearTimeout(t); done(); } }); });
+        }
+        return ready() ? 'ready' : reg.installing ? 'downloading' : 'latest';
+      };
+      if (ready()) Upd.set('ready');
       navigator.serviceWorker.addEventListener('controllerchange', () => {
         if (!controlled) { controlled = true; return; } // first visit: nothing to refresh
         if (accepted) { location.reload(); return; }
@@ -3722,16 +3807,16 @@
     // A new version is downloaded: ask (see UpdAsk). Update: the plugin restarts the screens on the new one.
     const applyWhenSafe = () => {
       if (!pending || document.hidden) return;
-      const p = pending;
-      UpdAsk.ask(async () => {
-        store.set('cse-ota', { ...p, tried: true });
-        try { await Updater.set({ id: p.id }); } catch (e) { store.set('cse-ota', p); throw e; }
-      });
+      UpdAsk.ask(switchTo(pending));
+    };
+    const switchTo = (p) => async () => {
+      store.set('cse-ota', { ...p, tried: true });
+      try { await Updater.set({ id: p.id }); } catch (e) { store.set('cse-ota', p); throw e; }
     };
     // Keeps checking even when a version is already downloaded: if the user said "Later" and an even
     // newer one came out, the newer one replaces it (one update, not two in a row).
     let checking = false;
-    const check = async (min = updGap()) => {
+    const check = async (min = updGap(), quiet = true) => {
       if (checking || !navigator.onLine || Date.now() - lastCheck < min) return;
       checking = true; lastCheck = Date.now();
       try {
@@ -3743,9 +3828,18 @@
         const b = await Updater.download({ url: API + u.url, version: u.version });
         pending = { id: b.id, version: u.version };
         store.set('cse-ota', pending);
+        Upd.set('ready');
         if (old && old.id && old.id !== b.id) Updater.delete({ id: old.id }).catch(() => {});
         applyWhenSafe();
-      } catch { /* try again later */ } finally { checking = false; }
+      } catch (e) { if (!quiet) throw e; /* try again later */ } finally { checking = false; }
+    };
+    // Account → About the app.
+    if (pending) Upd.set('ready');
+    Upd.apply = () => { if (pending) UpdAsk.ask(switchTo(pending), true); };
+    Upd.check = async () => {
+      if (checking) await new Promise((r) => { const t = setInterval(() => { if (!checking) { clearInterval(t); r(); } }, 300); });
+      else await check(0, false);
+      return pending ? 'ready' : 'latest';
     };
     setTimeout(applyWhenSafe, 1500); // app just opened: ask now if a new version is ready
     setTimeout(() => check(0), S.premium ? 1000 : 3000);
@@ -3759,7 +3853,16 @@
   const desk = window.cseDesktop && window.cseDesktop.updates;
   if (desk && desk.onReady) {
     const offer = () => { if (!document.hidden) UpdAsk.ask(() => desk.install()); };
-    desk.onReady(() => setTimeout(offer, 400));
+    // Account → About the app. Older Windows apps have no check(): they only say whether one is ready.
+    Upd.apply = () => UpdAsk.ask(() => desk.install(), true);
+    Upd.check = async () => {
+      if (await desk.ready()) return 'ready';
+      if (!desk.check) return 'latest';
+      const r = await desk.check();
+      return r === 'error' ? (navigator.onLine ? 'error' : 'offline') : r;
+    };
+    desk.onReady(() => { Upd.set('ready'); setTimeout(offer, 400); });
+    desk.ready().then((r) => { if (r) Upd.set('ready'); }).catch(() => {});
     window.addEventListener('hashchange', () => desk.ready().then((r) => { if (r) setTimeout(offer, 400); }).catch(() => {}));
     setInterval(() => desk.ready().then((r) => { if (r) offer(); }).catch(() => {}), 60e3);
     document.addEventListener('visibilitychange', () => { if (!document.hidden) desk.ready().then((r) => { if (r) offer(); }).catch(() => {}); });
