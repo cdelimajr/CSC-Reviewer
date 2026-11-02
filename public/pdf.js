@@ -170,7 +170,10 @@
     const row = (k, v) => doc.text(`${k}:  ${v}`, { size: 11, after: 2 });
     row(L('Petsa', 'Date'), day(r.date));
     row(L('Pangalan', 'Name'), `${r.name} <${r.email}>`);
-    row(L('Para sa', 'For'), `CSE Reviewer Premium${r.days ? ` (${r.days} ${L('araw', 'days')})` : ''}`);
+    const g = r.group;
+    row(L('Para sa', 'For'), g && g.qty ? `CSE Reviewer Group Premium: ${g.qty} ${L('tao', 'people')} x ${g.days} ${L('araw', 'days')}${g.org ? ` (${g.org})` : ''}`
+      : `CSE Reviewer Premium${r.days ? ` (${r.days} ${L('araw', 'days')})` : ''}${g && g.seat ? ` · ${L('Group Premium mula kay', 'Group Premium from')} ${g.from}` : ''}`);
+    if (g && g.qty && g.pct) row(L('Group discount', 'Group discount'), `${g.pct}% (${L('mula', 'from')} PHP ${g.list_price}; PHP ${g.each} ${L('bawat tao', 'per person')})`);
     if (r.period_from) row(L('Premium mula', 'Premium period'), `${day(r.period_from)} - ${day(r.period_to)}`);
     row(L('Paraan ng bayad', 'Payment method'), r.method);
     if (r.reference) row(L('Reference no.', 'Reference no.'), r.reference);
@@ -178,12 +181,18 @@
     doc.space(6).rule();
     doc.text(`${L('KABUUAN', 'TOTAL')}:  PHP ${r.amount}`, { size: 14, bold: true, color: GREEN, after: 6 });
     doc.text(L('Bayad na. Salamat!', 'Paid. Thank you!'), { size: 11, after: 10 });
+    if (Number(r.amount) > 0) doc.text(L(NO_REFUND.tl, NO_REFUND.en), { size: 10, bold: true, after: 6 });
     doc.text(L('Patunay ito ng bayad sa loob ng app (RA 8792, Electronic Commerce Act). Hindi ito BIR-registered invoice.',
       'This is proof of payment inside the app (RA 8792, Electronic Commerce Act). It is not a BIR-registered invoice.'), { size: 9, color: MUTED });
     return doc.bytes();
   }
 
-  const api = { create, report, receipt, clean };
+  // Shown on every paid receipt (app, PDF and email). Same words as Account → Terms and Conditions.
+  const NO_REFUND = {
+    tl: 'Walang refund ang bayad na ito. Kung nadoble ang singil o hindi bumukas ang Premium, makipag-ugnayan sa amin at aayusin namin.',
+    en: 'This payment is non-refundable. If you were charged twice or Premium did not open, contact us and we will fix it.',
+  };
+  const api = { create, report, receipt, clean, NO_REFUND };
   if (typeof module === 'object' && module.exports) module.exports = api;
   else root.CSEPDF = api;
 })(typeof self !== 'undefined' ? self : this);

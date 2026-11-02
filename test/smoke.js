@@ -175,7 +175,10 @@ const lastCode = (to) => {
   assert.equal(r.status, 200, 'admin sees the installers');
   assert.deepEqual(r.data.files.map((f) => f.kind), ['apk', 'setup', 'portable'], 'only .apk and .exe, Android first');
   assert.equal(r.data.version, '1.0.9');
-  assert.equal((await U('POST', '/api/payments', { reference: 'GC123456', amount: '1' })).status, 200);
+  // No refunds: the box must be ticked before paying (checked by the server too)
+  r = await U('POST', '/api/payments', { reference: 'GC123456' });
+  assert.equal(r.status, 400); assert.equal(r.data.code, 'no_refund', 'manual payment needs the no-refund tick');
+  assert.equal((await U('POST', '/api/payments', { agree_no_refund: true, reference: 'GC123456', amount: '1' })).status, 200);
   assert.ok(mail.outbox.some((m) => m.to === 'admin@test.ph' && m.subject.startsWith('Bagong bayad')), 'admin notified');
   r = await A('GET', '/api/admin/payments');
   assert.equal(r.data.length, 1);
@@ -217,9 +220,10 @@ const lastCode = (to) => {
   const payIt = (cs, method) => Object.assign(cs.attributes, { payment_method_used: method, payments: [{ id: 'pay_' + cs.id, attributes: { status: 'paid', amount: cs.attributes.line_items[0].amount } }] });
   assert.equal((await U('GET', '/api/me')).data.config.online_pay, true);
   const before = (await U('GET', '/api/premium')).data.until;
-  r = await U('POST', '/api/payments/checkout', {});
+  assert.equal((await U('POST', '/api/payments/checkout', {})).data.code, 'no_refund', 'online payment needs the no-refund tick');
+  r = await U('POST', '/api/payments/checkout', { agree_no_refund: true });
   assert.ok(r.data.url.startsWith('https://checkout.paymongo.test/'), 'checkout link');
-  assert.equal((await U('POST', '/api/payments/checkout', {})).data.url, r.data.url, 'unpaid checkout reused');
+  assert.equal((await U('POST', '/api/payments/checkout', { agree_no_refund: true })).data.url, r.data.url, 'unpaid checkout reused');
   const cs1 = Object.values(sessions)[0];
   assert.equal(cs1.attributes.line_items[0].amount, 9900, 'amount in centavos');
   const crypto = require('node:crypto');
@@ -243,18 +247,18 @@ const lastCode = (to) => {
   assert.ok(mail.outbox.some((m) => m.to === 'juan@test.ph' && m.subject.startsWith('Aktibo na')), 'user emailed');
   assert.equal((await hook('cs_unknown')).status, 200, 'unknown checkouts ignored');
   // Paid while the webhook was late: opening the Premium page checks it
-  await U('POST', '/api/payments/checkout', {});
+  await U('POST', '/api/payments/checkout', { agree_no_refund: true });
   payIt(Object.values(sessions)[1], 'paymaya');
   r = await U('GET', '/api/premium');
   assert.ok(Math.abs(r.data.until - (before + 60 * 864e5)) < 5000, 'premium page picks up the payment');
   // 💳 Card: a checkout with only the card option (straight to the card form), kept apart from the other checkout
   assert.equal(r.data.card, true, 'card option shown');
-  const other = (await U('POST', '/api/payments/checkout', {})).data.url;
-  const cardUrl = (await U('POST', '/api/payments/checkout', { method: 'card' })).data.url;
+  const other = (await U('POST', '/api/payments/checkout', { agree_no_refund: true })).data.url;
+  const cardUrl = (await U('POST', '/api/payments/checkout', { agree_no_refund: true, method: 'card' })).data.url;
   assert.notEqual(cardUrl, other, 'card has its own checkout');
   assert.deepEqual(Object.values(sessions).at(-1).attributes.payment_method_types, ['card']);
-  assert.equal((await U('POST', '/api/payments/checkout', { method: 'card' })).data.url, cardUrl, 'unpaid card checkout reused');
-  assert.equal((await U('POST', '/api/payments/checkout', {})).data.url, other, 'other checkout reused');
+  assert.equal((await U('POST', '/api/payments/checkout', { agree_no_refund: true, method: 'card' })).data.url, cardUrl, 'unpaid card checkout reused');
+  assert.equal((await U('POST', '/api/payments/checkout', { agree_no_refund: true })).data.url, other, 'other checkout reused');
 
   // 🏷️ Promo codes: made by the admin, checked and priced by the server, one use per account
   assert.equal((await U('GET', '/api/premium')).data.promo, false, 'no promo box without codes');
@@ -272,12 +276,12 @@ const lastCode = (to) => {
   r = await U('POST', '/api/promo/check', { code: ' review20 ', price: 1 });
   assert.deepEqual([r.data.price, r.data.discount, r.data.amount, r.data.free], [99, 19.8, 79.2, false], 'price from the server, not the app');
   assert.equal((await U('POST', '/api/promo/check', { code: 'MINUS90' })).data.online, 20, 'online at least ₱20');
-  assert.equal((await U('POST', '/api/payments/checkout', { code: 'NOPE' })).status, 400, 'bad code stops the checkout');
-  const promoUrl = (await U('POST', '/api/payments/checkout', { code: 'REVIEW20', amount: 1 })).data.url;
+  assert.equal((await U('POST', '/api/payments/checkout', { agree_no_refund: true, code: 'NOPE' })).status, 400, 'bad code stops the checkout');
+  const promoUrl = (await U('POST', '/api/payments/checkout', { agree_no_refund: true, code: 'REVIEW20', amount: 1 })).data.url;
   assert.notEqual(promoUrl, other, 'own checkout for the promo price');
   const csP = Object.values(sessions).at(-1);
   assert.equal(csP.attributes.line_items[0].amount, 7920, 'PayMongo charges the discounted price');
-  assert.equal((await U('POST', '/api/payments/checkout', { code: 'REVIEW20' })).data.url, promoUrl, 'promo checkout reused');
+  assert.equal((await U('POST', '/api/payments/checkout', { agree_no_refund: true, code: 'REVIEW20' })).data.url, promoUrl, 'promo checkout reused');
   const untilP = (await U('GET', '/api/premium')).data.until;
   payIt(csP, 'gcash'); await hook(csP.id); await hook(csP.id);
   r = await U('GET', '/api/premium');
@@ -292,7 +296,7 @@ const lastCode = (to) => {
   assert.equal((await A('DELETE', '/api/admin/promos/' + promos.find((x) => x.code === 'REVIEW20').id)).status, 409, 'used code cannot be deleted');
   assert.equal((await A('DELETE', '/api/admin/promos/' + promos.find((x) => x.code === 'OLD').id)).status, 200, 'unused code deleted');
   // 100% off: no PayMongo; Premium starts now, a ₱0 entry is kept, and it is in the audit log
-  assert.equal((await U('POST', '/api/payments/checkout', { code: 'FREE' })).data.code, 'promo_free', 'free code needs no checkout');
+  assert.equal((await U('POST', '/api/payments/checkout', { agree_no_refund: true, code: 'FREE' })).data.code, 'promo_free', 'free code needs no checkout');
   assert.equal((await U('POST', '/api/promo/redeem', { code: 'MINUS90' })).status, 400, 'only a free code is redeemed');
   const nCs = Object.keys(sessions).length, untilF = (await U('GET', '/api/premium')).data.until;
   r = await U('POST', '/api/promo/redeem', { code: 'free' });
@@ -315,6 +319,82 @@ const lastCode = (to) => {
   await A('PATCH', '/api/admin/promos/' + promos.find((x) => x.code === 'MINUS90').id, { active: false });
   assert.equal((await F2('POST', '/api/promo/check', { code: 'MINUS90' })).status, 400, 'turned-off code refused');
   await A('PATCH', '/api/admin/promos/' + promos.find((x) => x.code === 'MINUS90').id, { active: true });
+  // 👥 Group Premium: a boss pays once for 10 people and gets one-time codes; the server sets the price
+  const dbx = require('../src/db');
+  const Boss = client(), G1 = client(), G2 = client(), G3 = client();
+  for (const [c, n, e] of [[Boss, 'Boss', 'boss@test.ph'], [G1, 'Gina', 'gina@test.ph'], [G2, 'Gabo', 'gabo@test.ph'], [G3, 'Gelo', 'gelo@test.ph']]) {
+    await c('POST', '/api/auth/register', { name: n, email: e, password: 'password123' });
+    await c('POST', '/api/auth/verify', { code: lastCode(e) });
+  }
+  r = await Boss('GET', '/api/premium');
+  assert.equal(r.data.bulk.min, 2); assert.deepEqual(r.data.bulk.tiers.map((t) => t.pct), [10, 15, 20], 'group discounts shown');
+  const bossUntil = r.data.until;
+  r = await Boss('GET', '/api/bulk/quote?qty=10');
+  assert.equal(r.data.pct, 15); assert.equal(r.data.total, 841.5, '10 × ₱99 less 15%');
+  assert.equal((await Boss('GET', '/api/bulk/quote?qty=1')).status, 400, 'at least 2 people');
+  assert.equal((await Boss('POST', '/api/bulk/checkout', { qty: 10 })).data.code, 'no_refund', 'group payment needs the no-refund tick');
+  assert.equal((await Boss('POST', '/api/bulk/checkout', { qty: 2, emails: 'a@x.ph b@x.ph c@x.ph', agree_no_refund: true })).status, 400, 'more emails than people');
+  assert.equal((await Boss('POST', '/api/bulk/checkout', { qty: 2, emails: 'not-an-email', agree_no_refund: true })).status, 400, 'bad email');
+  r = await Boss('POST', '/api/bulk/checkout', { qty: 10, total: 1, emails: 'GELO@test.ph', org: 'HR Team', agree_no_refund: true });
+  assert.ok(r.data.url.startsWith('https://checkout.paymongo.test/'), 'group checkout link');
+  const gcs = Object.values(sessions).at(-1);
+  assert.equal(gcs.attributes.line_items[0].amount, 84150, 'server price, not the app\'s');
+  payIt(gcs, 'gcash'); await hook(gcs.id); await hook(gcs.id);
+  r = await Boss('GET', '/api/premium');
+  assert.equal(r.data.until, bossUntil, 'buyer Premium not changed by a group payment');
+  assert.equal(r.data.groups, 1);
+  let groups = (await Boss('GET', '/api/bulk')).data;
+  assert.equal(groups.length, 1); assert.equal(groups[0].seats.length, 10, 'one code per person, made once');
+  assert.ok(groups[0].seats.every((x) => /^GRP-[A-Z2-9]{4}-[A-Z2-9]{4}$/.test(x.code) && x.state === 'open'));
+  const geloSeat = groups[0].seats.find((x) => x.email === 'gelo@test.ph'), openSeats = groups[0].seats.filter((x) => !x.email);
+  assert.ok(geloSeat, 'email kept on a seat'); assert.ok(groups[0].seats[0].link.includes('#/redeem/GRP-'), 'redeem link');
+  assert.ok(mail.outbox.some((m) => m.to === 'boss@test.ph' && /Group Premium/.test(m.subject) && m.attachments.length), 'buyer gets the codes and receipt');
+  assert.ok(mail.outbox.some((m) => m.to === 'gelo@test.ph' && m.text.includes(geloSeat.code)), 'code emailed to the person');
+  const gpay = r.data.payments.find((x) => x.bulk_id);
+  r = await Boss('GET', `/api/payments/${gpay.id}/receipt`);
+  assert.equal(r.data.group.qty, 10); assert.equal(r.data.group.pct, 15); assert.equal(r.data.amount, '841.5');
+  // Use a code: typed in the promo box, with spaces and small letters
+  assert.equal((await G1('POST', '/api/promo/check', { code: openSeats[0].code.toLowerCase() })).data.group, true, 'promo box knows a group code');
+  const g1Before = (await G1('GET', '/api/premium')).data.until;
+  r = await G1('POST', '/api/bulk/redeem', { code: openSeats[0].code.toLowerCase().replace(/-/g, ' ') });
+  assert.equal(r.status, 200); assert.equal(r.data.from, 'HR Team');
+  assert.ok(Math.abs(r.data.until - (Math.max(Date.now(), g1Before) + 30 * 864e5)) < 5000, 'seat gives the plan days');
+  assert.equal((await G1('GET', '/api/me')).data.premium, true);
+  assert.match((await G1('POST', '/api/bulk/redeem', { code: openSeats[0].code })).data.error, /Nagamit mo na/, 'code works once');
+  assert.match((await G1('POST', '/api/bulk/redeem', { code: openSeats[1].code })).data.error, /Isang seat lang/, 'one seat per person in a group');
+  assert.match((await G2('POST', '/api/bulk/redeem', { code: openSeats[0].code })).data.error, /ibang account/, 'taken by someone else');
+  assert.equal((await G2('POST', '/api/bulk/redeem', { code: geloSeat.code })).status, 403, 'seat with an email: only that account');
+  assert.equal((await G3('POST', '/api/bulk/redeem', { code: geloSeat.code })).status, 200, 'the right email can use it');
+  assert.equal((await Boss('POST', '/api/bulk/redeem', { code: openSeats[1].code })).status, 200, 'the buyer can use a seat too');
+  await dbx.run('UPDATE bulk_seats SET expires_at = ? WHERE code = ?', Date.now() - 1000, openSeats[2].code);
+  assert.match((await G2('POST', '/api/bulk/redeem', { code: openSeats[2].code })).data.error, /Expired/, 'unused seats expire');
+  assert.equal((await G2('POST', '/api/bulk/redeem', { code: 'GRP-AAAA-AAAA' })).status, 400, 'unknown code');
+  r = await G1('GET', '/api/premium');
+  const seatPay = r.data.payments.find((x) => x.provider === 'bulk');
+  assert.equal(seatPay.amount, '0');
+  assert.equal((await G1('GET', `/api/payments/${seatPay.id}/receipt`)).data.group.from, 'HR Team', 'seat on the receipt');
+  groups = (await Boss('GET', '/api/bulk')).data;
+  assert.equal(groups[0].seats.filter((x) => x.state === 'used').length, 3, 'buyer sees who used the codes');
+  assert.equal(groups[0].seats.find((x) => x.code === openSeats[0].code).used_by.email, 'gina@test.ph');
+  assert.equal(groups[0].seats.find((x) => x.code === openSeats[2].code).state, 'expired');
+  // The buyer types an email for an unused seat: only that account can use it, and the code is emailed
+  assert.equal((await G1('PUT', '/api/bulk/seats/' + openSeats[3].id, { email: 'gabo@test.ph' })).status, 404, 'only the buyer');
+  assert.equal((await Boss('PUT', '/api/bulk/seats/' + openSeats[0].id, { email: 'gabo@test.ph' })).status, 409, 'used seat cannot change');
+  assert.equal((await Boss('PUT', '/api/bulk/seats/' + openSeats[3].id, { email: 'gabo@test.ph' })).status, 200);
+  assert.ok(mail.outbox.some((m) => m.to === 'gabo@test.ph' && m.text.includes(openSeats[3].code)), 'seat code emailed');
+  assert.equal((await G1('POST', '/api/bulk/redeem', { code: openSeats[3].code })).status, 403, 'now only for that email');
+  assert.equal((await G2('POST', '/api/bulk/redeem', { code: openSeats[3].code })).status, 200);
+  // Admin: sees every group, and makes one after a manual payment (e.g. bank transfer)
+  assert.equal((await U('GET', '/api/admin/bulk')).status, 403, 'admins only');
+  r = await A('GET', '/api/admin/bulk');
+  assert.equal(r.data.rows.find((x) => x.qty === 10).used, 4);
+  assert.equal((await A('GET', '/api/admin/bulk/' + r.data.rows[0].id)).data.length, 10);
+  assert.equal((await A('POST', '/api/admin/bulk', { email: 'nobody@test.ph', qty: 3 })).status, 404);
+  r = await A('POST', '/api/admin/bulk', { email: 'boss@test.ph', qty: 3, amount: '297', reference: 'BDO123' });
+  assert.equal(r.status, 200);
+  assert.equal((await Boss('GET', '/api/bulk')).data.length, 2, 'admin-made group is the buyer\'s');
+  r = await A('GET', '/api/admin/audit?filter=admin');
+  assert.ok(['bulk_checkout', 'bulk_paid', 'bulk_redeem', 'bulk_seat_email', 'bulk_admin_create'].every((a) => r.data.rows.some((x) => x.action === a)), 'group actions in the audit log');
   fake.close();
 
   // Offline: question pack, then sync results taken without internet (saved once only)
@@ -458,28 +538,28 @@ const lastCode = (to) => {
   r = await U('GET', '/api/premium');
   assert.equal(r.data.online, false, 'online payment turned off'); assert.equal(r.data.manual, true);
   assert.deepEqual(r.data.methods.map((m) => m.id), ['gcash', 'maya', 'bdo']);
-  assert.equal((await U('POST', '/api/payments/checkout', {})).status, 404, 'checkout off');
+  assert.equal((await U('POST', '/api/payments/checkout', { agree_no_refund: true })).status, 404, 'checkout off');
   const png = 'data:image/png;base64,' + Buffer.from('89504e470d0a1a0a', 'hex').toString('base64');
   assert.equal((await A('PUT', '/api/admin/pay-qr/maya', { data: png })).status, 200);
   assert.equal((await fetch(base + '/api/pay/qr/maya')).headers.get('content-type'), 'image/png', 'QR code served');
   assert.equal((await U('GET', '/api/premium')).data.methods.find((m) => m.id === 'maya').has_qr, true);
-  assert.equal((await U('POST', '/api/payments', { method_id: 'coins', reference: 'PP123456' })).status, 400, 'turned-off account refused');
-  assert.equal((await U('POST', '/api/payments', { method_id: 'maya', reference: 'MY123456', proof: 'data:text/html;base64,AAAA' })).status, 400, 'proof must be an image');
+  assert.equal((await U('POST', '/api/payments', { agree_no_refund: true, method_id: 'coins', reference: 'PP123456' })).status, 400, 'turned-off account refused');
+  assert.equal((await U('POST', '/api/payments', { agree_no_refund: true, method_id: 'maya', reference: 'MY123456', proof: 'data:text/html;base64,AAAA' })).status, 400, 'proof must be an image');
   // Manual payment with a promo code: the admin sees the discounted price; the code counts once approved
-  assert.equal((await F2('POST', '/api/payments', { method_id: 'maya', reference: 'PROMO1234', code: 'MINUS90' })).status, 200);
+  assert.equal((await F2('POST', '/api/payments', { agree_no_refund: true, method_id: 'maya', reference: 'PROMO1234', code: 'MINUS90' })).status, 200);
   const mpp = (await A('GET', '/api/admin/payments')).data.find((x) => x.reference === 'PROMO1234');
   assert.deepEqual([mpp.amount, mpp.promo_code, mpp.list_price], ['9', 'MINUS90', '99'], 'manual amount after the code');
   assert.equal((await A('GET', '/api/admin/promos')).data.rows.find((x) => x.code === 'MINUS90').used, 0, 'not counted while waiting');
   await A('POST', `/api/admin/payments/${mpp.id}`, { action: 'approve' });
   assert.equal((await A('GET', '/api/admin/promos')).data.rows.find((x) => x.code === 'MINUS90').used, 1, 'counted when approved');
-  assert.equal((await U('POST', '/api/payments', { method_id: 'maya', reference: 'MY123456', proof: png })).status, 200);
+  assert.equal((await U('POST', '/api/payments', { agree_no_refund: true, method_id: 'maya', reference: 'MY123456', proof: png })).status, 200);
   r = await A('GET', '/api/admin/payments');
   const mp = r.data.find((x) => x.reference === 'MY123456');
   assert.equal(mp.method, 'Maya'); assert.equal(mp.has_proof, 1); assert.equal(mp.proof, undefined, 'list does not carry the image');
   assert.equal((await A('GET', `/api/admin/payments/${mp.id}/proof`)).data.proof, png);
   await A('POST', `/api/admin/payments/${mp.id}`, { action: 'reject', note: 'test' });
   await A('PUT', '/api/admin/settings', { pay_manual_on: '0' });
-  assert.equal((await U('POST', '/api/payments', { method_id: 'maya', reference: 'MY999999' })).status, 403, 'manual payment off');
+  assert.equal((await U('POST', '/api/payments', { agree_no_refund: true, method_id: 'maya', reference: 'MY999999' })).status, 403, 'manual payment off');
   assert.equal((await U('GET', '/api/premium')).data.manual, false);
   await A('PUT', '/api/admin/settings', { pay_manual_on: '1', pay_online_on: '1', exam_watermark: '1' });
   assert.equal(await (await fetch(base + '/ads.txt')).text(), 'google.com, pub-1234567890123456, DIRECT, f08c47fec0942fa0\n', 'ads.txt from the AdSense ID');
@@ -520,7 +600,7 @@ const lastCode = (to) => {
 
   // Admin
   assert.equal((await U('GET', '/api/admin/users')).status, 403, 'user blocked from admin');
-  r = await A('GET', '/api/admin/overview'); assert.equal(r.data.users, 4); assert.equal(r.data.premiumUsers, 2); // Ana got Premium with a promo code
+  r = await A('GET', '/api/admin/overview'); assert.equal(r.data.users, 8); assert.equal(r.data.premiumUsers, 6); // Ana got Premium with a promo code; Boss, Gina, Gabo and Gelo with Group Premium
   r = await A('POST', '/api/admin/sets', { mode: 'subpro' }); assert.equal(r.data.number, 4);
   r = await A('POST', '/api/admin/questions', { subject: 'general', topic: 'Test', question: 'Q?', choices: ['a', 'b', 'c', 'd'], answer: 2 });
   assert.ok(r.data.id);

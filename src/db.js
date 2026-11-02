@@ -149,6 +149,42 @@ CREATE TABLE IF NOT EXISTS promo_redemptions (
   at INTEGER NOT NULL,
   UNIQUE(promo_id, user_id)
 );
+-- Group Premium (bulk): one person pays once for Premium seats for several people.
+-- status: checkout (waiting for payment), paid, expired (checkout not paid in time).
+CREATE TABLE IF NOT EXISTS bulk_orders (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  buyer_id INTEGER NOT NULL,
+  qty INTEGER NOT NULL,
+  discount_pct INTEGER NOT NULL DEFAULT 0,
+  list_price TEXT NOT NULL DEFAULT '',
+  total TEXT NOT NULL DEFAULT '',
+  days INTEGER NOT NULL,
+  seat_days INTEGER NOT NULL,
+  org TEXT NOT NULL DEFAULT '',
+  emails TEXT NOT NULL DEFAULT '[]',
+  base_url TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'checkout',
+  payment_id INTEGER,
+  created_by INTEGER,
+  created_at INTEGER NOT NULL,
+  paid_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_bulk_buyer ON bulk_orders(buyer_id, created_at);
+-- One row per seat: a one-time code. email: only this account can use it (empty = anyone with the code).
+CREATE TABLE IF NOT EXISTS bulk_seats (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  order_id INTEGER NOT NULL,
+  code TEXT NOT NULL UNIQUE,
+  email TEXT NOT NULL DEFAULT '' COLLATE NOCASE,
+  redeemed_by INTEGER,
+  redeemed_at INTEGER,
+  payment_id INTEGER,
+  expires_at INTEGER NOT NULL,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_bulk_seats_order ON bulk_seats(order_id);
+-- One seat per person in each group.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_bulk_seat_user ON bulk_seats(order_id, redeemed_by) WHERE redeemed_by IS NOT NULL;
 `;
 
 // Convert libSQL rows into plain objects.
@@ -187,6 +223,10 @@ const db = {
       'ALTER TABLE payments ADD COLUMN promo_code TEXT',
       'ALTER TABLE payments ADD COLUMN list_price TEXT',
       'ALTER TABLE payments ADD COLUMN discount TEXT',
+      // Group Premium: the group (bulk_orders.id) a payment paid for, or the group a seat came from.
+      'ALTER TABLE payments ADD COLUMN bulk_id INTEGER',
+      // When the user ticked "I understand there are no refunds" before paying.
+      'ALTER TABLE payments ADD COLUMN no_refund_at INTEGER',
     ]) {
       try { await client.execute(sql); } catch (e) { if (!/duplicate column/i.test(e.message)) throw e; }
     }
