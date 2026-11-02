@@ -18,8 +18,9 @@ const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<
 function receiptHtml(r) {
   const row = (k, v) => `<tr><td style="padding:4px 0;color:#5b6478">${k}</td><td style="text-align:right">${esc(v)}</td></tr>`;
   return `<h3 style="margin:16px 0 6px;font-size:16px">Resibo ${esc(r.no)}</h3><table style="width:100%;border-collapse:collapse;font-size:14px">
-    ${r.business ? row('Mula kay', r.business) : ''}${row('Petsa', dateText(r.date))}${r.promo_code ? row('Promo code', `${r.promo_code} (−₱${r.discount} mula ₱${r.list_price})`) : ''}${row('Halaga', '₱' + r.amount)}${row('Paraan', r.method)}${r.reference ? row('Reference', r.reference) : ''}
+    ${r.business ? row('Mula kay', r.business) : ''}${row('Petsa', dateText(r.date))}${r.group && r.group.qty ? row('Para sa', `Group Premium: ${r.group.qty} tao × ${r.group.days} araw${r.group.org ? ` (${r.group.org})` : ''}`) : ''}${r.group && r.group.pct ? row('Group discount', `${r.group.pct}% (mula ₱${r.group.list_price}; ₱${r.group.each} bawat tao)`) : ''}${r.group && r.group.seat ? row('Group Premium mula kay', r.group.from) : ''}${r.promo_code ? row('Promo code', `${r.promo_code} (−₱${r.discount} mula ₱${r.list_price})`) : ''}${row('Halaga', '₱' + r.amount)}${row('Paraan', r.method)}${r.reference ? row('Reference', r.reference) : ''}
     ${r.period_from ? row('Premium', `${dateText(r.period_from)} – ${dateText(r.period_to)}`) : ''}</table>
+    ${Number(r.amount) > 0 ? `<p style="font-size:13px"><b>${esc(PDF.NO_REFUND.tl)}</b></p>` : ''}
     <p style="font-size:12px;color:#5b6478">Patunay ito ng bayad sa app. Hindi ito BIR invoice.</p>`;
 }
 
@@ -158,6 +159,36 @@ const templates = {
         : `<p>Hi ${esc(name)},</p><p>Hindi namin ma-confirm ang bayad mo.</p>${note ? `<p>Dahilan: ${esc(note)}</p>` : ''}<p>Pakisubukan ulit o mag-reply sa email na ito.</p>`),
       ok ? `Hi ${name}, aktibo na ang Premium mo hanggang ${untilText}.${receipt ? ` Resibo ${receipt.no}: ₱${receipt.amount}, ${receipt.method}, ref ${receipt.reference}.` : ''}${apps && apps.files.length ? `\n\nI-download ang app (bersyon ${apps.version}):\n${apps.files.map((f) => `${KIND_NAMES[f.kind]}: ${f.url}`).join('\n')}\nNasa app ang gabay sa pag-install: Account → Premium → I-download ang app.` : ''}` : `Hi ${name}, hindi na-approve ang bayad mo. ${note || ''}`,
       files);
+  },
+  // Group Premium was paid: the list of one-time codes for the buyer to share, with the receipt (PDF attached).
+  bulkPaid(to, name, g, receipt) {
+    const until = g.expires ? dateText(g.expires) : '';
+    const rows = g.seats.map((s, i) => `<tr><td style="padding:6px 0;color:#5b6478">${i + 1}.</td><td style="font-family:monospace;font-size:15px;font-weight:bold">${esc(s.code)}</td>
+      <td style="font-size:12px;color:#5b6478">${s.email ? `para kay ${esc(s.email)} (na-email na)` : s.link ? `<a href="${esc(s.link)}">link</a>` : ''}</td></tr>`).join('');
+    return safeSend(to, `Group Premium: ${g.qty} code para sa grupo mo${receipt ? ` · Resibo ${receipt.no}` : ''}`,
+      layout('Salamat! Handa na ang Group Premium', `<p>Hi ${esc(name)},</p>
+        <p>Bayad na ang <b>Premium para sa ${g.qty} tao</b>${g.org ? ` (${esc(g.org)})` : ''}. Bawat code sa ibaba ay para sa <b>isang tao</b> at <b>isang beses lang</b> magagamit. Magbibigay ito ng Premium na ${g.days} araw mula sa araw na gamitin.</p>
+        <p><b>Paano gamitin:</b> ibigay ang code (o link) sa bawat tao. Gagawa sila ng account (o mag-login), pupunta sa <b>Account → Premium</b>, at ilalagay ang code sa "May promo o group code ka?".</p>
+        <table style="width:100%;border-collapse:collapse">${rows}</table>
+        ${until ? `<p style="font-size:13px;color:#5b6478">Gamitin ang mga code bago ang <b>${esc(until)}</b>. Pagkatapos nito, mag-e-expire ang hindi pa nagamit.</p>` : ''}
+        <p style="font-size:13px;color:#5b6478">Makikita mo kung sino na ang gumamit, at pwede kang maglagay ng email para sa bawat code, sa app: Account → Premium → Mga binili mong Group Premium.</p>
+        ${receipt ? receiptHtml(receipt) : ''}`),
+      `Hi ${name}, bayad na ang Group Premium para sa ${g.qty} tao. Mga code (isang tao, isang beses):\n${g.seats.map((s) => s.code + (s.email ? ` (${s.email})` : '')).join('\n')}\nIlagay ang code sa Account → Premium → "May promo o group code ka?".${until ? ` Gamitin bago ang ${until}.` : ''}`,
+      receipt ? [{ name: `Resibo-${receipt.no}.pdf`, content: Buffer.from(PDF.receipt(receipt)) }] : []);
+  },
+  // One Group Premium code, sent to the email the buyer typed for it.
+  bulkSeat(to, s) {
+    const who = s.org || s.from || 'Ang grupo mo';
+    return safeSend(to, `May Premium ka sa CSE Reviewer mula kay ${who}`,
+      layout('May Premium ka!', `<p>Hi,</p>
+        <p><b>${esc(who)}</b> ay nagbayad ng CSE Reviewer Premium (${s.days} araw) para sa iyo.</p>
+        <p style="font-size:24px;font-weight:bold;letter-spacing:2px;background:#e8eefc;color:#1e40af;text-align:center;padding:14px;border-radius:10px;font-family:monospace">${esc(s.code)}</p>
+        ${s.link ? `<p style="text-align:center"><a href="${esc(s.link)}" style="display:inline-block;background:#1e40af;color:#fff;text-decoration:none;padding:10px 14px;border-radius:8px;font-weight:bold">Gamitin ang code</a></p>` : ''}
+        <ol style="font-size:14px;padding-left:18px">
+          <li>Gumawa ng account (o mag-login) gamit ang <b>email na ito (${esc(to)})</b>. Sa email na ito lang gagana ang code.</li>
+          <li>Pumunta sa <b>Account → Premium</b> at ilagay ang code sa "May promo o group code ka?".</li></ol>
+        ${s.expires ? `<p style="font-size:13px;color:#5b6478">Gamitin ito bago ang <b>${esc(dateText(s.expires))}</b>.</p>` : ''}`),
+      `${who} ay nagbayad ng CSE Reviewer Premium (${s.days} araw) para sa iyo. Code: ${s.code}${s.link ? `\nLink: ${s.link}` : ''}\nMag-login gamit ang ${to}, tapos Account → Premium → ilagay ang code.`);
   },
   // Login from a new place and a new device.
   newLogin(to, name, info) {

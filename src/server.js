@@ -16,6 +16,7 @@ const review = require('./review');
 const jobs = require('./jobs');
 const releases = require('./releases');
 const promo = require('./promo');
+const bulk = require('./bulk');
 
 const PORT = Number(process.env.PORT) || 3000;
 const ADMIN_EMAIL = (process.env.ADMIN_EMAIL || '').trim().toLowerCase();
@@ -54,11 +55,14 @@ const SETTING_DEFAULTS = {
   ads_on: '1', adsense_client: '', adsense_slot: '', admob_banner: '',
   // Shown on Premium receipts (RA 11967: the seller's name and contact).
   biz_name: '', biz_contact: '',
+  // Group Premium (src/bulk.js): on/off, smallest and largest group, discount by group size
+  // ("people:percent", comma separated), and how many days an unused seat code lasts.
+  bulk_on: '1', bulk_min: '2', bulk_max: '50', bulk_tiers: '5:10,10:15,20:20', bulk_seat_days: '90',
 };
 const LONG_SETTINGS = { pay_methods: 20000 };
 // [key, smallest, largest] for the settings that are numbers (Admin → Settings).
 const NUM_SETTINGS = [['price', 0, 100000], ['plan_days', 1, 3650], ['free_practice_daily', 0, 100], ['free_practice_items', 5, 100],
-  ['free_sets', 1, 1000], ['free_mock_daily', 0, 100]];
+  ['free_sets', 1, 1000], ['free_mock_daily', 0, 100], ['bulk_min', 2, 100], ['bulk_max', 2, 500], ['bulk_seat_days', 7, 730]];
 async function getSettings() {
   const rows = await db.all(`SELECT key, value FROM meta WHERE key LIKE 'set:%'`);
   const out = { ...SETTING_DEFAULTS };
@@ -811,7 +815,7 @@ app.get('/api/premium', auth, wrap(async (req, res) => {
     for (const p of open) await syncCheckout(p).catch((e) => console.error('PayMongo check failed:', e.message));
     if (open.length) user = await db.get('SELECT * FROM users WHERE id = ?', user.id);
   }
-  const payments = await db.all(`SELECT id, amount, method, reference, status, note, created_at, decided_at, provider, (proof IS NOT NULL) AS has_proof, promo_code, discount,
+  const payments = await db.all(`SELECT id, amount, method, reference, status, note, created_at, decided_at, provider, (proof IS NOT NULL) AS has_proof, promo_code, discount, bulk_id,
     CASE WHEN status = 'checkout' THEN checkout_url END AS checkout_url FROM payments
     WHERE user_id = ? AND NOT (provider = 'xendit' AND status = 'checkout') ORDER BY created_at DESC LIMIT 20`, user.id);
   res.json({
@@ -821,6 +825,8 @@ app.get('/api/premium', auth, wrap(async (req, res) => {
     price: st.price, plan_days: Number(st.plan_days) || 30, note: st.pay_note, payments,
     paid: await paidUser(user), // can download the app installers (GET /api/app/installers)
     promo: !!(await db.get('SELECT 1 FROM promo_codes WHERE active = 1 LIMIT 1')), // show the promo code box
+    bulk: bulkOn(st) ? bulkInfo(st) : null, // Group Premium: buy for several people
+    groups: (await db.get(`SELECT COUNT(*) AS n FROM bulk_orders WHERE buyer_id = ? AND status = 'paid'`, user.id)).n, // groups this user bought
   });
 }));
 
@@ -841,6 +847,7 @@ async function markPaid(p, method) {
   const r = await db.run(`UPDATE payments SET status = 'approved', method = ?, decided_at = ? WHERE id = ? AND status IN ('checkout', 'expired')`,
     String(method || 'Online').slice(0, 40), Date.now(), p.id);
   if (r.changes !== 1) return false; // already done
+  if (p.bulk_id) return bulkPaid(p, method); // Group Premium: seats for others, not Premium for the buyer
   const days = Number(p.days) || Number((await getSettings()).plan_days) || 30;
   const before = await db.get('SELECT premium_until FROM users WHERE id = ?', p.user_id);
   const from = Math.max(Date.now(), (before && before.premium_until) || 0), to = from + days * 864e5;
@@ -880,6 +887,7 @@ async function receiptOf(id) {
     id: p.id, no: `CSE-${new Date(date + 8 * 3600e3).getUTCFullYear()}-${String(p.id).padStart(5, '0')}`, date, name: p.name, email: p.email,
     amount: p.amount, method: p.method, reference: ['paymongo', 'promo'].includes(p.provider) ? '' : p.reference, provider: p.provider,
     promo_code: p.promo_code || '', discount: p.discount || '', list_price: p.list_price || '',
+    ...(await bulkReceipt(p)),
     days: p.days || (p.period_to && p.period_from ? Math.round((p.period_to - p.period_from) / 864e5) : null),
     period_from: p.period_from || null, period_to: p.period_to || null, business: st.biz_name, contact: st.biz_contact,
   };
@@ -906,12 +914,14 @@ async function syncCheckout(p) {
     await markPaid(p, METHOD_NAMES[type] || type || 'Online');
   } else if (at.status === 'expired') {
     await db.run(`UPDATE payments SET status = 'expired', decided_at = ? WHERE id = ? AND status = 'checkout'`, Date.now(), p.id);
+    if (p.bulk_id) await db.run(`UPDATE bulk_orders SET status = 'expired' WHERE id = ? AND status = 'checkout'`, p.bulk_id);
   }
 }
 
 app.post('/api/payments/checkout', auth, verified, wrap(async (req, res) => {
   const st = await getSettings();
   if (!onlinePayOn(st)) return res.status(404).json({ error: 'Hindi pa naka-set up ang online na bayad.' });
+  if (!agreedNoRefund(req)) return res.status(400).json({ error: NO_REFUND_ERR, code: 'no_refund' });
   // A promo code: the server works out the price (the app only sends the code).
   const pc = await promoFor(req, st);
   if (pc && !pc.ok) return res.status(400).json({ error: pc.error, code: 'promo' });
@@ -924,9 +934,12 @@ app.post('/api/payments/checkout', auth, verified, wrap(async (req, res) => {
   // PayMongo's smallest payment is ₱20.
   if (!(amount >= 20)) return res.status(400).json({ error: 'Kailangang ₱20 o higit pa ang presyo ng Premium. Makipag-ugnayan sa admin.' });
   // Reuse an unpaid checkout from the last 23 hours (the link lasts 24 hours).
-  const open = await db.get(`SELECT * FROM payments WHERE user_id = ? AND provider = 'paymongo' AND status = 'checkout' AND method = ? AND created_at > ? ORDER BY id DESC LIMIT 1`,
+  const open = await db.get(`SELECT * FROM payments WHERE user_id = ? AND provider = 'paymongo' AND status = 'checkout' AND method = ? AND bulk_id IS NULL AND created_at > ? ORDER BY id DESC LIMIT 1`,
     req.user.id, kind, Date.now() - 23 * 3600e3);
-  if (open && Number(open.amount) === amount && (open.promo_id || null) === promoId && open.checkout_url) return res.json({ url: open.checkout_url });
+  if (open && Number(open.amount) === amount && (open.promo_id || null) === promoId && open.checkout_url) {
+    await db.run('UPDATE payments SET no_refund_at = ? WHERE id = ?', Date.now(), open.id);
+    return res.json({ url: open.checkout_url });
+  }
   if (limited('checkout:' + req.user.id, 10, 60 * 60 * 1000)) return res.status(429).json({ error: 'Masyadong maraming subok. Maghintay muna.' });
   const days = Number(st.plan_days) || 30;
   const reference = `cse-${req.user.id}-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`;
@@ -941,9 +954,9 @@ app.post('/api/payments/checkout', auth, verified, wrap(async (req, res) => {
     return res.status(502).json({ error: 'Hindi mabuksan ang bayaran ngayon. Subukan ulit mamaya.' });
   }
   const url = cs.attributes.checkout_url;
-  await db.run(`INSERT INTO payments (user_id, amount, method, reference, status, provider, invoice_id, checkout_url, days, created_at, promo_id, promo_code, list_price, discount)
-    VALUES (?, ?, ?, ?, 'checkout', 'paymongo', ?, ?, ?, ?, ?, ?, ?, ?)`, req.user.id, String(amount), kind, reference, cs.id, url, days, Date.now(),
-    promoId, pc ? pc.promo.code : null, pc ? String(pc.price) : null, pc ? String(Math.round((pc.price - amount) * 100) / 100) : null);
+  await db.run(`INSERT INTO payments (user_id, amount, method, reference, status, provider, invoice_id, checkout_url, days, created_at, promo_id, promo_code, list_price, discount, no_refund_at)
+    VALUES (?, ?, ?, ?, 'checkout', 'paymongo', ?, ?, ?, ?, ?, ?, ?, ?, ?)`, req.user.id, String(amount), kind, reference, cs.id, url, days, Date.now(),
+    promoId, pc ? pc.promo.code : null, pc ? String(pc.price) : null, pc ? String(Math.round((pc.price - amount) * 100) / 100) : null, Date.now());
   res.json({ url });
 }));
 
@@ -970,6 +983,7 @@ app.post('/api/payments', auth, verified, wrap(async (req, res) => {
   const methods = payMethods(st).filter((m) => m.on);
   const m = methods.find((x) => x.id === req.body.method_id) || (!req.body.method_id && methods[0]);
   if (!m) return res.status(400).json({ error: 'Piliin ang paraan ng bayad.' });
+  if (!agreedNoRefund(req)) return res.status(400).json({ error: NO_REFUND_ERR, code: 'no_refund' });
   const reference = String(req.body.reference || '').trim().slice(0, 60);
   if (reference.length < 4) return res.status(400).json({ error: 'Ilagay ang reference number ng bayad.' });
   const proof = req.body.proof ? String(req.body.proof) : null;
@@ -983,8 +997,8 @@ app.post('/api/payments', auth, verified, wrap(async (req, res) => {
   if (pc && pc.free) return res.status(400).json({ error: 'Libre na ang Premium sa promo code na ito. Pindutin ang "Gamitin ang code".', code: 'promo_free' });
   // The amount is the current price (not what the app sends), less the promo code, so the admin sees what the user should have paid.
   const p = { amount: String(pc ? pc.amount : st.price).slice(0, 20), method: m.name, reference, promo_code: pc ? pc.promo.code : null, discount: pc ? String(pc.discount) : null, list_price: pc ? String(pc.price) : null };
-  await db.run('INSERT INTO payments (user_id, amount, method, reference, created_at, proof, promo_id, promo_code, list_price, discount) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-    req.user.id, p.amount, p.method, p.reference, Date.now(), proof, pc ? pc.promo.id : null, p.promo_code, p.list_price, p.discount);
+  await db.run('INSERT INTO payments (user_id, amount, method, reference, created_at, proof, promo_id, promo_code, list_price, discount, no_refund_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    req.user.id, p.amount, p.method, p.reference, Date.now(), proof, pc ? pc.promo.id : null, p.promo_code, p.list_price, p.discount, Date.now());
   const admins = await db.all(`SELECT email FROM users WHERE role = 'admin' AND disabled = 0`);
   admins.forEach((a) => mail.newPayment(a.email, req.user, p));
   res.json({ ok: true });
@@ -1002,6 +1016,7 @@ const promoOut = (pc) => ({ code: pc.promo.code, kind: pc.promo.kind, value: pc.
 app.post('/api/promo/check', auth, verified, wrap(async (req, res) => {
   // Stop guessing codes one after another.
   if (limited('promo:' + req.user.id, 15, 10 * 60 * 1000)) return res.status(429).json({ error: 'Masyadong maraming subok. Maghintay muna ng ilang minuto.' });
+  if (bulk.isCode(req.body && req.body.code)) return res.json({ group: true, code: bulk.normCode(req.body.code) }); // a Group Premium code: use POST /api/bulk/redeem
   const pc = await promoFor(req, await getSettings());
   if (!pc) return res.status(400).json({ error: promo.ERR.bad, code: 'promo' });
   if (!pc.ok) return res.status(400).json({ error: pc.error, code: 'promo' });
@@ -1028,6 +1043,150 @@ app.post('/api/promo/redeem', auth, verified, wrap(async (req, res) => {
   mail.payment(u.email, u.name, 'approved', to, '', await receiptOf(r.lastInsertRowid), null);
   await audit.log(req, 'promo_redeem', { userId: u.id, detail: `${pc.promo.code} · 100% libre · Premium +${days} araw (₱${pc.price})` });
   res.json({ ok: true, until: to });
+}));
+
+/* No refunds: the user ticks "I understand there are no refunds" before paying (online, manual and Group).
+   The server checks it too and keeps the time on the payment (payments.no_refund_at). Mistakes in the charge
+   (paid twice, or paid but Premium did not open) are still fixed: see Account → Terms and Conditions. */
+const NO_REFUND_ERR = 'Pakibasa at i-check muna ang "Walang refund" bago magbayad.';
+const agreedNoRefund = (req) => !!(req.body && req.body.agree_no_refund === true);
+
+/* Group Premium (src/bulk.js): one person pays once for Premium for several people, and shares one-time codes. */
+const bulkOn = (st) => onlinePayOn(st) && st.bulk_on !== '0' && Number(st.price) > 0;
+const bulkInfo = (st) => { const b = bulk.limits(st); return { min: b.min, max: b.max, tiers: b.tiers, seat_days: b.seat_days, days: b.days, price: b.price, min_online: bulk.MIN_ONLINE }; };
+const redeemLink = (base, code) => (base ? `${base}/#/redeem/${code}` : '');
+const groupName = (o, buyer) => o.org || (buyer ? buyer.name : '') || 'Group';
+
+// Email one seat's code to the email the buyer typed.
+async function mailSeat(o, seat, buyer) {
+  if (!seat.email) return;
+  mail.bulkSeat(seat.email, { from: buyer ? buyer.name : '', org: o.org, code: seat.code, link: redeemLink(o.base_url, seat.code), days: o.days, expires: seat.expires_at });
+}
+
+// The Group Premium checkout was paid (online, or made by the admin after a manual payment): make the seats,
+// email the buyer the list of codes (with the receipt), and email each code that has an email.
+async function bulkPaid(p, method) {
+  const seats = await bulk.fulfill(p.bulk_id, p.id);
+  const o = await db.get('SELECT * FROM bulk_orders WHERE id = ?', p.bulk_id);
+  const buyer = await db.get('SELECT * FROM users WHERE id = ?', p.user_id);
+  if (seats && o && buyer) {
+    mail.bulkPaid(buyer.email, buyer.name, { qty: o.qty, days: o.days, org: o.org, seats: seats.map((s) => ({ code: s.code, email: s.email, link: redeemLink(o.base_url, s.code) })), expires: seats[0] && seats[0].expires_at },
+      await receiptOf(p.id));
+    for (const s of seats) await mailSeat(o, s, buyer);
+  }
+  await audit.log(null, 'bulk_paid', { userId: p.user_id, actorId: null, detail: `Group #${p.bulk_id} · ${o ? o.qty : '?'} tao · ₱${p.amount} · ${method || 'Online'}` });
+  return true;
+}
+// Extra lines on the receipt of a Group Premium payment, or of a seat.
+async function bulkReceipt(p) {
+  if (!p.bulk_id) return {};
+  const o = await db.get('SELECT * FROM bulk_orders WHERE id = ?', p.bulk_id);
+  if (!o) return {};
+  if (p.provider === 'bulk') {
+    const buyer = await db.get('SELECT name FROM users WHERE id = ?', o.buyer_id);
+    return { group: { seat: true, from: groupName(o, buyer) } };
+  }
+  return { group: { qty: o.qty, pct: o.discount_pct, list_price: o.list_price, each: String(Math.round(Number(o.total) / o.qty * 100) / 100), days: o.days, org: o.org } };
+}
+
+// Make a group (status checkout) and its payment row. Used by the online checkout and by the admin.
+async function newGroup({ buyer, q, emails, org, base, createdBy = null }) {
+  const r = await db.run(`INSERT INTO bulk_orders (buyer_id, qty, discount_pct, list_price, total, days, seat_days, org, emails, base_url, status, created_by, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'checkout', ?, ?)`, buyer.id, q.qty, q.pct, String(q.list), String(q.total), q.days, q.seat_days, org, JSON.stringify(emails), base, createdBy, Date.now());
+  return r.lastInsertRowid;
+}
+
+// The price for a group size (the Premium page also works it out, but this is the one that counts).
+app.get('/api/bulk/quote', auth, verified, wrap(async (req, res) => {
+  const st = await getSettings();
+  if (!bulkOn(st)) return res.status(404).json({ error: 'Hindi pa bukas ang Group Premium.' });
+  const q = bulk.quote(st, Number(req.query.qty));
+  if (q.error) return res.status(400).json({ error: q.error });
+  res.json(q);
+}));
+
+// Buy Premium for a group: PayMongo checkout for the whole amount, paid once.
+app.post('/api/bulk/checkout', auth, verified, wrap(async (req, res) => {
+  const st = await getSettings();
+  if (!bulkOn(st)) return res.status(404).json({ error: 'Hindi pa bukas ang Group Premium.' });
+  if (!agreedNoRefund(req)) return res.status(400).json({ error: NO_REFUND_ERR, code: 'no_refund' });
+  const q = bulk.quote(st, Number(req.body.qty));
+  if (q.error) return res.status(400).json({ error: q.error });
+  const em = bulk.cleanEmails(req.body.emails, q.qty);
+  if (em.error) return res.status(400).json({ error: em.error });
+  const org = String(req.body.org || '').trim().slice(0, 80);
+  if (limited('bulk:' + req.user.id, 6, 60 * 60 * 1000)) return res.status(429).json({ error: 'Masyadong maraming subok. Maghintay muna.' });
+  const base = publicUrl(req);
+  const orderId = await newGroup({ buyer: req.user, q, emails: em.emails, org, base });
+  const reference = `cse-g${orderId}-${req.user.id}-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`;
+  let cs;
+  try {
+    cs = await paymongo.createCheckout({
+      reference, amount: q.online, email: req.user.email, name: req.user.name,
+      description: `CSE Reviewer Group Premium · ${q.qty} tao × ${q.days} araw${q.pct ? ` · ${q.pct}% group discount` : ''}${org ? ` · ${org}` : ''}`,
+      returnUrl: base + '/#/premium',
+    });
+  } catch (e) {
+    console.error('PayMongo group checkout failed:', e.message);
+    await db.run(`UPDATE bulk_orders SET status = 'expired' WHERE id = ?`, orderId);
+    return res.status(502).json({ error: 'Hindi mabuksan ang bayaran ngayon. Subukan ulit mamaya.' });
+  }
+  const pay = await db.run(`INSERT INTO payments (user_id, amount, method, reference, status, provider, invoice_id, checkout_url, days, created_at, list_price, discount, bulk_id, no_refund_at)
+    VALUES (?, ?, 'Online', ?, 'checkout', 'paymongo', ?, ?, ?, ?, ?, ?, ?, ?)`, req.user.id, String(q.online), reference, cs.id, cs.attributes.checkout_url, q.days, Date.now(),
+    q.pct ? String(q.list) : null, q.pct ? String(q.discount) : null, orderId, Date.now());
+  await db.run('UPDATE bulk_orders SET payment_id = ? WHERE id = ?', pay.lastInsertRowid, orderId);
+  await audit.log(req, 'bulk_checkout', { userId: req.user.id, detail: `Group #${orderId} · ${q.qty} tao · ₱${q.online}${q.pct ? ` (−${q.pct}%)` : ''}` });
+  res.json({ url: cs.attributes.checkout_url, id: orderId });
+}));
+
+// The groups this user bought, with each seat's code and who used it.
+const seatOut = (s) => ({ id: s.id, code: s.code, email: s.email, state: bulk.seatState(s), expires_at: s.expires_at, redeemed_at: s.redeemed_at, used_by: s.redeemed_by ? { name: s.u_name, email: s.u_email } : null });
+const seatsOf = (orderId) => db.all(`SELECT s.*, u.name AS u_name, u.email AS u_email FROM bulk_seats s LEFT JOIN users u ON u.id = s.redeemed_by WHERE s.order_id = ? ORDER BY s.id`, orderId);
+app.get('/api/bulk', auth, wrap(async (req, res) => {
+  const orders = await db.all(`SELECT * FROM bulk_orders WHERE buyer_id = ? AND status = 'paid' ORDER BY id DESC LIMIT 50`, req.user.id);
+  const out = [];
+  for (const o of orders) {
+    out.push({ id: o.id, qty: o.qty, days: o.days, org: o.org, total: o.total, paid_at: o.paid_at, payment_id: o.payment_id,
+      seats: (await seatsOf(o.id)).map((s) => ({ ...seatOut(s), link: redeemLink(o.base_url || publicUrl(req), s.code) })) });
+  }
+  res.json(out);
+}));
+
+// The buyer types (or clears) the email for an unused seat. With an email, only that account can use the code,
+// and the code is emailed to it.
+app.put('/api/bulk/seats/:id', auth, verified, wrap(async (req, res) => {
+  const s = await db.get('SELECT s.*, o.buyer_id FROM bulk_seats s JOIN bulk_orders o ON o.id = s.order_id WHERE s.id = ?', Number(req.params.id));
+  if (!s || s.buyer_id !== req.user.id) return res.status(404).json({ error: 'Walang ganitong seat.' });
+  if (bulk.seatState(s) !== 'open') return res.status(409).json({ error: 'Nagamit na o expired na ang seat na ito.' });
+  const email = String(req.body.email || '').trim().toLowerCase();
+  if (email && (email.length > 120 || !bulk.EMAIL.test(email))) return res.status(400).json({ error: 'Hindi tamang email.' });
+  if (email && limited('bulkmail:' + req.user.id, 30, 60 * 60 * 1000)) return res.status(429).json({ error: 'Masyadong maraming email na naipadala. Maghintay muna.' });
+  await db.run('UPDATE bulk_seats SET email = ? WHERE id = ?', email, s.id);
+  const o = await db.get('SELECT * FROM bulk_orders WHERE id = ?', s.order_id);
+  if (email) await mailSeat(o, { ...s, email }, req.user);
+  await audit.log(req, 'bulk_seat_email', { userId: req.user.id, detail: `Group #${o.id} · ${s.code} → ${email || '(kahit sino)'}` });
+  res.json({ ok: true });
+}));
+
+// Use a group code: Premium for this account (the plan days of the group). Kept as a ₱0 "payment" (provider 'bulk')
+// so it is in Your payments, the receipt and the audit log.
+app.post('/api/bulk/redeem', auth, verified, wrap(async (req, res) => {
+  if (limited('promo:' + req.user.id, 15, 10 * 60 * 1000)) return res.status(429).json({ error: 'Masyadong maraming subok. Maghintay muna ng ilang minuto.' });
+  const c = await bulk.claim(req.user, req.body && req.body.code);
+  if (!c.ok) return res.status(c.status).json({ error: c.error, code: 'group' });
+  const { seat, order } = c;
+  const u = await db.get('SELECT * FROM users WHERE id = ?', req.user.id);
+  const buyer = await db.get('SELECT name FROM users WHERE id = ?', order.buyer_id);
+  const now = Date.now(), from = Math.max(now, u.premium_until || 0), to = from + order.days * 864e5;
+  const r = await db.run(`INSERT INTO payments (user_id, amount, method, reference, status, provider, days, created_at, decided_at, period_from, period_to, bulk_id)
+    VALUES (?, '0', ?, ?, 'approved', 'bulk', ?, ?, ?, ?, ?, ?)`, u.id, `Group Premium · ${groupName(order, buyer)}`.slice(0, 40), seat.code, order.days, now, now, from, to, order.id);
+  await db.batch([
+    ['UPDATE users SET premium_until = ? WHERE id = ?', [to, u.id]],
+    ['UPDATE bulk_seats SET payment_id = ? WHERE id = ?', [r.lastInsertRowid, seat.id]],
+  ]);
+  mail.payment(u.email, u.name, 'approved', to, '', await receiptOf(r.lastInsertRowid), await releases.latest());
+  await audit.log(req, 'bulk_redeem', { userId: u.id, detail: `${seat.code} · Group #${order.id} (${groupName(order, buyer)}) · Premium +${order.days} araw` });
+  res.json({ ok: true, until: to, days: order.days, from: groupName(order, buyer) });
 }));
 
 /* ------------------------------ admin ------------------------------ */
@@ -1328,10 +1487,46 @@ app.get('/api/admin/promos/:id/uses', admin, wrap(async (req, res) => {
 }));
 
 /* Admin → Audit log: logins, failed logins and admin changes, newest first. "alerts" shows only suspicious ones. */
+/* Group Premium (admin): every group, its seats, and making a group after a manual payment (e.g. bank transfer). */
+app.get('/api/admin/bulk', admin, wrap(async (req, res) => {
+  const st = await getSettings();
+  const rows = await db.all(`SELECT o.*, u.name, u.email, p.status AS pay_status, p.method,
+      (SELECT COUNT(*) FROM bulk_seats s WHERE s.order_id = o.id AND s.redeemed_by IS NOT NULL) AS used,
+      (SELECT COUNT(*) FROM bulk_seats s WHERE s.order_id = o.id AND s.redeemed_by IS NULL AND s.expires_at <= ?) AS expired
+    FROM bulk_orders o LEFT JOIN users u ON u.id = o.buyer_id LEFT JOIN payments p ON p.id = o.payment_id
+    WHERE o.status = 'paid' OR o.created_at > ? ORDER BY o.id DESC LIMIT 300`, Date.now(), Date.now() - 7 * 864e5);
+  res.json({ settings: { ...bulk.limits(st), on: bulkOn(st) }, rows: rows.map(({ emails, base_url, ...o }) => o) });
+}));
+app.get('/api/admin/bulk/:id', admin, wrap(async (req, res) => {
+  const o = await db.get('SELECT * FROM bulk_orders WHERE id = ?', Number(req.params.id));
+  if (!o) return res.status(404).json({ error: 'Walang ganitong group.' });
+  res.json((await seatsOf(o.id)).map(seatOut));
+}));
+app.post('/api/admin/bulk', admin, wrap(async (req, res) => {
+  const st = await getSettings();
+  const buyer = await db.get('SELECT * FROM users WHERE email = ?', String(req.body.email || '').trim());
+  if (!buyer) return res.status(404).json({ error: 'Walang account na may ganitong email. Pa-register muna ang bibili.' });
+  const q = bulk.quote({ ...st, bulk_max: '500' }, Number(req.body.qty));
+  if (q.error) return res.status(400).json({ error: q.error });
+  const em = bulk.cleanEmails(req.body.emails, q.qty);
+  if (em.error) return res.status(400).json({ error: em.error });
+  const amount = String(req.body.amount === undefined || req.body.amount === '' ? q.total : Math.max(0, Math.round(Number(req.body.amount) * 100) / 100 || 0));
+  const reference = String(req.body.reference || '').trim().slice(0, 60) || 'admin';
+  const org = String(req.body.org || '').trim().slice(0, 80);
+  const orderId = await newGroup({ buyer, q, emails: em.emails, org, base: publicUrl(req), createdBy: req.user.id });
+  const now = Date.now();
+  const pay = await db.run(`INSERT INTO payments (user_id, amount, method, reference, status, provider, days, created_at, decided_at, list_price, discount, bulk_id, note)
+    VALUES (?, ?, ?, ?, 'approved', 'manual', ?, ?, ?, ?, ?, ?, ?)`, buyer.id, amount, String(req.body.method || 'Manual').slice(0, 40), reference, q.days, now, now,
+    q.pct ? String(q.list) : null, q.pct ? String(q.discount) : null, orderId, String(req.body.note || '').slice(0, 300));
+  await db.run('UPDATE bulk_orders SET payment_id = ? WHERE id = ?', pay.lastInsertRowid, orderId);
+  await bulkPaid(await db.get('SELECT * FROM payments WHERE id = ?', pay.lastInsertRowid), 'Manual (admin)');
+  await audit.log(req, 'bulk_admin_create', { userId: buyer.id, detail: `Group #${orderId} · ${q.qty} tao · ₱${amount} · ref ${reference}` });
+  res.json({ ok: true, id: orderId });
+}));
 app.get('/api/admin/audit', admin, wrap(async (req, res) => {
   const where = [], args = [];
   if (req.query.filter === 'alerts') where.push('l.alert = 1');
-  else if (req.query.filter === 'admin') where.push(`l.action LIKE 'admin_%' OR l.action LIKE 'payment_%' OR l.action LIKE 'promo_%'`);
+  else if (req.query.filter === 'admin') where.push(`l.action LIKE 'admin_%' OR l.action LIKE 'payment_%' OR l.action LIKE 'promo_%' OR l.action LIKE 'bulk_%'`);
   else if (req.query.filter === 'logins') where.push(`l.action LIKE 'login%' OR l.action IN ('logout', 'password_change', 'password_reset')`);
   if (req.query.q) { where.push('(u.email LIKE ? OR u.name LIKE ? OR l.ip LIKE ?)'); const q = `%${String(req.query.q).trim()}%`; args.push(q, q, q); }
   const rows = await db.all(`SELECT l.id, l.at, l.action, l.detail, l.ip, l.device, l.alert, l.user_id, l.actor_id, u.name, u.email, a.name AS actor_name

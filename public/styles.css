@@ -699,3 +699,7 @@ html[data-theme] #undo .u-time { background: var(--primary); }
 .promo-box label { margin-top: 0; }
 .promo-hide { display: none !important; }
 #promoIn::placeholder, #pcCode::placeholder { text-transform: none; }
+
+/* No refunds notice before paying (Premium page and Group Premium) */
+.no-refund { margin: 10px 0 4px; background: var(--warn-soft); }
+.pc-list li { margin: 3px 0; }

@@ -3,7 +3,7 @@
   'use strict';
   const $app = document.getElementById('app');
   const LETTERS = ['A', 'B', 'C', 'D'];
-  const APP_VERSION = '1.30.0'; // keep in step with package.json and docs/DOKUMENTASYON.md
+  const APP_VERSION = '1.31.0'; // keep in step with package.json and docs/DOKUMENTASYON.md
   const S = { user: null, meta: null, exam: null, timer: null, saveT: null };
 
   /* ---------------- helpers ---------------- */
@@ -125,12 +125,27 @@
     'May promo code na ganito. Pumili ng iba.': 'A promo code like this already exists. Choose another.',
     'Walang ganitong promo code.': 'No such promo code.',
     'Nagamit na ang code na ito, kaya hindi ito mabubura. I-off na lang.': 'This code has been used, so it cannot be deleted. Turn it off instead.',
+    'Pakibasa at i-check muna ang "Walang refund" bago magbayad.': 'Please read and tick "No refunds" before paying.',
+    'Hindi pa bukas ang Group Premium.': 'Group Premium is not open yet.',
+    'Hindi tama ang group code, o hindi na ito gumagana.': 'The group code is wrong or no longer works.',
+    'Expired na ang group code na ito. Humingi ng bago sa bumili.': 'This group code has expired. Ask the buyer for a new one.',
+    'Nagamit na ng ibang account ang group code na ito.': 'Another account has already used this group code.',
+    'Nagamit mo na ang group code na ito.': 'You have already used this group code.',
+    'May seat ka na sa grupong ito. Isang seat lang kada tao.': 'You already have a seat in this group. One seat per person.',
+    'Para sa ibang email ang group code na ito. Mag-login gamit ang email na binigay sa bumili.': 'This group code is for another email. Log in with the email you gave the buyer.',
+    'Nagamit na o expired na ang seat na ito.': 'This seat is already used or expired.',
+    'Walang ganitong seat.': 'No such seat.',
+    'Hindi tamang email.': 'Not a valid email.',
+    'Walang account na may ganitong email. Pa-register muna ang bibili.': 'No account has this email. Ask the buyer to register first.',
+    'Masyadong maraming email na naipadala. Maghintay muna.': 'Too many emails sent. Please wait.',
   };
   const serverText = (m) => {
     if (lang !== 'en' || !m) return m;
     if (SERVER_EN[m]) return SERVER_EN[m];
     const d = /^Naubos mo na ang (\d+) libreng practice ngayong araw/.exec(m);
     if (d) return `You have used your ${d[1]} free practice sessions for today. Come back tomorrow, or get Premium for no limit.`;
+    const g = /^Pumili ng (\d+) hanggang (\d+) na tao\.$/.exec(m);
+    if (g) return `Choose ${g[1]} to ${g[2]} people.`;
     return m;
   };
 
@@ -1605,14 +1620,15 @@
       ${S.user.role === 'admin' ? '' : `<div class="card" style="margin-top:12px">
         <h3>${p.active && until ? L('I-extend ang Premium', 'Extend Premium') : L('Kumuha ng Premium', 'Get Premium')}</h3>
         <p style="margin:6px 0" id="priceTag"><span class="pill warn" style="font-size:15px">${L(`₱${esc(p.price)} para sa ${p.plan_days} araw`, `₱${esc(p.price)} for ${p.plan_days} days`)}</span></p>
-        ${p.promo && (p.online || manual) ? `<form id="promoF" class="promo-box" autocomplete="off"><label for="promoIn">${L('May promo code ka?', 'Have a promo code?')}</label>
-          <div class="row" style="flex-wrap:nowrap"><input type="text" id="promoIn" maxlength="30" placeholder="${L('hal.', 'e.g.')} REVIEW20" style="text-transform:uppercase;margin:0" autocapitalize="characters" spellcheck="false">
+        ${p.promo || p.online || manual ? `<form id="promoF" class="promo-box" autocomplete="off"><label for="promoIn">${L('May promo o group code ka?', 'Have a promo or group code?')}</label>
+          <div class="row" style="flex-wrap:nowrap"><input type="text" id="promoIn" maxlength="30" placeholder="${L('hal.', 'e.g.')} REVIEW20 / GRP-XXXX-XXXX" style="text-transform:uppercase;margin:0" autocapitalize="characters" spellcheck="false">
           <button class="btn secondary" type="submit" id="promoGo">${L('Gamitin', 'Apply')}</button></div>
           <div class="err" id="promoErr" role="alert"></div><div id="promoInfo" role="status"></div></form>` : ''}
+        ${p.online || manual ? noRefundBox('nrOk') : ''}
         ${p.online ? `
         <p class="small" style="margin:8px 0">${L('Magbayad online gamit ang <b>GCash, Maya, card, GrabPay, o QR Ph</b> (para sa bank apps) at iba pa. Awtomatikong bubukas ang Premium pagkatapos magbayad.', 'Pay online with <b>GCash, Maya, card, GrabPay, or QR Ph</b> (for bank apps) and more. Premium opens automatically after you pay.')}</p>
         <div class="err" id="perr"></div>
-        <button class="btn block" id="paynow">💳 ${L('Ituloy ang pagbayad', 'Continue payment')}</button>
+        <button class="btn block" id="paynow" disabled>💳 ${L('Ituloy ang pagbayad', 'Continue payment')}</button>
         <p class="muted small" style="margin:4px 0 0">${L('Sa PayMongo ka pipili ng GCash, Maya, card (Visa / Mastercard), QR Ph at iba pa; naka-fill na ang pangalan at email mo.', 'On PayMongo you choose GCash, Maya, card (Visa / Mastercard), QR Ph and more; your name and email are already filled in.')}</p>` : ''}
         ${manual ? fold('pay-manual', `<h3>${p.online ? L('O magbayad nang manual', 'Or pay manually') : L('Magbayad nang manual', 'Pay manually')}</h3>${pending ? `<span class="pill warn">${L('Hinihintay', 'Waiting')}</span>` : ''}`, `
         <p class="small" style="margin:6px 0">${L('Pumili kung saan magbabayad:', 'Choose where to pay:')}</p>
@@ -1623,13 +1639,21 @@
         <form id="payf"><label>Reference number</label><input type="text" id="ref" placeholder="${L('hal.', 'e.g.')} 1012 345 678901" autocomplete="off">
           <label>${L('Screenshot ng resibo (opsyonal, pero mas mabilis ma-approve)', 'Screenshot of the receipt (optional, but approved faster)')}</label>
           <input type="file" id="proof" accept="image/*"><img id="proofPrev" class="proof-prev" alt="" hidden>
-          <div class="err" id="err"></div><button class="btn block ${p.online ? 'secondary' : ''}" type="submit">${L('Ipadala', 'Send')}</button></form>`}`, { card: false, stay: true, cls: 'pay-fold', open: !p.online }) : ''}
+          <div class="err" id="err"></div><button class="btn block ${p.online ? 'secondary' : ''}" type="submit" disabled>${L('Ipadala', 'Send')}</button></form>`}`, { card: false, stay: true, cls: 'pay-fold', open: !p.online }) : ''}
         ${!p.online && !manual ? `<div class="notice">${L('Wala pang bukas na paraan ng bayad. Makipag-ugnayan sa admin.', 'No payment method is open yet. Please contact the admin.')}</div>` : ''}
       </div>`}
-      ${p.payments.length ? fold('pay-history', `<h2>${L('Mga bayad mo', 'Your payments')}</h2><span class="pill">${p.payments.length}</span>`, `<div class="list">${p.payments.map((x) => `<div class="list-item"><div class="grow"><b>₱${esc(x.amount)}</b> · ${esc(x.method)}${x.provider && x.provider !== 'manual' ? '' : ' · ref ' + esc(x.reference)}${x.promo_code ? ` · 🏷️ ${esc(x.promo_code)}` : ''}
+      ${S.user.role !== 'admin' && p.bulk ? groupBuyCard(p.bulk) : ''}
+      ${p.groups ? fold('pay-groups', `<h2>👥 ${L('Mga binili mong Group Premium', 'Group Premium you bought')}</h2><span class="pill">${p.groups}</span>`, `<div id="grpList"><p class="muted small">${L('Naglo-load…', 'Loading…')}</p></div>`, { card: false, stay: true }) : ''}
+      ${p.payments.length ? fold('pay-history', `<h2>${L('Mga bayad mo', 'Your payments')}</h2><span class="pill">${p.payments.length}</span>`, `<div class="list">${p.payments.map((x) => `<div class="list-item"><div class="grow"><b>₱${esc(x.amount)}</b> · ${esc(x.method)}${x.provider && x.provider !== 'manual' ? '' : ' · ref ' + esc(x.reference)}${x.promo_code ? ` · 🏷️ ${esc(x.promo_code)}` : ''}${x.bulk_id && x.provider !== 'bulk' ? ` · 👥 Group Premium` : ''}
         <div class="muted small">${fmtDate(x.created_at)}${x.note ? ' · ' + esc(x.note) : ''}</div></div>${statusPill[x.status] || ''}${x.status === 'approved' ? `<button type="button" class="btn ghost small" data-rc="${x.id}" aria-label="${L('Resibo', 'Receipt')} ₱${esc(x.amount)}">🧾 ${L('Resibo', 'Receipt')}</button>` : ''}</div>`).join('')}</div>`, { card: false }) : ''}`);
     $$('[data-rc]').forEach((b) => (b.onclick = () => showReceipt(+b.dataset.rc)));
     if (p.paid) appDownloads($('#appDl'));
+    // No refunds: the pay buttons work only after the box is ticked (the server checks it too).
+    const nr = $('#nrOk');
+    const nrPaint = () => $$('#paynow, #payf button[type=submit]').forEach((b) => (b.disabled = !(nr && nr.checked)));
+    if (nr) { nr.onchange = nrPaint; nrPaint(); }
+    if (p.bulk && $('#gQty')) groupBuyWire(p.bulk);
+    if (p.groups) paintGroups($('#grpList'));
     // PayMongo's checkout page. In the phone and desktop apps it opens in the browser.
     // One button; the user picks GCash, Maya, card, QR Ph, etc. on PayMongo's page.
     /* Promo code: the server checks it and works out the new price (and again on payment, so the price here
@@ -1669,11 +1693,28 @@
       $('#promoGo').disabled = true;
       try { promo = await api('POST', '/api/promo/check', { code }); } catch (err) { promo = null; $('#promoErr').textContent = err.message; }
       $('#promoGo').disabled = false;
+      if (promo && promo.group) { const g = promo.code; promo = null; paintPromo(); pmInfo(); return groupRedeem(g); }
       paintPromo(); pmInfo();
     };
+    // A Group Premium code: a seat someone bought for this user. Using it turns on Premium right away.
+    const groupRedeem = (code) => {
+      $('#promoInfo').innerHTML = `<div class="notice" style="margin:8px 0">👥 ${L(`<b>Group Premium code</b> ito (${esc(code)}): may nagbayad na ng Premium para sa iyo. Walang babayaran.`, `This is a <b>Group Premium code</b> (${esc(code)}): someone already paid for your Premium. Nothing to pay.`)}</div>
+        <button class="btn block" type="button" id="grpUse">🎁 ${L('Gamitin ang group code', 'Use the group code')}</button>`;
+      $('#grpUse').onclick = async (e) => {
+        const b = e.currentTarget; b.disabled = true;
+        try {
+          const r = await api('POST', '/api/bulk/redeem', { code });
+          toast(L(`Aktibo na ang Premium mo (${r.days} araw), bayad ni ${r.from}! 🎉`, `Your Premium is active (${r.days} days), paid by ${r.from}! 🎉`));
+          await refreshMe().catch(() => {}); viewPremium();
+        } catch (err) { $('#promoErr').textContent = err.message; b.disabled = false; }
+      };
+    };
+    // Opened from a group link (#/redeem/GRP-…): the code is filled in and checked.
+    const linkCode = store.get('cse-redeem');
+    if (linkCode) { store.del('cse-redeem'); if ($('#promoIn')) { $('#promoIn').value = linkCode; $('#promoF').requestSubmit ? $('#promoF').requestSubmit() : $('#promoF').onsubmit(new Event('submit')); } }
     $$('#paynow').forEach((b) => (b.onclick = async () => {
       b.disabled = true;
-      try { const r = await api('POST', '/api/payments/checkout', promo ? { code: promo.code } : {}); location.href = r.url; } catch (err) { $('#perr').textContent = err.message; b.disabled = false; }
+      try { const r = await api('POST', '/api/payments/checkout', { agree_no_refund: true, ...(promo ? { code: promo.code } : {}) }); location.href = r.url; } catch (err) { $('#perr').textContent = err.message; b.disabled = false; }
     }));
     // Manual payment: the chosen account's details and QR code.
     let pm = p.methods[0], proof = null;
@@ -1698,8 +1739,113 @@
     if (f) f.onsubmit = async (e) => {
       e.preventDefault();
       const btn = $('button[type=submit]', f); btn.disabled = true;
-      try { await api('POST', '/api/payments', { method_id: pm && pm.id, reference: $('#ref').value, proof, ...(promo ? { code: promo.code } : {}) }); toast(L('Naipadala! Hintayin ang email ng confirmation.', 'Sent! Wait for the confirmation email.')); viewPremium(); } catch (err) { $('#err').textContent = err.message; btn.disabled = false; }
+      try { await api('POST', '/api/payments', { method_id: pm && pm.id, reference: $('#ref').value, proof, agree_no_refund: true, ...(promo ? { code: promo.code } : {}) }); toast(L('Naipadala! Hintayin ang email ng confirmation.', 'Sent! Wait for the confirmation email.')); viewPremium(); } catch (err) { $('#err').textContent = err.message; btn.disabled = false; }
     };
+  }
+
+  /* No refunds: a clear notice and a box the user must tick before paying (online, manual and Group Premium).
+     Mistakes in the charge (paid twice, Premium did not open) are still fixed; see Account → Terms and Conditions. */
+  const NO_REFUND = () => L(window.CSEPDF.NO_REFUND.tl, window.CSEPDF.NO_REFUND.en);
+  function noRefundBox(id) {
+    return `<div class="notice no-refund" role="note">⚠️ ${L('<b>Paalala: walang refund.</b> Kapag nabayaran na, hindi na maibabalik ang bayad, kahit hindi magamit ang buong Premium. Subukan muna ang libreng plan bago magbayad. Kung nadoble ang singil o hindi bumukas ang Premium pagkabayad, makipag-ugnayan sa amin at aayusin namin.',
+      '<b>Please note: no refunds.</b> Once paid, the payment cannot be returned, even if you do not use all of your Premium. Try the free plan before you pay. If you were charged twice or Premium did not open after paying, contact us and we will fix it.')}
+      <a href="#/account" data-open="acc-terms">${L('Basahin ang Terms and Conditions', 'Read the Terms and Conditions')}</a></div>
+      <label class="check"><input type="checkbox" id="${id}"> <span>${L('Nabasa ko at naiintindihan ko na <b>walang refund</b> ang bayad.', 'I have read and understand that the payment is <b>non-refundable</b>.')}</span></label>`;
+  }
+  const copyText = async (text) => {
+    try { await navigator.clipboard.writeText(text); return true; } catch {
+      const t = document.createElement('textarea'); t.value = text; t.setAttribute('readonly', ''); t.style.position = 'fixed'; t.style.opacity = '0';
+      document.body.appendChild(t); t.select(); let ok = false; try { ok = document.execCommand('copy'); } catch { ok = false; } t.remove(); return ok;
+    }
+  };
+  const pesos = (n) => '₱' + (+n).toLocaleString('en-PH', { minimumFractionDigits: Number.isInteger(+n) ? 0 : 2, maximumFractionDigits: 2 });
+
+  /* Group Premium: buy Premium for several people (a boss, office, school or review group), pay once, and get one
+     code per person. The price here is only for showing; the server works it out again (src/bulk.js quote()). */
+  function groupQuote(b, qty) {
+    const pct = b.tiers.reduce((p, t) => (qty >= t.min ? t.pct : p), 0);
+    const list = Math.round(b.price * qty * 100) / 100, discount = Math.round(list * pct) / 100, total = Math.round((list - discount) * 100) / 100;
+    return { qty, pct, list, discount, total, each: Math.round(total / qty * 100) / 100, online: Math.max(b.min_online, total) };
+  }
+  function groupBuyCard(b) {
+    const start = Math.max(b.min, Math.min(b.max, 10));
+    return fold('pay-group', `<h3>👥 ${L('Group Premium: bayaran ang Premium ng ilang tao', 'Group Premium: pay for several people')}</h3>${b.tiers.length ? `<span class="pill ok">${L('hanggang', 'up to')} −${b.tiers[b.tiers.length - 1].pct}%</span>` : ''}`, `
+      <p class="small" style="margin:0 0 6px">${L(`Para sa boss, opisina, paaralan o review group: <b>isang bayad</b> para sa Premium (${b.days} araw) ng ilang tao. Makakatanggap ka ng <b>isang code para sa bawat tao</b>; isang beses lang magagamit ang bawat code. Hindi kasama sa bilang ang sarili mo, pero pwede mong gamitin ang isang code para sa sarili mo.`,
+        `For a boss, office, school or review group: <b>one payment</b> for Premium (${b.days} days) for several people. You get <b>one code per person</b>; each code works once. You are not counted, but you can use one code for yourself.`)}</p>
+      ${b.tiers.length ? `<p class="muted small" style="margin:0 0 6px">${L('Group discount', 'Group discount')}: ${b.tiers.map((t) => `${t.min}+ ${L('tao', 'people')} −${t.pct}%`).join(' · ')}</p>` : ''}
+      <label for="gQty">${L(`Ilang tao? (${b.min} hanggang ${b.max})`, `How many people? (${b.min} to ${b.max})`)}</label>
+      <input type="number" id="gQty" min="${b.min}" max="${b.max}" step="1" value="${start}" inputmode="numeric" style="max-width:140px">
+      <div id="gPrice" role="status" style="margin:8px 0"></div>
+      <label for="gOrg">${L('Pangalan ng opisina o grupo (opsyonal, makikita ng tatanggap)', 'Office or group name (optional, shown to the people you give codes to)')}</label>
+      <input type="text" id="gOrg" maxlength="80" placeholder="${L('hal.', 'e.g.')} DepEd Division Office, HR Team">
+      <label for="gEmails">${L('Email ng bawat tao (opsyonal, isa kada linya)', 'Email of each person (optional, one per line)')}</label>
+      <textarea id="gEmails" rows="3" placeholder="juan@gmail.com&#10;maria@yahoo.com"></textarea>
+      <p class="muted small" style="margin:4px 0 8px">${L('Kapag may email, sa account na iyon lang gagana ang code, at ipapadala namin ito sa kanila pagkabayad. Pwede mo ring ibigay ang code o link nang ikaw mismo, o maglagay ng email mamaya. Hindi pa nagagamit na code: mag-e-expire', 'With an email, the code works only for that account, and we email it to them after you pay. You can also give the code or link yourself, or add emails later. Unused codes expire')} ${L(`${b.seat_days} araw pagkabayad.`, `${b.seat_days} days after payment.`)}</p>
+      ${noRefundBox('gNr')}
+      <div class="err" id="gErr" role="alert"></div>
+      <button class="btn block" type="button" id="gPay" disabled>💳 ${L('Ituloy ang pagbayad (grupo)', 'Continue payment (group)')}</button>
+      <p class="muted small" style="margin:4px 0 0">${L('Online lang (PayMongo: GCash, Maya, card, QR Ph at iba pa). Para sa bank transfer o ibang paraan, makipag-ugnayan sa admin.', 'Online only (PayMongo: GCash, Maya, card, QR Ph and more). For bank transfer or other ways, contact the admin.')}</p>`, { stay: true });
+  }
+  function groupBuyWire(b) {
+    const qty = () => Math.round(Number($('#gQty').value));
+    const ok = () => Number.isInteger(qty()) && qty() >= b.min && qty() <= b.max;
+    const paint = () => {
+      const pay = $('#gPay');
+      pay.disabled = !ok() || !$('#gNr').checked;
+      if (!ok()) { $('#gPrice').innerHTML = `<span class="err">${L(`Pumili ng ${b.min} hanggang ${b.max} na tao.`, `Choose ${b.min} to ${b.max} people.`)}</span>`; return; }
+      const q = groupQuote(b, qty());
+      $('#gPrice').innerHTML = `<span class="small">${q.qty} × ${pesos(b.price)} = ${q.pct ? `<s class="muted">${pesos(q.list)}</s> −${q.pct}% ` : ''}</span>
+        <span class="pill warn" style="font-size:15px">${pesos(q.total)}</span> <span class="muted small">(${pesos(q.each)} ${L('bawat tao', 'per person')}${q.pct ? `, ${L('tipid', 'you save')} ${pesos(q.discount)}` : ''})</span>`;
+      pay.textContent = `💳 ${L('Ituloy ang pagbayad', 'Continue payment')} · ${pesos(q.online)}`;
+    };
+    $('#gQty').oninput = paint; $('#gNr').onchange = paint; paint();
+    $('#gPay').onclick = async (e) => {
+      const btn = e.currentTarget; btn.disabled = true; $('#gErr').textContent = '';
+      try {
+        const r = await api('POST', '/api/bulk/checkout', { qty: qty(), org: $('#gOrg').value.trim(), emails: $('#gEmails').value, agree_no_refund: true });
+        location.href = r.url;
+      } catch (err) { $('#gErr').textContent = err.message; btn.disabled = false; }
+    };
+  }
+  // The groups this user bought: each code, who used it, copy or share, and email a code to someone.
+  async function paintGroups(el) {
+    if (!el) return;
+    let list;
+    try { list = await api('GET', '/api/bulk'); } catch (e) { if (el.isConnected) el.innerHTML = `<p class="muted small">${esc(e.message)}</p>`; return; }
+    if (!el.isConnected) return;
+    const PILL = { used: `<span class="pill ok">${L('Nagamit na', 'Used')}</span>`, open: `<span class="pill">${L('Hindi pa nagagamit', 'Not used yet')}</span>`, expired: `<span class="pill bad">Expired</span>` };
+    const day = (ms) => new Date(ms).toLocaleDateString('en-PH', { year: 'numeric', month: 'short', day: 'numeric' });
+    el.innerHTML = list.map((o) => {
+      const used = o.seats.filter((s) => s.state === 'used').length, open = o.seats.filter((s) => s.state === 'open').length;
+      return `<div class="card" style="margin-bottom:10px" data-group="${o.id}">
+        <div class="row between"><div><b>${o.org ? esc(o.org) : 'Group Premium'}</b> <span class="muted small">#${o.id}</span>
+          <div class="muted small">${o.qty} ${L('tao', 'people')} · ${o.days} ${L('araw bawat isa', 'days each')} · ${pesos(o.total)} · ${L('binayaran', 'paid')} ${day(o.paid_at)}</div></div>
+          <span class="pill ok">${used}/${o.qty} ${L('nagamit', 'used')}</span></div>
+        ${open && o.seats[0] ? `<p class="muted small" style="margin:6px 0">${L(`Gamitin ang mga code bago ang <b>${day(o.seats[0].expires_at)}</b>.`, `Use the codes before <b>${day(o.seats[0].expires_at)}</b>.`)}</p>` : ''}
+        ${open ? `<button type="button" class="btn ghost small" data-copyall="${o.id}">📋 ${L(`Kopyahin ang ${open} code na hindi pa nagagamit`, `Copy the ${open} unused codes`)}</button>` : ''}
+        <div class="list" style="margin-top:8px">${o.seats.map((s) => `<div class="list-item"><div class="grow"><code style="font-weight:bold">${esc(s.code)}</code> ${PILL[s.state]}
+          <div class="muted small">${s.used_by ? `${esc(s.used_by.name)} · ${esc(s.used_by.email)} · ${day(s.redeemed_at)}` : s.email ? `${L('Para kay', 'For')} ${esc(s.email)}` : L('Kahit sino na may code', 'Anyone with the code')}</div></div>
+          ${s.state === 'open' ? `<button type="button" class="btn ghost small" data-copy="${esc(s.link || s.code)}" aria-label="${L('Kopyahin ang link', 'Copy the link')} ${esc(s.code)}">📋</button>
+          ${navigator.share ? `<button type="button" class="btn ghost small" data-share="${esc(s.code)}" data-link="${esc(s.link || '')}" aria-label="Share ${esc(s.code)}">📤</button>` : ''}
+          <button type="button" class="btn ghost small" data-seat="${s.id}" data-email="${esc(s.email)}" aria-label="Email ${esc(s.code)}">✉️</button>` : ''}</div>`).join('')}</div></div>`;
+    }).join('') || `<p class="muted small">${L('Wala pa.', 'None yet.')}</p>`;
+    const msg = (code, link) => L(`May CSE Reviewer Premium ka! Code: ${code}${link ? `\nBuksan: ${link}` : ''}\nMag-login, tapos Account → Premium → ilagay ang code.`, `You have CSE Reviewer Premium! Code: ${code}${link ? `\nOpen: ${link}` : ''}\nLog in, then Account → Premium → enter the code.`);
+    $$('[data-copy]', el).forEach((b) => (b.onclick = async () => toast((await copyText(b.dataset.copy)) ? L('Nakopya ang link.', 'Link copied.') : b.dataset.copy)));
+    $$('[data-share]', el).forEach((b) => (b.onclick = () => navigator.share({ title: 'CSE Reviewer Premium', text: msg(b.dataset.share, b.dataset.link) }).catch(() => {})));
+    $$('[data-copyall]', el).forEach((b) => (b.onclick = async () => {
+      const o = list.find((x) => x.id === +b.dataset.copyall);
+      const text = o.seats.filter((s) => s.state === 'open').map((s) => `${s.code}${s.link ? ' ' + s.link : ''}${s.email ? ` (${s.email})` : ''}`).join('\n');
+      toast((await copyText(text)) ? L('Nakopya ang mga code.', 'Codes copied.') : L('Hindi makopya. Pindutin nang matagal ang code para kopyahin.', 'Cannot copy. Long-press a code to copy it.'));
+    }));
+    $$('[data-seat]', el).forEach((b) => (b.onclick = () => modal(`<h3 style="margin-top:0">✉️ ${L('Ipadala ang code sa email', 'Send the code by email')}</h3>
+      <p class="muted small">${L('Sa account na may ganitong email lang gagana ang code. Iwanang blangko para kahit sino na may code.', 'The code will work only for the account with this email. Leave it blank for anyone with the code.')}</p>
+      <input type="email" id="seatEm" value="${esc(b.dataset.email)}" placeholder="juan@gmail.com"><div class="err" id="seatErr"></div>
+      <div class="row" style="justify-content:flex-end;margin-top:10px"><button class="btn ghost" data-x>${L('Isara', 'Close')}</button><button class="btn" data-ok>${L('I-save at ipadala', 'Save and send')}</button></div>`, (bg, close) => {
+      $('[data-x]', bg).onclick = close;
+      $('[data-ok]', bg).onclick = async () => {
+        try { await api('PUT', '/api/bulk/seats/' + b.dataset.seat, { email: $('#seatEm', bg).value.trim() }); close(); toast($('#seatEm', bg).value.trim() ? L('Naipadala ang code.', 'Code sent.') : L('Na-save.', 'Saved.')); paintGroups(el); } catch (e) { $('#seatErr', bg).textContent = e.message; }
+      };
+    })));
   }
 
   /* App installers for paid Premium: the newest Android .apk and Windows .exe (latest GitHub Release, the same
@@ -1763,13 +1909,16 @@
       <table class="small" style="margin-top:10px"><tbody>
         <tr><td>${L('Petsa', 'Date')}</td><td>${esc(day(r.date))}</td></tr>
         <tr><td>${L('Pangalan', 'Name')}</td><td>${esc(r.name)}<div class="muted">${esc(r.email)}</div></td></tr>
-        <tr><td>${L('Para sa', 'For')}</td><td>CSE Reviewer Premium${r.days ? ` (${r.days} ${L('araw', 'days')})` : ''}</td></tr>
+        <tr><td>${L('Para sa', 'For')}</td><td>${r.group && r.group.qty ? `CSE Reviewer Group Premium: ${r.group.qty} ${L('tao', 'people')} × ${r.group.days} ${L('araw', 'days')}${r.group.org ? ` (${esc(r.group.org)})` : ''}`
+          : `CSE Reviewer Premium${r.days ? ` (${r.days} ${L('araw', 'days')})` : ''}${r.group && r.group.seat ? ` · ${L('Group Premium mula kay', 'Group Premium from')} ${esc(r.group.from)}` : ''}`}</td></tr>
+        ${r.group && r.group.pct ? `<tr><td>Group discount</td><td>${r.group.pct}% (${L('mula', 'from')} ₱${esc(r.group.list_price)}; ₱${esc(r.group.each)} ${L('bawat tao', 'per person')})</td></tr>` : ''}
         ${r.period_from ? `<tr><td>${L('Premium mula', 'Premium period')}</td><td>${esc(day(r.period_from))} – ${esc(day(r.period_to))}</td></tr>` : ''}
         <tr><td>${L('Paraan', 'Method')}</td><td>${esc(r.method)}</td></tr>
         ${r.reference ? `<tr><td>Reference</td><td>${esc(r.reference)}</td></tr>` : ''}
         ${r.promo_code ? `<tr><td>Promo code</td><td>${esc(r.promo_code)} (−₱${esc(r.discount)} ${L('mula', 'from')} ₱${esc(r.list_price)})</td></tr>` : ''}
         <tr class="rc-total"><td><b>${L('Kabuuan', 'Total')}</b></td><td><b>₱${esc(r.amount)}</b> · <span style="color:var(--ok)">${L('Bayad na', 'Paid')}</span></td></tr>
       </tbody></table>
+      ${Number(r.amount) > 0 ? `<p class="small"><b>${esc(NO_REFUND())}</b></p>` : ''}
       <p class="muted small">${L('Patunay ito ng bayad sa app. Hindi ito BIR invoice.', 'This is proof of payment in the app. It is not a BIR invoice.')}</p></div>`;
     modal(`${body}<div class="row" style="justify-content:flex-end;margin-top:12px"><button class="btn ghost" data-x>${L('Isara', 'Close')}</button>
       <button class="btn secondary" data-print>🖨️ Print</button><button class="btn" data-pdf>📄 PDF</button></div>`, (bg, close) => {
@@ -2698,11 +2847,12 @@
           '<b>Android (Chrome):</b> tap the ⋮ menu → "Add to Home screen" or "Install app".<br><b>iPhone (Safari):</b> tap Share (□↑) → "Add to Home Screen".<br>With Premium, it works even offline. You need internet to log in, pay, and get emails.')}</p>
         <button class="btn secondary" id="install" hidden>${L('I-install ang app', 'Install the app')}</button>`)}
       ${fold('acc-fix', `<h3>Auto Fix</h3><span class="pill ok" id="fixPill">${L('Naka-on', 'On')}</span>`, `<div id="fixCard"></div>`)}
+      ${legalFolds()}
       ${fold('acc-about', `<h3>${L('Tungkol sa exam', 'About the exam')}</h3>`, `
         <p class="muted small" style="margin:0">${L('Sinusunod ng mock exam ang format ng Career Service Exam (pen and paper test) ng Civil Service Commission: Professional na 170 tanong sa loob ng 3 oras at 10 minuto, at Subprofessional na 165 tanong sa loob ng 2 oras at 40 minuto, lahat ay may 4 na pagpipilian at 80% ang passing rate. Hindi inilalabas ng CSC ang eksaktong bilang kada subject, kaya tantiya ang hati ng mga tanong. Ang app na ito ay hindi opisyal na produkto ng CSC.',
           'The mock exam follows the format of the Civil Service Commission\'s Career Service Exam (pen and paper test): Professional has 170 questions in 3 hours and 10 minutes, and Subprofessional has 165 questions in 2 hours and 40 minutes, all with 4 choices and an 80% passing rate. The CSC does not publish the exact count per subject, so the split of questions is an estimate. This app is not an official CSC product.')}</p>
         <p class="muted small" style="margin:10px 0 0">${L('Bersyon', 'Version')} ${APP_VERSION}</p>`)}
-      </div>`, { cls: 'acc-menu', stay: true, open: !!F.key && F.key.startsWith('acc-') && F.key !== 'acc-menu' }) : freeAccount()}`);
+      </div>`, { cls: 'acc-menu', stay: true, open: !!F.key && F.key.startsWith('acc-') && F.key !== 'acc-menu' }) : freeAccount() + `<div class="stack" style="margin-top:12px">${legalFolds()}</div>`}`);
     if (!S.premium) return; // Free: no "Settings and more" (Premium only), so none of its buttons are on the screen
     const pick = (sel, b) => $$(sel).forEach((x) => { x.classList.toggle('active', x === b); x.setAttribute('aria-pressed', String(x === b)); });
     $$('#themes [data-theme]').forEach((b) => (b.onclick = () => {
@@ -2754,6 +2904,75 @@
     if ($('#accTour')) $('#accTour').onclick = () => Tour.replay();
     paintFixCard();
     if (window._installPrompt) { const b = $('#install'); b.hidden = false; b.onclick = () => window._installPrompt.prompt(); }
+  }
+
+  /* Account → Terms and Conditions, and Pros and Cons of the app. For everyone (Free and Premium).
+     Plain words, in Tagalog and English. Keep in step with docs/DOKUMENTASYON.md (Section 1) when a rule changes. */
+  const TERMS_DATE = 'Nobyembre 2, 2026';
+  function legalFolds() {
+    const sec = (title, items) => `<h4 style="margin:12px 0 4px">${title}</h4><ul class="small" style="padding-left:18px;margin:0">${items.map((x) => `<li>${x}</li>`).join('')}</ul>`;
+    const terms = `<p class="muted small" style="margin:0 0 6px">${L(`Huling update: ${TERMS_DATE}. Sa paggamit ng app, sumasang-ayon ka sa mga ito.`, `Last updated: November 2, 2026. By using the app, you agree to these.`)}</p>
+      ${sec(L('1. Tungkol sa app', '1. About the app'), [
+        L('Ang CSE Reviewer ay reviewer at mock exam para sa Career Service Exam. <b>Hindi ito opisyal na produkto ng Civil Service Commission (CSC)</b>, at walang kaugnayan dito ang CSC.', 'CSE Reviewer is a reviewer and mock exam for the Career Service Exam. <b>It is not an official product of the Civil Service Commission (CSC)</b>, and the CSC has no part in it.'),
+        L('Orihinal o awtomatikong ginawa ang mga tanong; hindi ito mga totoong tanong ng CSE. <b>Walang garantiya na papasa ka</b>; nakadepende ito sa sarili mong pag-aaral.', 'The questions are original or made automatically; they are not real CSE questions. <b>There is no guarantee that you will pass</b>; that depends on your own study.'),
+        L('Maaaring may mali sa tanong o sagot. Kapag may nakita ka, ipaalam sa amin para maitama.', 'A question or answer may have a mistake. If you find one, tell us so we can fix it.'),
+      ])}
+      ${sec(L('2. Account', '2. Account'), [
+        L('Isang tao, isang account. Huwag ipagamit o ibenta ang account mo. Isang device lang ang naka-login sa isang pagkakataon.', 'One person, one account. Do not share or sell your account. Only one device can be logged in at a time.'),
+        L('Ingatan ang password mo. Gumamit ng totoong email: dito ipinapadala ang code, resibo at paalala.', 'Keep your password safe. Use a real email: codes, receipts and reminders are sent there.'),
+        L('Kung wala ka pang 18 taong gulang, kailangan ang pahintulot ng magulang o guardian.', 'If you are under 18, you need the permission of a parent or guardian.'),
+      ])}
+      ${sec(L('3. Premium at bayad', '3. Premium and payment'), [
+        L('Nakasulat ang presyo at ilang araw ang Premium bago ka magbayad. <b>Walang auto-renew</b>: hindi ka sisingilin ulit nang hindi mo pinipindot.', 'The price and number of Premium days are shown before you pay. <b>There is no auto-renew</b>: you are never charged again unless you choose to.'),
+        L('Ang online na bayad ay dumadaan sa PayMongo (GCash, Maya, card, QR Ph at iba pa). Hindi dumadaan sa app ang card number o PIN mo.', 'Online payments go through PayMongo (GCash, Maya, card, QR Ph and more). Your card number or PIN never goes through the app.'),
+        L('Ang manual na bayad ay bubukas kapag na-check at na-approve ng admin.', 'A manual payment opens Premium once the admin checks and approves it.'),
+        L('Patunay ng bayad ang resibo sa app; hindi ito BIR invoice.', 'The receipt in the app is proof of payment; it is not a BIR invoice.'),
+      ])}
+      ${sec(L('4. Walang refund', '4. No refunds'), [
+        L('<b>Kapag nabayaran na, hindi na maibabalik ang bayad</b>, kahit hindi magamit ang buong Premium o magbago ang isip. Kaya may libreng plan: subukan muna ito bago magbayad. Kailangan mong i-check ang "walang refund" bago magbayad.', '<b>Once paid, the payment cannot be returned</b>, even if you do not use all of your Premium or change your mind. That is why there is a free plan: try it before you pay. You must tick "no refunds" before paying.'),
+        L('<b>Pero aayusin namin ang mali sa singil:</b> kung nadoble ang bayad, o nagbayad ka pero hindi bumukas ang Premium, makipag-ugnayan sa amin (ilagay ang resibo o reference number). Ibabalik ang sobrang bayad o bubuksan ang Premium. Hindi nito inaalis ang mga karapatan mo sa ilalim ng Consumer Act (RA 7394).', '<b>But we will fix charging mistakes:</b> if you were charged twice, or you paid but Premium did not open, contact us (include the receipt or reference number). We will return the extra payment or open your Premium. This does not take away your rights under the Consumer Act (RA 7394).'),
+      ])}
+      ${sec(L('5. Group Premium', '5. Group Premium'), [
+        L('Pwedeng bayaran ng isang tao (hal. boss o paaralan) ang Premium ng ilang tao. Bawat code ay para sa isang tao at isang beses lang magagamit.', 'One person (e.g. a boss or school) can pay for the Premium of several people. Each code is for one person and works once.'),
+        L('Mag-e-expire ang code na hindi nagamit sa takdang araw na nakasulat sa listahan ng code. Walang refund sa code na hindi nagamit o nag-expire.', 'A code that is not used expires on the date shown in the list of codes. There is no refund for unused or expired codes.'),
+        L('Kapag gumamit ka ng group code, makikita ng bumili ang <b>pangalan at email</b> mo at kung kailan mo ito ginamit. Hindi niya makikita ang mga sagot o score mo.', 'When you use a group code, the buyer can see your <b>name and email</b> and when you used it. The buyer cannot see your answers or scores.'),
+      ])}
+      ${sec(L('6. Tamang paggamit', '6. Acceptable use'), [
+        L('Para sa personal na pag-aaral lang ang app. <b>Bawal kopyahin, i-screenshot, i-record, i-post o ibenta</b> ang mga tanong at sagot (Intellectual Property Code, RA 8293).', 'The app is for personal study only. <b>Do not copy, screenshot, record, post or sell</b> the questions and answers (Intellectual Property Code, RA 8293).'),
+        L('Bawal pasukin ang account ng iba, guluhin ang server, o gumamit ng bot o script (Cybercrime Prevention Act, RA 10175).', 'Do not break into other accounts, disrupt the server, or use bots or scripts (Cybercrime Prevention Act, RA 10175).'),
+        L('Bawal gamitin ang app para mandaya sa totoong exam (RA 9416).', 'Do not use the app to cheat in the real exam (RA 9416).'),
+        L('Kapag nilabag ito, maaari naming i-suspend o burahin ang account, nang walang refund.', 'If these are broken, we may suspend or delete the account, with no refund.'),
+      ])}
+      ${sec(L('7. Privacy (Data Privacy Act, RA 10173)', '7. Privacy (Data Privacy Act, RA 10173)'), [
+        L('Ang kinokolekta: pangalan, email, mga sagot at score, settings ng app, record ng bayad (halaga, paraan, reference, screenshot ng resibo kung manual), at log ng login (oras, IP address, uri ng device). Walang card number, PIN, larawan ng mukha o fingerprint.', 'What we collect: name, email, answers and scores, app settings, payment records (amount, method, reference, receipt screenshot if manual), and a login log (time, IP address, device type). No card number, PIN, face picture or fingerprint.'),
+        L('Bakit: para sa account, exam at resulta, bayad at resibo, at seguridad. Hindi namin ibinebenta ang data mo. Binubura ang log ng login pagkalipas ng 180 araw.', 'Why: for your account, exams and results, payments and receipts, and security. We never sell your data. The login log is deleted after 180 days.'),
+        L('May karapatan kang malaman, makita, maitama, at ipabura ang data mo. Makipag-ugnayan sa amin para dito; kapag binura ang account, kasama nang nabubura ang mga resulta.', 'You have the right to know, see, correct, and have your data deleted. Contact us for this; deleting the account also deletes its results.'),
+        L('Kapag may data breach na maaaring makasama sa iyo, ipapaalam namin sa iyo at sa National Privacy Commission sa loob ng 72 oras.', 'If there is a data breach that may harm you, we will tell you and the National Privacy Commission within 72 hours.'),
+      ])}
+      ${sec(L('8. Pagbabago at contact', '8. Changes and contact'), [
+        L('Maaaring baguhin ang mga ito; nakasulat dito ang petsa ng huling update. Para sa tanong, reklamo o refund ng maling singil, mag-reply sa email ng resibo o makipag-ugnayan sa contact na nasa resibo.', 'These may change; the date of the last update is shown here. For questions, complaints, or a refund of a wrong charge, reply to the receipt email or use the contact on the receipt.'),
+      ])}`;
+    const pc = (good, items) => `<ul class="small pc-list ${good ? 'pc-good' : 'pc-bad'}" style="padding-left:0;margin:4px 0 10px;list-style:none">${items.map((x) => `<li>${good ? '✅' : '⚠️'} ${x}</li>`).join('')}</ul>`;
+    const pros = `<h4 style="margin:0 0 4px">${L('Mga kalamangan', 'Pros')}</h4>${pc(true, [
+        L('Sinusunod ang format ng CSE: Professional (170 tanong, 3 oras 10 minuto) at Subprofessional (165 tanong, 2 oras 40 minuto), may timer.', 'Follows the CSE format: Professional (170 questions, 3 hours 10 minutes) and Subprofessional (165 questions, 2 hours 40 minutes), timed.'),
+        L('May paliwanag ang bawat sagot, score kada topic, "Balikan ang mga mali", at streak para tuloy-tuloy ang pag-aaral.', 'Every answer has an explanation, score by topic, "Go over your mistakes", and a streak to keep you studying.'),
+        L('May libreng plan, para masubukan muna bago magbayad.', 'There is a free plan, so you can try it before paying.'),
+        L('Sa Premium: lahat ng exam set, walang limit, walang ads, at gumagana kahit offline.', 'With Premium: every exam set, no limits, no ads, and it works offline.'),
+        L('Gumagana sa phone, tablet at computer (website, Android at Windows app); Tagalog at English.', 'Works on phone, tablet and computer (website, Android and Windows app); Tagalog and English.'),
+        L('Mura at walang auto-renew; may Group Premium na may discount para sa opisina o grupo.', 'Low price and no auto-renew; Group Premium with a discount for an office or group.'),
+        L('Madaling basahin: dark mode, laki ng letra, high contrast at screen reader, para sa lahat.', 'Easy to read: dark mode, text size, high contrast and screen readers, for everyone.'),
+      ])}
+      <h4 style="margin:0 0 4px">${L('Mga kahinaan (para alam mo bago magbayad)', 'Cons (so you know before paying)')}</h4>${pc(false, [
+        L('Hindi opisyal ng CSC at hindi totoong tanong ng exam; tantiya lang ang hati ng tanong kada subject.', 'Not official from the CSC and not real exam questions; the split of questions per subject is an estimate.'),
+        L('Maaaring may paminsan-minsang mali sa tanong o paliwanag. Ipaalam ito para maitama.', 'There may be an occasional mistake in a question or explanation. Report it so it can be fixed.'),
+        L('Sa libreng plan: may limit kada araw, maikling mock exam (5 tanong kada subject), may ads, at kailangan ng internet.', 'On the free plan: daily limits, a short mock exam (5 questions per subject), ads, and internet is needed.'),
+        L('Walang refund kapag nabayaran na (maliban sa mali sa singil).', 'No refunds once paid (except for charging mistakes).'),
+        L('Kailangang mag-online kahit isang beses bawat 30 araw ang Premium na offline.', 'Offline Premium needs to go online at least once every 30 days.'),
+        L('Walang app sa App Store o Play Store pa; sa iPhone, gamitin ang website ("Add to Home Screen").', 'No App Store or Play Store app yet; on iPhone, use the website ("Add to Home Screen").'),
+        L('Pen and paper ang totoong exam; iba pa rin ang pakiramdam ng pagsagot sa screen.', 'The real exam is pen and paper; answering on a screen still feels different.'),
+      ])}`;
+    return fold('acc-terms', `<h3>${L('Terms and Conditions', 'Terms and Conditions')}</h3>`, terms)
+      + fold('acc-proscons', `<h3>${L('Mga kalamangan at kahinaan ng app', 'Pros and cons of the app')}</h3>`, pros);
   }
 
   // Account for a Free user: "Settings and more" is Premium only. Free users see what Premium adds, and Help.
@@ -2881,7 +3100,7 @@
   /* ---------------- admin ---------------- */
   async function viewAdmin(tab = 'overview') {
     if (S.user.role !== 'admin') return go('#/');
-    const tabs = [['overview', 'Overview', '📊'], ['payments', 'Payments', '💳'], ['promos', L('Promo code', 'Promo codes'), '🏷️'], ['users', 'Users', '👥'], ['sets', 'Exam sets', '🗂️'], ['questions', L('Mga tanong', 'Questions'), '❓'], ['results', L('Resulta', 'Results'), '📈'], ['audit', 'Audit log', '🛡️'], ['settings', 'Settings', '⚙️']];
+    const tabs = [['overview', 'Overview', '📊'], ['payments', 'Payments', '💳'], ['promos', L('Promo code', 'Promo codes'), '🏷️'], ['groups', 'Group Premium', '👥'], ['users', 'Users', '👥'], ['sets', 'Exam sets', '🗂️'], ['questions', L('Mga tanong', 'Questions'), '❓'], ['results', L('Resulta', 'Results'), '📈'], ['audit', 'Audit log', '🛡️'], ['settings', 'Settings', '⚙️']];
     if (!tabs.some(([k]) => k === tab)) return go('#/admin');
     /* The tabs are one dropdown menu. Switching tabs only changes the part below it:
        the menu is not drawn again and the screen does not jump. */
@@ -2901,6 +3120,7 @@
       else if (tab === 'questions') await admQuestions(el);
       else if (tab === 'payments') await admPayments(el);
       else if (tab === 'promos') await admPromos(el);
+      else if (tab === 'groups') await admGroups(el);
       else if (tab === 'sets') await admSets(el);
       else if (tab === 'settings') await admSettings(el);
       else if (tab === 'audit') await admAudit(el);
@@ -3110,6 +3330,46 @@
   /* Admin → Promo codes: a percent or peso discount on Premium, with an optional end date and limit of users.
      Each account can use a code once. A 100% code turns on Premium with no payment. A used code cannot be
      deleted (it is on receipts), only turned off. */
+  /* Admin → Group Premium: every group bought, its codes and who used them, and making a group by hand after a
+     manual payment (e.g. bank transfer). Prices and discounts are in Admin → Settings → Group Premium. */
+  async function admGroups(el) {
+    const r = await api('GET', '/api/admin/bulk');
+    const day = (ms) => (ms ? new Date(ms).toLocaleDateString('en-PH', { year: 'numeric', month: 'short', day: 'numeric' }) : '');
+    const b = r.settings;
+    el.innerHTML = `<div class="card"><h3 style="margin-top:0">👥 Group Premium</h3>
+      <p class="muted small" style="margin:0">${b.on ? L(`Bukas. ${b.min}–${b.max} tao, ₱${esc(b.price)} bawat tao`, `On. ${b.min}–${b.max} people, ₱${esc(b.price)} each`) : L('Naka-off (o walang online na bayad).', 'Off (or online payment is off).')}${b.tiers.length ? ' · ' + b.tiers.map((t) => `${t.min}+ −${t.pct}%`).join(', ') : ''} · ${L(`expire ang hindi nagamit na code pagkalipas ng ${b.seat_days} araw`, `unused codes expire after ${b.seat_days} days`)}. ${L('Baguhin sa Settings → Group Premium.', 'Change in Settings → Group Premium.')}</p></div>
+      ${fold('adm-grp-new', `<h3>+ ${L('Gumawa ng group (manual na bayad)', 'Make a group (manual payment)')}</h3>`, `
+        <p class="muted small" style="margin:0 0 8px">${L('Para sa nagbayad sa bank transfer o ibang paraan. Kailangang may account na ang bibili. Ipapadala sa kanya ang mga code at resibo.', 'For someone who paid by bank transfer or another way. The buyer must already have an account. The codes and receipt are emailed to them.')}</p>
+        <form id="grpF" autocomplete="off"><div class="grid two">
+          <div><label>${L('Email ng bumili', 'Buyer email')}</label><input type="email" id="grEmail"></div>
+          <div><label>${L('Ilang tao', 'How many people')}</label><input type="number" id="grQty" min="2" value="10"></div>
+          <div><label>${L('Halagang natanggap (₱, blangko = presyo ng group)', 'Amount received (₱, blank = group price)')}</label><input type="number" id="grAmt" step="any" min="0"></div>
+          <div><label>Reference</label><input type="text" id="grRef" maxlength="60"></div></div>
+          <label>${L('Pangalan ng opisina o grupo (opsyonal)', 'Office or group name (optional)')}</label><input type="text" id="grOrg" maxlength="80">
+          <label>${L('Email ng bawat tao (opsyonal, isa kada linya)', 'Email of each person (optional, one per line)')}</label><textarea id="grEmails" rows="3"></textarea>
+          <div class="err" id="grErr"></div><button class="btn" type="submit">${L('Gawin ang group', 'Make the group')}</button></form>`, { stay: true })}
+      <div class="list" style="margin-top:12px">${r.rows.map((o) => `<div class="list-item"><div class="grow"><b>#${o.id} ${esc(o.org || o.name || '')}</b> · ${esc(o.email || '')}
+          <div class="muted small">${o.qty} ${L('tao', 'people')} × ${o.days} ${L('araw', 'days')} · ₱${esc(o.total)}${o.discount_pct ? ` (−${o.discount_pct}%)` : ''} · ${esc(o.method || '')} · ${day(o.paid_at || o.created_at)}</div></div>
+          ${o.status === 'paid' ? `<span class="pill ok">${o.used}/${o.qty} ${L('nagamit', 'used')}</span>${o.expired ? `<span class="pill bad">${o.expired} expired</span>` : ''}<button class="btn ghost small" data-gseats="${o.id}">${L('Mga code', 'Codes')}</button>`
+            : `<span class="pill${o.status === 'expired' ? '' : ' warn'}">${o.status === 'expired' ? 'Expired' : L('Hindi pa bayad', 'Not paid yet')}</span>`}</div>`).join('') || `<div class="card empty">${L('Wala pang Group Premium.', 'No Group Premium yet.')}</div>`}</div>`;
+    foldSync();
+    $('#grpF').onsubmit = async (e) => {
+      e.preventDefault(); $('#grErr').textContent = '';
+      const btn = $('button[type=submit]', e.target); btn.disabled = true;
+      try {
+        await api('POST', '/api/admin/bulk', { email: $('#grEmail').value.trim(), qty: +$('#grQty').value, amount: $('#grAmt').value, reference: $('#grRef').value, org: $('#grOrg').value, emails: $('#grEmails').value });
+        toast(L('Nagawa ang group at naipadala ang mga code.', 'Group made and codes sent.')); admGroups(el);
+      } catch (err) { $('#grErr').textContent = err.message; btn.disabled = false; }
+    };
+    $$('[data-gseats]', el).forEach((btn) => (btn.onclick = async () => {
+      const seats = await api('GET', '/api/admin/bulk/' + btn.dataset.gseats);
+      const PILL = { used: `<span class="pill ok">${L('Nagamit', 'Used')}</span>`, open: `<span class="pill">${L('Bukas', 'Open')}</span>`, expired: '<span class="pill bad">Expired</span>' };
+      modal(`<h3 style="margin-top:0">Group #${esc(btn.dataset.gseats)}</h3><div class="list">${seats.map((s) => `<div class="list-item"><div class="grow"><code>${esc(s.code)}</code> ${PILL[s.state]}
+        <div class="muted small">${s.used_by ? `${esc(s.used_by.name)} · ${esc(s.used_by.email)} · ${day(s.redeemed_at)}` : s.email ? `${L('Para kay', 'For')} ${esc(s.email)}` : ''}${s.state === 'open' ? ` · ${L('hanggang', 'until')} ${day(s.expires_at)}` : ''}</div></div></div>`).join('')}</div>
+        <div class="row" style="justify-content:flex-end;margin-top:10px"><button class="btn ghost" data-x>${L('Isara', 'Close')}</button></div>`, (bg, close) => { $('[data-x]', bg).onclick = close; });
+    }));
+  }
+
   async function admPromos(el) {
     const r = await api('GET', '/api/admin/promos');
     const day = (ms) => new Date(ms).toLocaleDateString('en-PH', { year: 'numeric', month: 'short', day: 'numeric' });
@@ -3207,7 +3467,8 @@
     let methods = st.pay_methods;
     // The saved values, so "Undo" after Save can put them all back.
     const KEYS = ['premium_required', 'price', 'plan_days', 'pay_note', 'pay_online_on', 'pay_manual_on', 'pay_methods', 'free_practice_daily', 'free_practice_items',
-      'free_mock_daily', 'free_sets', 'ads_on', 'adsense_client', 'adsense_slot', 'admob_banner', 'exam_watermark', 'exam_privacy_strip'];
+      'free_mock_daily', 'free_sets', 'ads_on', 'adsense_client', 'adsense_slot', 'admob_banner', 'exam_watermark', 'exam_privacy_strip',
+      'bulk_on', 'bulk_min', 'bulk_max', 'bulk_tiers', 'bulk_seat_days'];
     const snap = (o) => Object.fromEntries(KEYS.filter((k) => o[k] !== undefined).map((k) => [k, o[k]]));
     let before = snap(st);
     const check = (id, on, text) => `<label class="check"><input type="checkbox" id="${id}" ${on ? 'checked' : ''}> ${text}</label>`;
@@ -3253,6 +3514,15 @@
       <p class="muted small">${L('Pumili ng uri sa itaas, tapos pindutin ang "Magdagdag ng account". Lalabas lang sa user ang mga account na naka-check.', 'Pick a type above, then tap "Add an account". Users see only the checked accounts.')}</p>
       <div id="pmList" class="stack"></div>
       <label>${L('Paalala sa lahat ng user', 'Note to all users')}</label><textarea id="pnote">${esc(st.pay_note)}</textarea>`)}
+
+      ${sec('group', `👥 Group Premium`, `
+      ${check('bulkon', st.bulk_on !== '0', L('Pwedeng bumili ng Premium para sa ilang tao (online na bayad)', 'Allow buying Premium for several people (online payment)'))}
+      <div class="row"><div style="flex:1;min-width:100px"><label>${L('Pinakakaunting tao', 'Fewest people')}</label><input type="number" min="2" id="bmin" value="${esc(st.bulk_min)}"></div>
+      <div style="flex:1;min-width:100px"><label>${L('Pinakamaraming tao', 'Most people')}</label><input type="number" min="2" id="bmax" value="${esc(st.bulk_max)}"></div>
+      <div style="flex:1;min-width:100px"><label>${L('Expire ng hindi nagamit na code (araw)', 'Unused codes expire after (days)')}</label><input type="number" min="7" id="bdays" value="${esc(st.bulk_seat_days)}"></div></div>
+      <label>${L('Discount ayon sa dami (tao:%, may kuwit)', 'Discount by size (people:%, comma separated)')}</label><input type="text" id="btiers" value="${esc(st.bulk_tiers)}" placeholder="5:10,10:15,20:20">
+      <p class="muted small" style="margin:4px 0 0">${L('Hal. "5:10,10:15,20:20" = 10% bawas sa 5 tao pataas, 15% sa 10 pataas, 20% sa 20 pataas. Presyo ng Premium × bilang ng tao, bawas ang discount; server ang nagkukuwenta. Hindi pwedeng isabay ang promo code.', 'E.g. "5:10,10:15,20:20" = 10% off for 5 or more people, 15% for 10 or more, 20% for 20 or more. Premium price × number of people, less the discount; the server works it out. Promo codes cannot be added on top.')}</p>`,
+      st.bulk_on !== '0' ? `<span class="pill ok">${L('Naka-on', 'On')}</span>` : `<span class="pill">${L('Naka-off', 'Off')}</span>`)}
 
       ${sec('free', `🆓 ${L('Libreng plan (kapag naka-on ang Premium)', 'Free plan (when Premium is on)')}`, `
       <div class="row"><div style="flex:1;min-width:100px"><label>${L('Practice kada araw', 'Practice per day')}</label><input type="number" min="0" id="fdaily" value="${esc(st.free_practice_daily)}"></div>
@@ -3325,6 +3595,7 @@
           free_practice_daily: v('fdaily'), free_practice_items: v('fitems'), free_mock_daily: v('fmock'), free_sets: v('fsets'),
           ads_on: on('adson'), adsense_client: v('asc').trim(), adsense_slot: v('ass').trim(), admob_banner: v('amb').trim(),
           exam_privacy_strip: on('stripon'),
+          bulk_on: on('bulkon'), bulk_min: v('bmin'), bulk_max: v('bmax'), bulk_seat_days: v('bdays'), bulk_tiers: v('btiers').trim(),
         });
         methods = saved.pay_methods; paintPm();
         await refreshMe().catch(() => {});
@@ -3667,8 +3938,11 @@
     if (p0 !== 'admin' && $('#admTabs')) $('#admTabs').remove(); // admin tabs are reused only between admin tabs
     if (p0) Tour.stop(); // the guide runs on Home only
     applyLook();
+    // A Group Premium link (#/redeem/GRP-…): keep the code until the user is logged in, then open Premium with it.
+    if (p0 === 'redeem') { if (p1) store.set('cse-redeem', decodeURIComponent(p1).slice(0, 30)); if (S.user) return go('#/premium'); }
     if (!S.user) { if (p0 === 'register') return viewAuth('register'); if (p0 === 'forgot') return viewForgot(); if (p0 === 'otp') return viewOtp(); return viewAuth('login'); }
     if (S.config.verify && !S.user.email_verified) return viewVerify();
+    if (store.get('cse-redeem') && p0 !== 'premium' && !S.exam) return go('#/premium');
     S.locked = false;
     if (S.offline && !canOffline() && !S.offT && !(p0 === 'exam' && isLocal(p1))) return viewOfflineLocked(); // S.offT: Free count 1-10 still running
     try {
