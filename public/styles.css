@@ -481,7 +481,7 @@ html[data-theme="comfort"] { --paper: #fdfbf6; --paper-line: #e6e0d4; --desk: #e
 html[data-theme="sepia"] { --paper: #fbf4e2; --paper-line: #e3d5b6; --desk: #e5d9bd; }
 html[data-theme="dark"] { --paper: #262a31; --paper-line: #343841; --margin-line: rgba(227, 138, 143, .22); --desk: #16181c; }
 body.guard { background: var(--desk); }
-.paper-desk { max-width: 760px; margin: 0 auto; padding: 14px 12px calc(env(safe-area-inset-bottom) + 24px); touch-action: pan-y pinch-zoom; position: relative; }
+.paper-desk { max-width: 760px; margin: 0 auto; padding: 14px 12px calc(env(safe-area-inset-bottom) + 24px); touch-action: pan-y pinch-zoom; position: relative; overflow-x: hidden; overflow-x: clip; } /* the sliding page never makes the screen scroll sideways */
 .paper-stack { position: relative; }
 /* two sheets peeking out underneath, like a stapled test booklet */
 .paper-stack::before, .paper-stack::after { content: ''; position: absolute; inset: 6px -3px -6px 3px; background: var(--paper); border: 1px solid var(--paper-line); border-radius: 6px; z-index: 0; }
@@ -495,15 +495,21 @@ body.guard { background: var(--desk); }
 .paper-ghost { position: absolute; top: 0; left: 0; right: 0; pointer-events: none; }
 .paper-ghost.top { z-index: 3; }
 .paper-ghost.under { z-index: 1; } /* above the two sheets peeking out underneath; the page (later in the stack) stays on top */
-/* lift and turn (see flip() in app.js): the sheet turns on its left edge in 3D; a soft shadow falls on the page under it */
+/* smooth slide (see flip() in app.js): the page on top slides to the left with a soft shadow; a light shade fades off the page under it */
 .paper.turning { overflow: hidden; }
-.paper.lifted { overflow: visible; transform-origin: left center; box-shadow: 0 2px 4px rgba(0,0,0,.08), 0 18px 36px rgba(16,24,40,.22); }
-.turn-shade { position: absolute; inset: 0; pointer-events: none; z-index: 4; border-radius: inherit; will-change: opacity; background: linear-gradient(to right, rgba(16,24,40,.22), rgba(16,24,40,.08) 40%, rgba(16,24,40,.02)); }
-html[data-theme="dark"] .turn-shade { background: linear-gradient(to right, rgba(0,0,0,.45), rgba(0,0,0,.18) 40%, rgba(0,0,0,.04)); }
-.paper .q-text { font-family: Georgia, "Times New Roman", serif; font-size: 1.1875rem; font-weight: 500; line-height: 1.55; }
+.paper.sliding { box-shadow: 0 2px 4px rgba(0,0,0,.06), 0 12px 32px rgba(16,24,40,.18); }
+.turn-shade { position: absolute; inset: 0; pointer-events: none; z-index: 4; border-radius: inherit; will-change: opacity; background: linear-gradient(to right, rgba(16,24,40,.14), rgba(16,24,40,.05) 50%, rgba(16,24,40,0)); }
+html[data-theme="dark"] .turn-shade { background: linear-gradient(to right, rgba(0,0,0,.35), rgba(0,0,0,.12) 50%, rgba(0,0,0,0)); }
+.paper .q-text { font-family: Georgia, "Times New Roman", serif; font-size: 1.0625rem; font-weight: 500; line-height: 1.55; }
+/* Exam text on a phone (1.26.0, a bit smaller so more fits on the page): question 17px, choices 15px, passage and explanation 14px.
+   All in rem, so Account → Text size still makes them bigger. */
+.paper .q-num { font-size: 0.8125rem; }
+.paper .passage { font-size: 0.875rem; }
+.paper .explain { font-size: 0.875rem; }
 .paper .q-no { font-weight: 800; }
 .paper .passage { font-family: Georgia, "Times New Roman", serif; background: transparent; border: 1px dashed var(--paper-line); border-left: 4px solid var(--accent); }
-.paper .choice { background: transparent; border-color: var(--paper-line); }
+.paper .choice { background: transparent; border-color: var(--paper-line); font-size: 0.9375rem; padding: 12px; min-height: 50px; }
+.paper .choice .letter { flex-basis: 26px; height: 26px; font-size: 0.8125rem; }
 .paper .choice .letter { background: transparent; border: 2px solid currentColor; opacity: .75; }
 /* the chosen answer is "shaded" like a pencil mark on an answer sheet */
 .paper .choice.selected .letter { background: var(--text); color: var(--paper); border-color: var(--text); opacity: 1; }
@@ -631,19 +637,21 @@ html[data-theme] #undo .u-time { background: var(--primary); }
   .exam-top + .progress { height: 8px; }
   .privacy-strip { font-size: 0.9375rem; padding: 6px 16px; }
   .paper { padding: 40px 56px 96px 72px; background-image: linear-gradient(to right, transparent 38px, var(--margin-line) 38px, var(--margin-line) 39px, transparent 39px); }
-  .paper .q-section { font-size: 1.125rem; }
-  .paper .q-section .pill { font-size: 0.9375rem; }
-  .paper-flag { font-size: 1.375rem; min-width: 48px; min-height: 48px; }
-  .paper .q-num { font-size: 1.25rem; }
-  .paper .q-text { font-size: clamp(1.875rem, 0.6rem + 1.75vw, 2.75rem); line-height: 1.5; margin: 16px 0 28px; }
-  .paper .passage { font-size: clamp(1.375rem, 0.6rem + 0.95vw, 1.875rem); line-height: 1.6; padding: 20px 24px; max-height: calc(48vh / var(--z)); }
-  .paper .choices { gap: 16px; }
-  .paper .choice { font-size: clamp(1.5rem, 0.6rem + 1.25vw, 2.125rem); line-height: 1.45; padding: 20px 24px; gap: 20px; min-height: 80px; align-items: center; border-width: 2px; }
-  .paper .choice .letter { flex-basis: 50px; height: 50px; font-size: 1.375rem; }
-  .paper .explain { font-size: 1.375rem; line-height: 1.55; padding: 18px 22px; }
-  .paper .page-no { font-size: 1.25rem; bottom: 24px; }
-  .paper-end { font-size: 1.25rem; }
-  .paper-end .btn { font-size: 1.25rem; padding: 14px 28px; }
+  .paper .q-section { font-size: 1rem; }
+  .paper .q-section .pill { font-size: 0.875rem; }
+  .paper-flag { font-size: 1.25rem; min-width: 46px; min-height: 46px; }
+  .paper .q-num { font-size: 1.0625rem; }
+  /* 1.26.0: a bit smaller than before (question 30–44px → 24–34px, choices 24–34px → 20–28px, passage 22–30px → 18–24px).
+     The part that grows with the screen width is multiplied by --fs, so Account → Text size works here too. */
+  .paper .q-text { font-size: clamp(1.5rem, 0.6rem + 1.25vw * var(--fs, 1), 2.125rem); line-height: 1.5; margin: 14px 0 24px; }
+  .paper .passage { font-size: clamp(1.125rem, 0.5rem + 0.75vw * var(--fs, 1), 1.5rem); line-height: 1.6; padding: 18px 22px; max-height: calc(48vh / var(--z)); }
+  .paper .choices { gap: 14px; }
+  .paper .choice { font-size: clamp(1.25rem, 0.5rem + 0.95vw * var(--fs, 1), 1.75rem); line-height: 1.45; padding: 16px 20px; gap: 18px; min-height: 66px; align-items: center; border-width: 2px; }
+  .paper .choice .letter { flex-basis: 42px; height: 42px; font-size: 1.125rem; }
+  .paper .explain { font-size: 1.1875rem; line-height: 1.55; padding: 16px 20px; }
+  .paper .page-no { font-size: 1.0625rem; bottom: 24px; }
+  .paper-end { font-size: 1.125rem; }
+  .paper-end .btn { font-size: 1.125rem; padding: 12px 26px; }
   .corner { width: 72px; height: 72px; }
   .corner::before { width: 40px; height: 40px; }
   .corner:hover::before, .corner.pressed::before { width: 52px; height: 52px; }

@@ -3,7 +3,7 @@
   'use strict';
   const $app = document.getElementById('app');
   const LETTERS = ['A', 'B', 'C', 'D'];
-  const APP_VERSION = '1.25.0'; // keep in step with package.json and docs/DOKUMENTASYON.md
+  const APP_VERSION = '1.26.0'; // keep in step with package.json and docs/DOKUMENTASYON.md
   const S = { user: null, meta: null, exam: null, timer: null, saveT: null };
 
   /* ---------------- helpers ---------------- */
@@ -297,16 +297,17 @@
     document.body.prepend(el);
     if (S.user && S.meta && !canOffline() && !S.exam) offCountdown(el);
   }
-  /* Free plan: when the internet drops, the bar counts 1 to 10 (one per second) before the app switches to its
+  /* Free plan: when the internet drops, the bar counts 1 to 60 (one per second) before the app switches to its
      offline screen. If the internet comes back during the count, nothing changes. Premium has no count (it works offline). */
   function offCountdown(el) {
     clearInterval(S.offT);
     let n = 1;
-    const paint = () => { el.innerHTML = L(`📡 <b>Nawala ang internet.</b> Lilipat sa offline sa <b class="off-count">${n}</b> / 10…`, `📡 <b>The internet dropped.</b> Going offline in <b class="off-count">${n}</b> / 10…`); };
+    const OFF_COUNT = 60;
+    const paint = () => { el.innerHTML = L(`📡 <b>Nawala ang internet.</b> Lilipat sa offline sa <b class="off-count">${n}</b> / ${OFF_COUNT}…`, `📡 <b>The internet dropped.</b> Going offline in <b class="off-count">${n}</b> / ${OFF_COUNT}…`); };
     paint();
     S.offT = setInterval(() => {
       if (!S.offline || !el.isConnected) { clearInterval(S.offT); S.offT = 0; return; }
-      if (++n <= 10) return paint();
+      if (++n <= OFF_COUNT) return paint();
       clearInterval(S.offT); S.offT = 0;
       el.innerHTML = L('📡 <b>Walang internet.</b> Para sa Premium lang ang offline na paggamit.', '📡 <b>No internet.</b> Offline use is for Premium only.');
       if (!S.exam) route();
@@ -519,7 +520,7 @@
       ctx.resume().then(() => { if (ctx.state === 'running') now(); }).catch(() => {});
       setTimeout(() => { done = true; off(); }, 120e3); // too late to mean "updated"
     }
-    // A page of paper being turned: a crisp page turn, a clear quick "fwip" (bright noise swept upward fast) and a light tick as it lands.
+    // Turning a page: a "gentle tick", one very short and quiet soft click (a tiny burst of soft noise, about 30 ms).
     // Made on the device like the other sounds, so it works offline. Follows the Sounds on/off and volume.
     let noise = null;
     function flip() {
@@ -529,27 +530,18 @@
         ctx = ctx || new (window.AudioContext || window.webkitAudioContext)();
         if (ctx.state === 'suspended') ctx.resume();
         if (!noise) {
-          // Bright noise, only lightly smoothed, so the turn sounds crisp like paper.
-          noise = ctx.createBuffer(1, Math.floor(ctx.sampleRate * 0.6), ctx.sampleRate);
+          noise = ctx.createBuffer(1, Math.floor(ctx.sampleRate * 0.1), ctx.sampleRate);
           const d = noise.getChannelData(0); let b = 0;
-          for (let i = 0; i < d.length; i++) { b = 0.35 * b + 0.65 * (Math.random() * 2 - 1); d[i] = b * 1.6; }
+          for (let i = 0; i < d.length; i++) { b = 0.6 * b + 0.4 * (Math.random() * 2 - 1); d[i] = b * 1.8; } // softened noise
         }
-        const t0 = ctx.currentTime + 0.005, v = Math.max(0.0002, st.vol * 0.4);
-        const out = ctx.createBiquadFilter(); out.type = 'highpass'; out.frequency.value = 500; out.Q.value = 0.5; out.connect(ctx.destination);
-        // A quick burst: fast rise (crisp, not soft), the filter sweeping up for the "fw-ip".
-        const burst = (at, len, f0, f1, peak, q) => {
-          const src = ctx.createBufferSource(), bp = ctx.createBiquadFilter(), g = ctx.createGain(), s0 = t0 + at;
-          src.buffer = noise; bp.type = 'bandpass'; bp.Q.value = q;
-          bp.frequency.setValueAtTime(f0, s0); bp.frequency.exponentialRampToValueAtTime(f1, s0 + len);
-          g.gain.setValueAtTime(0.0001, s0);
-          g.gain.exponentialRampToValueAtTime(peak, s0 + len * 0.25);
-          g.gain.exponentialRampToValueAtTime(0.0001, s0 + len);
-          src.connect(bp); bp.connect(g); g.connect(out);
-          src.start(s0, Math.random() * 0.2); src.stop(s0 + len + 0.03);
-        };
-        const j = () => 0.9 + Math.random() * 0.2; // each turn sounds a little different, like real paper
-        burst(0, 0.13 * j(), 1400 * j(), 5200, v, 1.1);       // "fwip": the page sweeps over
-        burst(0.11, 0.035, 3000 * j(), 2200, v * 0.4, 2.5);   // light tick as the page lands
+        const t0 = ctx.currentTime + 0.005, len = 0.03, peak = Math.max(0.0002, st.vol * 0.16);
+        const src = ctx.createBufferSource(), bp = ctx.createBiquadFilter(), g = ctx.createGain();
+        src.buffer = noise; bp.type = 'bandpass'; bp.frequency.value = 2000 + Math.random() * 300; bp.Q.value = 1.4;
+        g.gain.setValueAtTime(0.0001, t0);
+        g.gain.exponentialRampToValueAtTime(peak, t0 + 0.004); // quick, quiet click
+        g.gain.exponentialRampToValueAtTime(0.0001, t0 + len);
+        src.connect(bp); bp.connect(g); g.connect(ctx.destination);
+        src.start(t0); src.stop(t0 + len + 0.02);
       } catch { /* no sound on this device */ }
     }
     // A very short buzz on Android phones when something is tapped (Account → Sounds → Vibrate).
@@ -1978,6 +1970,7 @@
         ${fold('practice-1', `<h3>${L('1. Pumili ng subject', '1. Choose a subject')}</h3><span class="pill" id="subPick"></span>`, `<div class="subject-grid" id="subs">${Object.entries(subs).map(([k, v]) => `<button class="subject-btn" data-s="${k}"><b>${esc(v.name)}</b><span>${esc(subjDesc(k))}</span></button>`).join('')}</div>`, { card: false })}
         <h3 style="margin-top:18px">${L('2. Ilang tanong?', '2. How many questions?')}</h3>
         <div class="seg" id="cnt">${[10, 20, 30, 50].map((n) => `<button data-n="${n}" ${isFree() && n > S.config.free.practice_items ? 'disabled title="Premium"' : ''}>${isFree() && n > S.config.free.practice_items ? '🔒 ' : ''}${n}</button>`).join('')}</div>
+        ${isFree() ? `<p class="muted small" style="margin:6px 0 0">${L(`🆓 Hanggang ${S.config.free.practice_items} tanong lang sa libreng plan. <a href="#/premium">⭐ Premium</a> para sa ${[10, 20, 30, 50].filter((n) => n > S.config.free.practice_items).join(', ')} na tanong.`, `🆓 Up to ${S.config.free.practice_items} questions on the free plan. <a href="#/premium">⭐ Premium</a> for ${[10, 20, 30, 50].filter((n) => n > S.config.free.practice_items).join(', ')} questions.`)}</p>` : ''}
         <h3 style="margin-top:18px">${L('3. May timer?', '3. Timer?')}</h3>
         <div class="seg" id="tm">${[[0, L('Wala', 'None')], [10, '10 min'], [20, '20 min'], [30, '30 min']].map(([n, l]) => `<button data-m="${n}">${l}</button>`).join('')}</div>
         <button class="btn block" id="go" style="margin-top:20px">${L('Simulan ang practice', 'Start practice')}</button>
@@ -2100,11 +2093,11 @@
   }
   /* ---------------- the exam is a test paper ----------------
      One question per page. No Next/Back buttons: turn the page by swiping left or right, by tapping
-     the folded corner at the bottom of the page, or with the arrow keys. Each turn is a page-flip
-     animation with a paper sound (Account → Sounds). ☰ Lahat / the page number opens every question.
+     the folded corner at the bottom of the page, or with the arrow keys. Each turn is a smooth slide
+     with a gentle tick sound (Account → Sounds). ☰ Lahat / the page number opens every question.
      Answers are saved on every tap, as before. Premium turns pages a little faster. */
   const reduceMotion = () => a11y().motion || (window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches);
-  const flipMs = () => (S.premium ? 460 : 540);
+  const flipMs = () => (S.premium ? 380 : 420);
   function turn(d, to) {
     const ex = S.exam; if (!ex || document.querySelector('.modal-bg')) return;
     const n = ex.a.items.length, next = to ?? ex.idx + d;
@@ -2131,9 +2124,9 @@
       const dx = e.clientX - x0, dy = e.clientY - y0;
       if (!drag && Math.abs(dx) > 14 && Math.abs(dx) > Math.abs(dy) * 1.4) drag = true;
       if (drag && page() && !reduceMotion()) {
-        // The page follows the finger a little, like lifting a sheet.
+        // The page follows the finger a little, like sliding a sheet.
         const w = desk.clientWidth || 360, k = Math.max(-1, Math.min(1, dx / w));
-        page().style.transform = `translateX(${k * 30}px) rotate(${k * 0.6}deg)`;
+        page().style.transform = `translateX(${k * 40}px)`;
       }
     });
     const end = (e) => {
@@ -2151,10 +2144,10 @@
     desk.addEventListener('pointerup', end);
     desk.addEventListener('pointercancel', end);
   }
-  /* Lift and turn: the sheet lifts a little off the stack, turns over on its left edge in 3D (like a page
-     in a stapled booklet), then the next page lands with a small settle. A soft shadow falls on the page under it.
+  /* Smooth slide: going forward, the page on top slides off to the left with a soft shadow and the next page
+     (already under it) eases into place. Going back, the previous page slides in from the left on top.
      Only transform and opacity change, so it stays smooth on most phones.
-     Less motion (Account) or a low-memory phone: a short, light slide instead. */
+     Less motion (Account) or a low-memory phone: a short, light fade instead. */
   const lightFlip = () => reduceMotion() || (navigator.deviceMemory && navigator.deviceMemory <= 2);
   function flip(page, ghost, dir) {
     const stack = page.parentNode, dur = flipMs();
@@ -2162,34 +2155,28 @@
     ghost.removeAttribute('id'); ghost.classList.add('paper-ghost'); ghost.setAttribute('aria-hidden', 'true'); ghost.inert = true;
     Sound.flip();
     if (lightFlip()) {
-      const k = reduceMotion() ? 10 : 28;
-      page.animate([{ opacity: 0.25, transform: `translateX(${dir * k}px)` }, { opacity: 1, transform: 'none' }], { duration: reduceMotion() ? 140 : 220, easing: 'cubic-bezier(.2,.7,.3,1)' });
+      const k = reduceMotion() ? 0 : 16;
+      page.animate([{ opacity: 0.35, transform: `translateX(${dir * k}px)` }, { opacity: 1, transform: 'none' }], { duration: reduceMotion() ? 120 : 200, easing: 'ease-out' });
       return;
     }
-    // Forward: the old page (ghost, on top) lifts and turns away. Back: the previous page (page) turns back on top and lands.
+    // Forward: the old page (ghost, on top) slides away. Back: the previous page (page) slides in on top of the ghost.
     const sheet = dir > 0 ? ghost : page, under = dir > 0 ? page : ghost;
     if (dir > 0) { ghost.classList.add('top'); stack.appendChild(ghost); } else { ghost.classList.add('under'); stack.insertBefore(ghost, page); }
-    const P = `perspective(${Math.max(1200, (stack.clientWidth || 360) * 3)}px)`;
-    const turnK = [
-      { offset: 0, transform: `${P} translateZ(0) rotateY(0deg)`, opacity: 1, easing: 'cubic-bezier(.3,0,.4,1)' },
-      { offset: 0.2, transform: `${P} translateZ(18px) rotateX(1.5deg) rotateY(-10deg)`, opacity: 1, easing: 'cubic-bezier(.4,0,.6,1)' }, // lifts
-      { offset: 0.88, transform: `${P} translateZ(18px) rotateY(-88deg)`, opacity: 1 },                                           // turns on its edge
-      { offset: 1, transform: `${P} translateZ(18px) rotateY(-92deg)`, opacity: 0 },
-    ];
+    const ease = 'cubic-bezier(.4,0,.2,1)';
+    const o = { duration: dur, direction: dir > 0 ? 'normal' : 'reverse', fill: 'both', easing: ease };
     const shade = document.createElement('div'); shade.className = 'turn-shade';
-    under.classList.add('turning'); sheet.classList.add('turning', 'lifted'); under.appendChild(shade);
-    const o = { duration: dur, direction: dir > 0 ? 'normal' : 'reverse', fill: 'both' };
-    const anim = sheet.animate(turnK, o);
-    const a2 = shade.animate([{ opacity: 0 }, { opacity: 1, offset: 0.25 }, { opacity: 0 }], o);
+    sheet.classList.add('sliding'); under.classList.add('turning'); under.appendChild(shade);
+    const anim = sheet.animate([{ transform: 'translateX(0)', opacity: 1 }, { transform: 'translateX(-108%)', opacity: 0.9 }], o);
+    // The page underneath: a soft shadow lifts off it and it settles from a little to the right.
+    const a2 = shade.animate([{ opacity: 0.7 }, { opacity: 0 }], o);
+    const a3 = under.animate([{ transform: 'translateX(14px) scale(.99)' }, { transform: 'none' }], o);
     S.flipAnim = anim;
     let over = false;
     const done = () => {
       if (over) return; over = true;
-      a2.cancel(); shade.remove(); sheet.classList.remove('turning', 'lifted'); under.classList.remove('turning');
-      anim.cancel(); // drop the 3D transform
+      a2.cancel(); a3.cancel(); shade.remove(); sheet.classList.remove('sliding'); under.classList.remove('turning');
+      anim.cancel();
       ghost.remove(); if (S.flipAnim === anim) S.flipAnim = null;
-      // The page that is now in front lands on the stack with a small settle.
-      page.animate([{ transform: 'translateY(-3px) scale(1.004)' }, { transform: 'translateY(1px)', offset: 0.6 }, { transform: 'none' }], { duration: 160, easing: 'ease-out' });
     };
     anim.onfinish = done; anim.oncancel = done;
   }
@@ -2364,6 +2351,7 @@
     const blankCount = a.items.filter((_, i) => a.answers[i] === undefined).length;
     const lv = levelOf(a);
     const tools = !lite && S.premium; // Premium: PDF, email, print
+    const noReview = practice && isFree(); // free plan: no "Review answers" after a practice (Premium has it)
     shell('history', `
       <div class="card" style="text-align:center">
         <div class="result-head">${showLevel() ? levelChip(lv, 'big') : ''}${setChip(a)}</div>
@@ -2383,7 +2371,7 @@
       <div class="card" style="margin-top:12px"><h3>${lite ? L('Kabuuang score kada subject', 'Total score by subject') : L('Score kada subject', 'Score by subject')}</h3>${subjectBars(a.breakdown || {})}</div>
       ${timeCard(a)}
       ${!lite && wrongCount + (practice ? 0 : blankCount) > 0 ? `<a class="card review-link" href="#/review" style="margin-top:12px"><span class="ic" aria-hidden="true">🎯</span><span class="grow"><b>${L('Sagutan ulit ang mga mali', 'Answer your mistakes again')}</b><span class="muted small">${L('Nasa Balikan ang mali ang mga namali mo rito, kasama ang pinakamahinang topic mo.', 'Your mistakes here are in Go over your mistakes, with your weakest topics.')}</span></span><span aria-hidden="true">›</span></a>` : ''}
-      ${lite ? answerKey(a) : `
+      ${lite ? answerKey(a) : noReview ? `<a class="card review-link" href="#/premium" style="margin-top:12px"><span class="ic" aria-hidden="true">⭐</span><span class="grow"><b>${L('Review ng mga sagot: para sa Premium', 'Review answers: Premium only')}</b><span class="muted small">${L('Sa Premium, makikita mo ulit ang bawat tanong, ang sagot mo, ang tamang sagot at ang paliwanag pagkatapos ng practice. Kumuha ng Premium →', 'With Premium you can go over every question, your answer, the correct answer and the explanation after a practice. Get Premium →')}</span></span><span aria-hidden="true">›</span></a>` : `
       ${tools ? topicTable(a) : ''}
       <h2>${L('Review ng mga sagot', 'Review answers')}</h2>
       <div class="tabs" id="rf"><button data-f="wrong" class="active">${L('Mali at walang sagot', 'Wrong and unanswered')}</button><button data-f="all">${L('Lahat', 'All')}</button></div>
@@ -2404,8 +2392,7 @@
           ${it.explanation ? `<div class="explain">${esc(it.explanation)}</div>` : ''}
         </div>`).join('') + (rows.length > 200 ? `<p class="muted small">${L('Ipinapakita ang unang 200.', 'Showing the first 200.')}</p>` : '') : `<div class="card empty">${L('Perpekto! Walang mali. 🎉', 'Perfect! No mistakes. 🎉')}</div>`;
     };
-    $$('#rf button').forEach((b) => (b.onclick = () => paint(b.dataset.f)));
-    paint('wrong');
+    if (!noReview) { $$('#rf button').forEach((b) => (b.onclick = () => paint(b.dataset.f))); paint('wrong'); }
     $('#again').onclick = () => {
       if (practice) {
         const subject = a.items[0]?.subject || 'verbal';

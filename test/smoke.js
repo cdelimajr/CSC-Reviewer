@@ -124,9 +124,9 @@ const lastCode = (to) => {
   await A('PUT', '/api/admin/settings', { premium_required: '1', price: '99', plan_days: '30', pay_number: '09171234567' });
   assert.equal((await U('POST', '/api/attempts', { mode: 'pro' })).status, 402, 'premium required');
   assert.equal((await U('POST', '/api/attempts', { mode: 'practice', subject: 'verbal' })).status, 200, 'practice stays free');
-  // Free plan limits: 3 practice a day (up to 20 items), Set 1 only, no offline
+  // Free plan limits: 3 practice a day (up to 10 items), Set 1 only, no offline
   r = await U('POST', '/api/attempts', { mode: 'practice', subject: 'numerical', count: 50 });
-  assert.equal(r.data.items.length, 20, 'free practice capped at 20 items');
+  assert.equal(r.data.items.length, 10, 'free practice capped at 10 items');
   assert.equal((await U('POST', '/api/attempts', { mode: 'practice', subject: 'verbal' })).status, 402, 'daily practice limit');
   assert.equal((await U('GET', '/api/me')).data.practice_today, 3);
   r = await U('GET', '/api/sets?mode=pro');
@@ -356,7 +356,7 @@ const lastCode = (to) => {
   const price0 = r.data.price;
   r = await A('PUT', '/api/admin/settings', { price: 'abc', plan_days: '-5', free_practice_items: '2.6' });
   assert.equal(r.data.price, price0, 'bad price ignored'); assert.equal(r.data.plan_days, '1'); assert.equal(r.data.free_practice_items, '5');
-  r = await A('PUT', '/api/admin/settings', { plan_days: '30', free_practice_items: '20' });
+  r = await A('PUT', '/api/admin/settings', { plan_days: '30', free_practice_items: '10' });
   assert.deepEqual(r.data.pay_methods.map((m) => m.id), ['gcash'], 'only the GCash account that has a number (no empty Maya/PayPal/bank)');
   assert.equal(r.data.pay_methods[0].name, 'GCash');
   // Accounts are added with the type dropdown; the name comes from the type (no "name in the app")

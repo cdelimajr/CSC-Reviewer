@@ -42,7 +42,7 @@ const SETTING_DEFAULTS = {
   premium_required: '0', price: '149', plan_days: '30', pay_method: 'GCash', pay_name: '', pay_number: '',
   pay_note: 'Ipadala ang bayad sa napiling account sa itaas, tapos ilagay ang reference number dito.',
   // Free plan (only when Premium is turned on): online only, with these limits.
-  free_practice_daily: '3', free_practice_items: '20', free_sets: '1', free_mock_daily: '1', // Set 1 is always free
+  free_practice_daily: '3', free_practice_items: '10', free_sets: '1', free_mock_daily: '1', // Set 1 is always free
   // Exam screen: the RA 10173 watermark and the warning line on top (on by default).
   exam_watermark: '1', exam_privacy_strip: '1',
   // Payments: turn online (PayMongo) and manual payments on or off. pay_methods holds the manual
@@ -95,7 +95,7 @@ const manualPayOn = (st) => st.pay_manual_on !== '0' && payMethods(st).some((m) 
 const hasPremium = (u, st) => u.role === 'admin' || st.premium_required !== '1' || (u.premium_until || 0) > Date.now();
 const freeLimits = (st) => ({
   practice_daily: Math.max(0, Number(st.free_practice_daily) || 0),
-  practice_items: Math.max(5, Number(st.free_practice_items) || 20),
+  practice_items: Math.max(5, Number(st.free_practice_items) || 10),
   sets: Math.max(1, Number(st.free_sets) || 1), // Set 1 is always open to everyone
   mock_daily: Math.max(0, Number(st.free_mock_daily ?? 1) || 0),
 });
@@ -513,7 +513,7 @@ app.post('/api/attempts', auth, verified, wrap(async (req, res) => {
     if ((await practiceToday(req.user.id)) >= free.practice_daily) {
       return res.status(402).json({ error: `Naubos mo na ang ${free.practice_daily} libreng practice ngayong araw. Bumalik bukas o kumuha ng Premium para walang limit.`, code: 'premium' });
     }
-    opts.count = Math.min(Number(opts.count) || 20, free.practice_items);
+    opts.count = Math.min(Number(opts.count) || 10, free.practice_items);
   }
   if (!premium && mode !== 'practice') {
     const set = req.body.set_id ? await db.get('SELECT number FROM exam_sets WHERE id = ? AND mode = ?', Number(req.body.set_id), mode) : null;
@@ -1264,6 +1264,11 @@ app.ready = (async () => {
   if (seeded) console.log(`Loaded ${seeded} built-in questions.`);
   await createAdminFromEnv();
   await sets.ensureSets();
+  // 1.26.0: the free plan's practice went from up to 20 questions to up to 10. Once, move a saved 20 (the old default) to 10.
+  if (!(await db.get(`SELECT value FROM meta WHERE key = 'mig:free_items_10'`))) {
+    await db.run(`UPDATE meta SET value = '10' WHERE key = 'set:free_practice_items' AND value = '20'`);
+    await db.run(`INSERT INTO meta (key, value) VALUES ('mig:free_items_10', '1') ON CONFLICT(key) DO NOTHING`);
+  }
 })();
 // Render's free plan puts the server to sleep after 15 minutes without visitors, and the next visit
 // then waits about a minute. Visiting our own public address every 10 minutes keeps it awake
