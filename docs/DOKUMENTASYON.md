@@ -2,8 +2,8 @@
 
 Mga batas at patakaran ng gobyerno na sinusunod ng app, paano ito ginawa, paano ito pinapatakbo, saan ito gumagana, at ang kasaysayan ng bawat bersyon.
 
-- **Kasalukuyang bersyon:** 1.21.0 (Nobyembre 1, 2026)
-- **Huling update ng dokumentong ito:** Nobyembre 1, 2026
+- **Kasalukuyang bersyon:** 1.22.0 (Nobyembre 2, 2026)
+- **Huling update ng dokumentong ito:** Nobyembre 2, 2026
 
 > **Panuntunan sa pag-update:** sa bawat pagbabago sa app (bawat pull request), i-update ang dokumentong ito: dagdagan ang [Kasaysayan ng bersyon](#7-kasaysayan-ng-bersyon), palitan ang "Kasalukuyang bersyon" sa itaas, ang `APP_VERSION` sa `public/app.js` at ang `version` sa `package.json`, at baguhin ang anumang bahagi sa ibaba na naapektuhan (hal. bagong data na kinokolekta, bagong batas o patakaran ng gobyerno). Nakasulat din ito sa `CLAUDE.md`.
 
@@ -139,6 +139,7 @@ Mga detalye:
 - **Itaas ng exam (mula 1.21.0):** ✕ (lumabas), "Tanong N / kabuuan" at ilan ang nasagutan, timer, ⚑ (markahan para balikan) at ☰ (lahat ng tanong, at doon ang **Isumite ang exam**). Walang bar sa ibaba. May "Isumite ang exam" din sa huling pahina, at ang pag-swipe lampas sa huling pahina ay nagtatanong kung isusumite na.
 - **Pace (mock exam):** sa ilalim ng progress bar, "Nasa oras" o "Bilisan: ~N tanong ang huli", at ilang segundo kada tanong ang natitira. Paalala sa 30, 10, 5 at 1 minutong natitira.
 - **Paalala:** sa Android/iPhone app, notification kahit sarado ang app at offline (plugin `@capacitor/local-notifications`, naka-iskedyul ang susunod na 14 na araw at nilalaktawan ang araw na nakapag-aral na). Sa website at Windows app, habang bukas ang app; may opsyonal na email para kahit sarado.
+- **Exam sa computer (mula 1.22.0):** sa `public/styles.css` (`@media (min-width: 1024px) and (hover: hover) and (pointer: fine)`), mas malapad ang `.paper-desk` (hanggang 1100px) at mas malaki ang `.q-text`, `.passage` at `.choice` (gumagamit ng `clamp()` kaya lumalaki pa sa malapad na screen). Hindi ito tumatama sa phone at tablet (touch). Sumusunod pa rin ito sa laki ng letra (`--fs`) at zoom (`--z`).
 - **Accessibility:** lahat ng laki ng letra ay `rem`, kaya sabay-sabay lumalaki sa `--fs`. May skip link, pangalan ang mga button, binabasa ang bawat bagong tanong (`aria-live`), naka-label ang mga form, at bumabalik ang focus pagsara ng window.
 
 **Undo (10 segundo):** `Undo` sa `public/app.js`. May dalawang uri:
@@ -148,16 +149,18 @@ Mga detalye:
 
 **Drop down na seksyon:** `fold` sa `public/app.js` (`FOLD_MS`). Kusang sumasara pagkalipas ng 30 segundo (mula 1.20.0; dati 10). Nagsisimula ulit ang 30 segundo habang ginagamit ito, at hindi ito sumasara habang may sinusulatan na box o may bukas na window. Hindi sumasara nang kusa ang Admin → Settings.
 
-**Pag-update na may tanong (mula 1.21.0; mas mabilis makita sa Premium mula 1.20.0):** sa dulo ng `public/app.js` (`UpdAsk`, `updEvery`, `updGap`), `autoUpdate` sa `apps/desktop/main.js`, at `updates` sa `apps/desktop/preload.js`.
+**Pag-update na may tanong (mula 1.21.0; mas mabilis mula 1.22.0):** sa dulo ng `public/app.js` (`UpdAsk`, `updEvery`, `updGap`, `laterWait`), `autoUpdate` sa `apps/desktop/main.js`, at `updates` sa `apps/desktop/preload.js`.
 
 | | Premium | Libre |
 |---|---|---|
-| Paghahanap habang bukas ang app (website, Android/iPhone) | bawat 5 minuto | bawat 30 minuto |
-| Paghahanap pagbalik sa app | agad (hanggang isang beses kada minuto) | hanggang isang beses kada 10 minuto |
-| Windows app (Setup.exe) | bawat 15 minuto, at pagbalik sa window | bawat oras, at pagbalik sa window (hanggang isang beses kada 10 minuto) |
+| Paghahanap pagbukas ng app (Android/iPhone) | pagkalipas ng 1 segundo | pagkalipas ng 3 segundo |
+| Paghahanap habang bukas ang app (website, Android/iPhone) | bawat 2 minuto | bawat 10 minuto |
+| Paghahanap pagbalik sa app o pagbalik ng internet | agad (hanggang isang beses kada 30 segundo) | hanggang isang beses kada 3 minuto |
+| Pagkatapos pindutin ang "Mamaya" | magtatanong ulit pagkalipas ng 10 minuto | pagkalipas ng 30 minuto |
+| Windows app (Setup.exe) | bawat 5 minuto, at pagbalik sa window | bawat 30 minuto, at pagbalik sa window (hanggang isang beses kada 10 minuto) |
 | Kailan nagtatanong | pagkatapos ma-download, pagbukas ng app, pagbalik sa app, at sa paglipat ng screen (kapag ligtas) | pareho |
 
-Dina-download sa background. Kapag handa na, **nagtatanong ang app sa user o admin**: "May bagong bersyon ng app. I-update na ngayon?" na may **Mamaya** at **I-update**. Hindi ito nagtatanong habang may exam o practice, may bukas na window, o may tinatype. **I-update:** lalabas ang "Ina-update ang app…" (mga 1–2 segundo), magbubukas ang bagong bersyon, at tutunog ang **soft chime** (tatlong malambing na tono pataas) kasama ang "✅ Updated na ang app!". Sumusunod ang tunog sa Account → Tunog (on/off at lakas); kung hinaharang ng phone o browser ang tunog pagbukas, tutunog ito sa unang pindot. **Mamaya:** magtatanong ulit pagkalipas ng isang oras, o sa susunod na bukas ng app. Sa Windows app, hindi na kusang ini-install kapag isinara ang app; ini-install at binubuksan ulit ito kapag pinindot ang I-update. Sa website, kapag isinara ang lahat ng tab, kusang ginagamit ng browser ang bagong bersyon sa susunod na bukas (walang tanong at tunog sa kasong iyon). Kailangan ng Windows app mula 1.20.0 para sa mas mabilis na paghahanap ng Premium; sa mas luma, bawat 4 na oras pa rin hanggang ma-update ito.
+Dina-download sa background. Kapag handa na, **nagtatanong ang app sa user o admin**: "May bagong bersyon ng app. I-update na ngayon?" na may **Mamaya** at **I-update**. Hindi ito nagtatanong habang may exam o practice, may bukas na window, o may tinatype. **I-update:** lalabas ang "Ina-update ang app…" (mga 1–2 segundo), magbubukas ang bagong bersyon, at tutunog ang **soft chime** (tatlong malambing na tono pataas) kasama ang "✅ Updated na ang app!". Sumusunod ang tunog sa Account → Tunog (on/off at lakas); kung hinaharang ng phone o browser ang tunog pagbukas, tutunog ito sa unang pindot. **Mamaya:** magtatanong ulit pagkalipas ng 10 minuto (Libre: 30 minuto), kapag bumalik sa app pagkatapos ng 5 minuto o higit pang nasa ibang app o naka-lock ang phone, o sa susunod na bukas ng app. Sa Android/iPhone, tuloy pa rin ang paghahanap kahit may na-download nang bersyon: kapag may mas bago pa, iyon na ang papalit (isang update lang, hindi dalawa). Sa Windows app, hindi na kusang ini-install kapag isinara ang app; ini-install at binubuksan ulit ito kapag pinindot ang I-update. Sa website, kapag isinara ang lahat ng tab, kusang ginagamit ng browser ang bagong bersyon sa susunod na bukas (walang tanong at tunog sa kasong iyon). Kailangan ng Windows app mula 1.20.0 para sa mas mabilis na paghahanap ng Premium; sa mas luma, bawat 4 na oras pa rin hanggang ma-update ito.
 
 **Seguridad:** tingnan ang Seksyon 1.1. Dagdag pa: CORS para sa apps ay token lang (walang cookie), `trust proxy` para sa tamang IP sa limit ng subok, at hindi kailanman naka-cache ng service worker ang `/api`.
 
@@ -215,7 +218,7 @@ Kusang hinahanap at inaayos ng app ang mga karaniwang problema, online man o off
 |---|---|---|
 | Website (phone at computer) | Chrome, Edge, Firefox, Safari na bago (2022 pataas) | Pwedeng i-install bilang app (Add to Home screen). Offline sa Premium |
 | Android app (APK) | Android 6.0 pataas (Capacitor 7) | Face login: phone na may "strong" face unlock lang (hal. Pixel 8 pataas); fingerprint sa iba |
-| Windows app (EXE) | Windows 10 o 11, 64-bit | Windows Hello para sa mabilis na login; Setup.exe ang kusang nag-a-update (Premium bawat 15 minuto, Libre bawat oras) |
+| Windows app (EXE) | Windows 10 o 11, 64-bit | Windows Hello para sa mabilis na login; Setup.exe ang kusang nag-a-update (Premium bawat 5 minuto, Libre bawat 30 minuto) |
 | iPhone (IPA) | iOS 14 pataas (Capacitor 7) | Kailangang i-sign (Apple Developer o Sideloadly/AltStore) |
 | Server | Node.js 20 pataas | Render (libre) + Turso + Brevo |
 
@@ -229,6 +232,7 @@ Kusang hinahanap at inaayos ng app ang mga karaniwang problema, online man o off
 
 | Bersyon | Petsa | PR | Mga pagbabago |
 |---|---|---|---|
+| **1.22.0** | 2026-11-02 | #22 | **Mas mabilis na update sa phone:** dati, bawat 30 minuto lang (Libre) o 5 minuto (Premium) hinahanap ang bagong bersyon, isang oras bago magtanong ulit kapag pinindot ang "Mamaya", at hindi na naghahanap ang Android/iPhone app kapag may na-download nang mas lumang update. Ngayon: Premium bawat 2 minuto at agad pagbalik sa app, Libre bawat 10 minuto at pagbalik sa app (hanggang isang beses kada 3 minuto); naghahanap din agad pagbukas ng app at pagbalik ng internet. "Mamaya": magtatanong ulit pagkalipas ng 10 minuto (Libre: 30) o pagbalik sa app pagkatapos ng 5 minuto. Kapag may mas bagong bersyon pa, iyon na ang dina-download at itinatanong. Windows app: Premium bawat 5 minuto, Libre bawat 30 minuto. **Mas malaking tanong sa exam sa computer:** sa desktop/laptop (malapad na screen at mouse), mas malapad ang test paper at mas malaki ang letra ng tanong, talata at mga pagpipilian (lumalaki pa sa mas malapad na screen). Walang nagbago sa phone at tablet |
 | **1.21.0** | 2026-11-01 | #21 | **Mas malinis na Home:** wala na ang streak, "Balikan ang mga mali" at "Ang progress mo" sa Home (pareho sa PRO at SUBPRO). Nasa **Resulta** na ang "Ang progress mo"; ang streak at "Balikan ang mga mali" na card ay nasa Resulta at **para sa Premium lang**. **Mas maluwag na exam screen:** wala na ang bar sa ibaba (⚑, numero ng pahina, Isumite); nasa itaas na ang ⚑ (markahan) at ☰ (lahat ng tanong at **Isumite**), at may Isumite pa rin sa huling pahina. Wala na ang "Set 1 / Professional / Subprofessional" sa itaas ng exam, at **wala na ang watermark** (email at "RA 10173") sa ibabaw ng tanong; nananatili ang babala ng RA 10173 sa itaas (may on/off sa Admin). **Tanong bago mag-update:** kapag may bagong bersyon, nagtatanong ang app ("Mamaya" o "I-update"); kapag pumayag, lalabas ang "Ina-update ang app…" at tutunog ang **soft chime** pagkatapos, kasama ang "Updated na ang app!". Sa website, Android, iPhone at Windows (ang lumang Windows app ay kusang mag-a-update nang isang beses pagsara, tapos magtatanong na sa susunod) |
 | **1.20.0** | 2026-11-01 | #20 | **Mas mabilis na kusang pag-update**, lalo na sa Premium. Premium: hinahanap ang bagong bersyon bawat 5 minuto habang bukas ang app (Windows app: bawat 15 minuto) at pagbalik sa app, at ginagamit na ito sa susunod na paglipat ng screen kapag walang ginagawa ang user. Libre: bawat 30 minuto (Windows app: bawat oras, dati 4 na oras), at ginagamit pa rin pagbukas ulit o habang nasa background ang app. Hindi pa rin nag-a-update sa gitna ng exam o habang may tinatype. Ang mga drop down na seksyon ay kusang sumasara na pagkalipas ng **30 segundo** (dati 10) |
 | 1.19.0 | 2026-11-01 | #16 | Bagong **I-undo sa loob ng 10 segundo**: bar sa ibaba na may ↶ I-undo pagkatapos burahin ang account, itago ang tanong, burahin ang exam set, alisin ang QR o payment account, baguhin ang user (admin, disable, Premium, verified), i-save ang settings, ibalik ang zoom sa 100%, at i-off ang mabilis na login. Ipinapadala lang sa server ang pagbura pagkalipas ng 10 segundo, at itinutuloy ito kahit naisara ang app o offline. Wala nang tanong bago itago ang tanong o burahin ang exam set (may I-undo na) |

@@ -52,7 +52,7 @@ function autoUpdate() {
     last = Date.now(); updater.checkForUpdates().catch(() => {});
   };
   check(0);
-  setInterval(() => check(fast ? 15 * 60e3 : 3600e3), 60e3);
+  setInterval(() => check(fast ? 5 * 60e3 : 30 * 60e3), 60e3);
   app.on('browser-window-focus', () => check(fast ? 60e3 : 10 * 60e3));
 }
 
