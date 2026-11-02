@@ -110,6 +110,7 @@ const mockToday = async (userId) => (await db.get(`SELECT COUNT(*) AS n FROM att
 // What the app needs to know about the settings (also kept on the device for offline use).
 const clientConfig = (st) => ({
   watermark: st.exam_watermark !== '0', privacy_strip: st.exam_privacy_strip !== '0',
+  contact: st.biz_contact || '', // Account → About the app (the same contact as on receipts)
   ads: { on: st.ads_on === '1', adsense_client: st.adsense_client, adsense_slot: st.adsense_slot, admob_banner: st.admob_banner },
 });
 

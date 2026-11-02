@@ -693,3 +693,12 @@ html[data-theme] #undo .u-time { background: var(--primary); }
 }
 .off-count { display: inline-block; min-width: 1.4em; text-align: center; font-variant-numeric: tabular-nums; }
 .free-acc { margin-top: 14px; }
+
+/* Account → About the app */
+.free-acc + .fold { margin-top: 12px; }
+.about-head { display: flex; gap: 12px; align-items: center; margin-bottom: 10px; }
+.about-head img { border-radius: 12px; flex: none; }
+.about-list { display: grid; grid-template-columns: max-content 1fr; gap: 6px 14px; margin: 0; font-size: 0.92rem; }
+.about-list dt { color: var(--muted); }
+.about-list dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+@media (max-width: 420px) { .about-list { grid-template-columns: 1fr; gap: 2px; } .about-list dd { margin-bottom: 8px; } }

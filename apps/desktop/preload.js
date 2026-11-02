@@ -18,5 +18,7 @@ contextBridge.exposeInMainWorld('cseDesktop', {
     ready: () => ipcRenderer.invoke('update:ready'),
     onReady: (fn) => { ipcRenderer.on('update:ready', () => fn()); },
     install: () => ipcRenderer.invoke('update:install'),
+    // Account → About the app: look now. Answers ready, downloading, latest, none or error.
+    check: () => ipcRenderer.invoke('update:check'),
   },
 });

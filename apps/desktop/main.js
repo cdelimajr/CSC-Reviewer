@@ -29,6 +29,17 @@ function createWindow() {
 let fast = false, ready = false, install = null;
 ipcMain.on('update:speed', (e, on) => { fast = !!on; });
 ipcMain.handle('update:ready', () => ready);
+// Account → About the app: look for a new version now. none: this copy cannot update itself (portable .exe).
+let updater = null;
+ipcMain.handle('update:check', async () => {
+  if (ready) return 'ready';
+  if (!updater) return 'none';
+  try {
+    const r = await updater.checkForUpdates();
+    const v = r && r.updateInfo && r.updateInfo.version;
+    return ready ? 'ready' : v && v !== app.getVersion() ? 'downloading' : 'latest';
+  } catch { return 'error'; }
+});
 ipcMain.handle('update:install', () => {
   if (!ready || !install) throw new Error('no update');
   setTimeout(install, 300);
@@ -36,7 +47,6 @@ ipcMain.handle('update:install', () => {
 });
 function autoUpdate() {
   if (!app.isPackaged || process.env.PORTABLE_EXECUTABLE_DIR) return;
-  let updater;
   try { ({ autoUpdater: updater } = require('electron-updater')); } catch { return; }
   install = () => updater.quitAndInstall(true, true); // silent install, then open the app again
   updater.autoDownload = true;
