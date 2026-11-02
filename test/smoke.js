@@ -178,8 +178,9 @@ const lastCode = (to) => {
     .post('/v1/checkout_sessions', (q, s) => {
       assert.equal(q.get('authorization'), 'Basic ' + Buffer.from('sk_test_key:').toString('base64'));
       const at = q.body.data.attributes;
-      assert.ok(at.payment_method_types.includes('gcash') && at.payment_method_types.includes('paymaya'));
-      const cs = { id: 'cs_' + (Object.keys(sessions).length + 1), attributes: { reference_number: at.reference_number, line_items: at.line_items, status: 'active', payments: [], checkout_url: 'https://checkout.paymongo.test/' + at.reference_number } };
+      assert.ok(String(at.payment_method_types) === 'card' || (at.payment_method_types.includes('gcash') && at.payment_method_types.includes('paymaya')));
+      assert.ok(at.billing && at.billing.email && at.billing.name, 'name and email filled in from the account');
+      const cs = { id: 'cs_' + (Object.keys(sessions).length + 1), attributes: { reference_number: at.reference_number, line_items: at.line_items, payment_method_types: at.payment_method_types, status: 'active', payments: [], checkout_url: 'https://checkout.paymongo.test/' + at.reference_number } };
       sessions[cs.id] = cs; s.json({ data: cs });
     })
     .get('/v1/checkout_sessions/:id', (q, s) => (sessions[q.params.id] ? s.json({ data: sessions[q.params.id] }) : s.status(404).json({ errors: [{ detail: 'not found' }] })))
@@ -218,6 +219,14 @@ const lastCode = (to) => {
   payIt(Object.values(sessions)[1], 'paymaya');
   r = await U('GET', '/api/premium');
   assert.ok(Math.abs(r.data.until - (before + 60 * 864e5)) < 5000, 'premium page picks up the payment');
+  // 💳 Card: a checkout with only the card option (straight to the card form), kept apart from the other checkout
+  assert.equal(r.data.card, true, 'card option shown');
+  const other = (await U('POST', '/api/payments/checkout', {})).data.url;
+  const cardUrl = (await U('POST', '/api/payments/checkout', { method: 'card' })).data.url;
+  assert.notEqual(cardUrl, other, 'card has its own checkout');
+  assert.deepEqual(Object.values(sessions).at(-1).attributes.payment_method_types, ['card']);
+  assert.equal((await U('POST', '/api/payments/checkout', { method: 'card' })).data.url, cardUrl, 'unpaid card checkout reused');
+  assert.equal((await U('POST', '/api/payments/checkout', {})).data.url, other, 'other checkout reused');
   fake.close();
 
   // Offline: question pack, then sync results taken without internet (saved once only)

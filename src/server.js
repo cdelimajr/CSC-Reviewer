@@ -797,6 +797,7 @@ app.get('/api/premium', auth, wrap(async (req, res) => {
     WHERE user_id = ? AND NOT (provider = 'xendit' AND status = 'checkout') ORDER BY created_at DESC LIMIT 20`, user.id);
   res.json({
     required: st.premium_required === '1', active: hasPremium(user, st), until: user.premium_until || 0, online: onlinePayOn(st),
+    card: onlinePayOn(st) && paymongo.methods.includes('card'),
     manual: manualPayOn(st), methods: manualPayOn(st) ? payMethods(st).filter((m) => m.on) : [],
     price: st.price, plan_days: Number(st.plan_days) || 30, note: st.pay_note, payments,
   });
@@ -875,11 +876,14 @@ app.post('/api/payments/checkout', auth, verified, wrap(async (req, res) => {
   const st = await getSettings();
   if (!onlinePayOn(st)) return res.status(404).json({ error: 'Hindi pa naka-set up ang online na bayad.' });
   const amount = Number(st.price);
+  // "Card": a checkout with only the card option, so PayMongo opens the card form right away.
+  const card = req.body && req.body.method === 'card' && paymongo.methods.includes('card');
+  const kind = card ? 'Card' : 'Online';
   // PayMongo's smallest payment is ₱20.
   if (!(amount >= 20)) return res.status(400).json({ error: 'Kailangang ₱20 o higit pa ang presyo ng Premium. Makipag-ugnayan sa admin.' });
   // Reuse an unpaid checkout from the last 23 hours (the link lasts 24 hours).
-  const open = await db.get(`SELECT * FROM payments WHERE user_id = ? AND provider = 'paymongo' AND status = 'checkout' AND created_at > ? ORDER BY id DESC LIMIT 1`,
-    req.user.id, Date.now() - 23 * 3600e3);
+  const open = await db.get(`SELECT * FROM payments WHERE user_id = ? AND provider = 'paymongo' AND status = 'checkout' AND method = ? AND created_at > ? ORDER BY id DESC LIMIT 1`,
+    req.user.id, kind, Date.now() - 23 * 3600e3);
   if (open && Number(open.amount) === amount && open.checkout_url) return res.json({ url: open.checkout_url });
   if (limited('checkout:' + req.user.id, 10, 60 * 60 * 1000)) return res.status(429).json({ error: 'Masyadong maraming subok. Maghintay muna.' });
   const days = Number(st.plan_days) || 30;
@@ -887,7 +891,7 @@ app.post('/api/payments/checkout', auth, verified, wrap(async (req, res) => {
   let cs;
   try {
     cs = await paymongo.createCheckout({
-      reference, amount, email: req.user.email, name: req.user.name,
+      reference, amount, email: req.user.email, name: req.user.name, types: card ? ['card'] : null,
       description: `CSE Reviewer Premium (${days} araw)`, returnUrl: publicUrl(req) + '/#/premium',
     });
   } catch (e) {
@@ -896,7 +900,7 @@ app.post('/api/payments/checkout', auth, verified, wrap(async (req, res) => {
   }
   const url = cs.attributes.checkout_url;
   await db.run(`INSERT INTO payments (user_id, amount, method, reference, status, provider, invoice_id, checkout_url, days, created_at)
-    VALUES (?, ?, 'Online', ?, 'checkout', 'paymongo', ?, ?, ?, ?)`, req.user.id, String(amount), reference, cs.id, url, days, Date.now());
+    VALUES (?, ?, ?, ?, 'checkout', 'paymongo', ?, ?, ?, ?)`, req.user.id, String(amount), kind, reference, cs.id, url, days, Date.now());
   res.json({ url });
 }));
 
