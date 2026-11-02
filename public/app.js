@@ -3,7 +3,7 @@
   'use strict';
   const $app = document.getElementById('app');
   const LETTERS = ['A', 'B', 'C', 'D'];
-  const APP_VERSION = '1.21.0'; // keep in step with package.json and docs/DOKUMENTASYON.md
+  const APP_VERSION = '1.22.0'; // keep in step with package.json and docs/DOKUMENTASYON.md
   const S = { user: null, meta: null, exam: null, timer: null, saveT: null };
 
   /* ---------------- helpers ---------------- */
@@ -3528,12 +3528,15 @@
      "Update now?" with "Later" and "Update". It asks only at a safe moment: no exam or practice, no open
      window, nothing typed. Update: an "Updating the app…" screen, the new version opens, and a soft chime
      plays with "The app is updated!" (the chime follows Account → Sounds on/off and volume).
-     Later: it asks again after an hour, or the next time the app opens.
+     Later: it asks again after 10 minutes (Free: 30 minutes), when the user comes back to the app after
+     5 minutes or more away, or the next time the app opens.
      Premium finds new versions much sooner than Free:
-     - checks: every 5 minutes while the app is open, and on coming back to it (at most once a minute);
-       Free: every 30 minutes, and on coming back at most once every 10 minutes */
-  const updEvery = () => (S.premium ? 5 * 60e3 : 30 * 60e3); // while the app is open
-  const updGap = () => (S.premium ? 60e3 : 10 * 60e3); // on coming back to the app
+     - checks: every 2 minutes while the app is open, and every time the user comes back to it (at most
+       every 30 seconds); Free: every 10 minutes, and on coming back at most once every 3 minutes
+     - also right when the app opens and when the internet comes back */
+  const updEvery = () => (S.premium ? 2 * 60e3 : 10 * 60e3); // while the app is open
+  const updGap = () => (S.premium ? 30e3 : 3 * 60e3); // on coming back to the app
+  const laterWait = () => (S.premium ? 10 * 60e3 : 30 * 60e3); // after "Later"
   const busy = () => !!S.exam || !!document.querySelector('.modal-bg')
     || $$('input, textarea').some((el) => (el.type === 'checkbox' || el.type === 'radio' ? el.checked !== el.defaultChecked : el.value !== el.defaultValue));
   const markUpdated = () => store.set('cse-updated', 1);
@@ -3542,7 +3545,12 @@
     setTimeout(() => { toast(L('✅ Updated na ang app!', '✅ The app is updated!')); Sound.playSoon('updated'); }, 600);
   }
   const UpdAsk = (() => {
-    let asking = false, later = 0;
+    let asking = false, later = 0, away = 0;
+    // Back after 5 minutes or more away (phone locked, another app): "Later" is over, ask again.
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden) away = Date.now();
+      else if (away && Date.now() - away >= 5 * 60e3) later = 0;
+    });
     function updating(on) {
       let el = document.getElementById('updating');
       if (!on) { if (el) el.remove(); return; }
@@ -3553,7 +3561,7 @@
     }
     // apply(): switch to the new version (the app restarts by itself).
     function ask(apply) {
-      if (asking || busy() || Date.now() - later < 3600e3 || document.getElementById('updating')) return;
+      if (asking || busy() || Date.now() - later < laterWait() || document.getElementById('updating')) return;
       asking = true;
       modal(`<h2 style="margin-top:0">🔄 ${L('May bagong bersyon ng app', 'A new version of the app is ready')}</h2>
         <p class="muted">${L('I-update na ngayon? Ilang segundo lang ito. Naka-save ang lahat ng resulta at settings mo.', 'Update now? It takes a few seconds. All your results and settings are saved.')}</p>
@@ -3603,7 +3611,8 @@
         last = Date.now(); reg.update().catch(() => {});
       };
       document.addEventListener('visibilitychange', () => { if (document.hidden) otherTabSafe(); else { look(updGap()); offer(); } });
-      setInterval(() => { if (!document.hidden) { look(updEvery()); offer(); } }, 60e3);
+      setInterval(() => { if (!document.hidden) { look(updEvery()); offer(); } }, 30e3);
+      window.addEventListener('online', () => look(updGap()));
       window.addEventListener('hashchange', () => { otherTabSafe(); setTimeout(offer, 400); });
       setTimeout(offer, 1500); // the app just opened with a new version waiting
     });
@@ -3629,23 +3638,30 @@
         try { await Updater.set({ id: p.id }); } catch (e) { store.set('cse-ota', p); throw e; }
       });
     };
+    // Keeps checking even when a version is already downloaded: if the user said "Later" and an even
+    // newer one came out, the newer one replaces it (one update, not two in a row).
+    let checking = false;
     const check = async (min = updGap()) => {
-      if (pending || !navigator.onLine || Date.now() - lastCheck < min) return;
-      lastCheck = Date.now();
+      if (checking || !navigator.onLine || Date.now() - lastCheck < min) return;
+      checking = true; lastCheck = Date.now();
       try {
-        const res = await fetch(API + '/api/app/update', { cache: 'no-store' });
+        const res = await fetch(API + '/api/app/update?b=' + encodeURIComponent(BUILD) + '&t=' + Date.now(), { cache: 'no-store' });
         const u = res.ok && await res.json();
         if (!u || !u.version || u.version === BUILD || u.version === store.get('cse-ota-bad')) return;
+        if (pending && pending.version === u.version) return;
+        const old = pending;
         const b = await Updater.download({ url: API + u.url, version: u.version });
         pending = { id: b.id, version: u.version };
         store.set('cse-ota', pending);
+        if (old && old.id && old.id !== b.id) Updater.delete({ id: old.id }).catch(() => {});
         applyWhenSafe();
-      } catch { /* try again later */ }
+      } catch { /* try again later */ } finally { checking = false; }
     };
     setTimeout(applyWhenSafe, 1500); // app just opened: ask now if a new version is ready
-    setTimeout(() => check(0), S.premium ? 1500 : 5000);
+    setTimeout(() => check(0), S.premium ? 1000 : 3000);
     document.addEventListener('visibilitychange', () => { if (!document.hidden) { check(); applyWhenSafe(); } });
-    setInterval(() => { if (!document.hidden) { check(updEvery()); applyWhenSafe(); } }, 60e3);
+    window.addEventListener('online', () => check(updGap()));
+    setInterval(() => { if (!document.hidden) { check(updEvery()); applyWhenSafe(); } }, 30e3);
     window.addEventListener('hashchange', () => setTimeout(applyWhenSafe, 400));
   }
 
