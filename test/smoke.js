@@ -135,18 +135,29 @@ const lastCode = (to) => {
   assert.equal((await U('POST', '/api/attempts', { mode: 'pro', set_id: s3.id })).status, 402, 'other sets need Premium');
   r = await U('POST', '/api/attempts', { mode: 'pro', set_id: s1.id });
   assert.equal(r.status, 402, 'free plan: one mock exam a day (Juan already took some today)'); assert.equal(r.data.code, 'mock_daily');
-  // A new free user: Set 1 once a day, short review (letters only), no email of the full review
+  // A new free user: Set 1 once a day (5 questions per subject), review of 5 per subject, no email of the full review
   const F = client();
   await F('POST', '/api/auth/register', { name: 'Free', email: 'free@test.ph', password: 'password123' });
   await F('POST', '/api/auth/verify', { code: lastCode('free@test.ph') });
   r = await F('POST', '/api/attempts', { mode: 'subpro', set_id: (await F('GET', '/api/sets?mode=subpro')).data.find((x) => x.number === 1).id });
   assert.equal(r.status, 200, 'Set 1 is free');
+  assert.equal(r.data.items.length, 20, 'free mock exam: 5 questions per subject (4 subjects)');
+  assert.ok(Object.values(r.data.items.reduce((o, it) => ((o[it.subject] = (o[it.subject] || 0) + 1), o), {})).every((n) => n === 5));
+  assert.equal(r.data.time_limit_sec, Math.round((160 * 20) / 165) * 60, 'time cut to the same pace as the full exam');
   const fid = r.data.id;
   assert.equal((await F('GET', '/api/me')).data.mock_today, 1);
   assert.equal((await F('POST', '/api/attempts', { mode: 'pro', set_id: s1.id })).status, 402, 'second mock exam today is blocked (server, per account)');
   r = await F('POST', `/api/attempts/${fid}/submit`, { answers: { 0: 1, 1: 2 } });
   assert.equal(r.data.lite, true, 'free review is short');
-  assert.ok(r.data.items.every((it) => Object.keys(it).sort().join() === 'answer,subject'), 'only the letter of the answer: no question, choices or explanation');
+  assert.equal(r.data.review_per_subject, 5);
+  assert.ok(r.data.items.every((it) => !it.locked && it.question && it.explanation !== undefined), 'free mock: all 5 per subject have a review');
+  // Free practice: the first 5 questions have a review, the rest only the subject and letter
+  r = await F('POST', '/api/attempts', { mode: 'practice', subject: 'verbal', count: 10 });
+  assert.equal(r.data.items.length, 10);
+  r = await F('POST', `/api/attempts/${r.data.id}/submit`, { answers: {} });
+  assert.equal(r.data.lite, true, 'free practice review is short');
+  assert.equal(r.data.items.filter((it) => !it.locked && it.question).length, 5, 'review of 5 questions per subject');
+  assert.ok(r.data.items.filter((it) => it.locked).every((it) => Object.keys(it).sort().join() === 'answer,locked,subject'), 'the rest: no question, choices or explanation');
   assert.ok(r.data.breakdown && typeof r.data.score === 'number', 'score per subject');
   assert.equal((await F('GET', `/api/attempts/${fid}`)).data.lite, true);
   assert.equal((await F('POST', `/api/attempts/${fid}/email`, {})).status, 402, 'email of the full review is Premium');

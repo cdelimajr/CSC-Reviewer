@@ -93,11 +93,14 @@ function payMethods(st) {
 const onlinePayOn = (st) => paymongo.enabled && st.pay_online_on !== '0';
 const manualPayOn = (st) => st.pay_manual_on !== '0' && payMethods(st).some((m) => m.on);
 const hasPremium = (u, st) => u.role === 'admin' || st.premium_required !== '1' || (u.premium_until || 0) > Date.now();
+const FREE_PER_SUBJECT = 5;
 const freeLimits = (st) => ({
   practice_daily: Math.max(0, Number(st.free_practice_daily) || 0),
   practice_items: Math.max(5, Number(st.free_practice_items) || 10),
   sets: Math.max(1, Number(st.free_sets) || 1), // Set 1 is always open to everyone
   mock_daily: Math.max(0, Number(st.free_mock_daily ?? 1) || 0),
+  mock_per_subject: FREE_PER_SUBJECT, // free mock exam: the first 5 questions of each subject of Set 1
+  review_per_subject: FREE_PER_SUBJECT, // free review after a mock exam or practice: 5 questions per subject
 });
 // Start of today in the Philippines (UTC+8), for the daily practice limit.
 const phDayStart = () => { const n = Date.now() + 8 * 3600e3; return n - (n % 864e5) - 8 * 3600e3; };
@@ -481,8 +484,9 @@ function clientItems(items, reveal) {
     ...(reveal ? { answer: it.answer, explanation: it.explanation } : {}),
   }));
 }
-// lite: free plan review of a finished mock exam. Only the letter of the correct answer, no question,
-// choices or explanation (Premium gets the full review, PDF, email and print).
+// lite: free plan review of a finished mock exam or practice. Only the first 5 questions of each subject
+// have the question, choices and explanation; the rest only say their subject and correct letter, so the
+// score per subject still adds up (Premium gets the full review, PDF, email and print).
 function attemptView(a, full = true, lite = false) {
   const items = JSON.parse(a.items);
   const done = !!a.finished_at;
@@ -494,13 +498,16 @@ function attemptView(a, full = true, lite = false) {
   };
   if (full) {
     out.answers = JSON.parse(a.answers || '{}');
-    if (lite && done && !practice) { out.lite = true; out.items = items.map((it) => ({ subject: it.subject, answer: it.answer })); }
-    else out.items = clientItems(items, done || practice);
+    if (lite && done) {
+      const seen = {}, full = clientItems(items, true);
+      out.lite = true; out.review_per_subject = FREE_PER_SUBJECT;
+      out.items = full.map((it) => ((seen[it.subject] = (seen[it.subject] || 0) + 1) <= FREE_PER_SUBJECT ? it : { subject: it.subject, answer: it.answer, locked: true }));
+    } else out.items = clientItems(items, done || practice);
   }
   return out;
 }
-// Free users see the short review of their finished mock exams.
-const liteFor = async (req, a) => a.mode !== 'practice' && !hasPremium(req.user, await getSettings());
+// Free users see the short review (5 questions per subject) of their finished mock exams and practice.
+const liteFor = async (req, a) => !hasPremium(req.user, await getSettings());
 const getOwnAttempt = (req) => db.get('SELECT * FROM attempts WHERE id = ? AND (user_id = ? OR ? = 1)', Number(req.params.id), req.user.id, req.user.role === 'admin' ? 1 : 0);
 
 app.post('/api/attempts', auth, verified, wrap(async (req, res) => {
@@ -531,6 +538,7 @@ app.post('/api/attempts', auth, verified, wrap(async (req, res) => {
     if (!set) return res.status(404).json({ error: 'Hindi makita ang exam set.' });
     ex = { title: set.title, items: JSON.parse(set.items), timeLimitSec: EXAMS[mode].minutes * 60 };
     setId = set.id;
+    if (!premium) ex = freeMock(ex, mode, free.mock_per_subject);
   } else {
     ex = await buildExam(mode, opts);
   }
@@ -539,6 +547,15 @@ app.post('/api/attempts', auth, verified, wrap(async (req, res) => {
     req.user.id, mode, ex.title, JSON.stringify(ex.items), ex.timeLimitSec, Date.now(), ex.items.length, setId);
   res.json(attemptView(await db.get('SELECT * FROM attempts WHERE id = ?', r.lastInsertRowid)));
 }));
+
+// Free plan mock exam: the first few questions of each subject of the set, with the time cut to match
+// (same pace per question as the full exam).
+function freeMock(ex, mode, per) {
+  const seen = {};
+  const items = ex.items.filter((it) => (seen[it.subject] = (seen[it.subject] || 0) + 1) <= per);
+  const minutes = Math.max(1, Math.round((EXAMS[mode].minutes * items.length) / EXAMS[mode].items));
+  return { ...ex, items, timeLimitSec: minutes * 60 };
+}
 
 // Practice from "Balikan ang mali": the user's own mistakes, or one weak topic (mistakes of that topic first).
 async function reviewExam(userId, premium, body, count) {

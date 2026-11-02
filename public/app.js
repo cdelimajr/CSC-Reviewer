@@ -3,7 +3,7 @@
   'use strict';
   const $app = document.getElementById('app');
   const LETTERS = ['A', 'B', 'C', 'D'];
-  const APP_VERSION = '1.26.0'; // keep in step with package.json and docs/DOKUMENTASYON.md
+  const APP_VERSION = '1.27.0'; // keep in step with package.json and docs/DOKUMENTASYON.md
   const S = { user: null, meta: null, exam: null, timer: null, saveT: null };
 
   /* ---------------- helpers ---------------- */
@@ -328,6 +328,11 @@
   const pack = () => { const p = store.get(uk('cse-pack')); return p && S.user && p.user_id === S.user.id && (p.valid_until || 0) > Date.now() ? p : null; };
   const canOffline = () => !!(S.premium && pack());
   const isFree = () => !!(S.config && S.config.premium_required && !S.premium);
+  // Free plan: questions per subject in the mock exam, and questions per subject with a review after an exam.
+  const freeMock = () => (S.config && S.config.free && S.config.free.mock_per_subject) || 5;
+  const freeReview = () => (S.config && S.config.free && S.config.free.review_per_subject) || 5;
+  // The free plan's mock exam: its number of questions and minutes (same pace as the full exam).
+  const freeExam = (e) => { const items = e.sections.length * freeMock(); return { items, minutes: Math.max(1, Math.round((e.minutes * items) / e.items)) }; };
 
   async function refreshPack(force) {
     if (!S.user || (S.config.verify && !S.user.email_verified)) return;
@@ -1561,8 +1566,6 @@
     const p = await api('GET', '/api/premium');
     const until = p.until > Date.now() ? new Date(p.until).toLocaleDateString('en-PH', { year: 'numeric', month: 'long', day: 'numeric' }) : '';
     const pending = p.payments.find((x) => x.status === 'pending');
-    const openPay = p.payments.find((x) => x.status === 'checkout' && x.checkout_url);
-    const openCard = p.payments.find((x) => x.status === 'checkout' && x.checkout_url && x.method === 'Card');
     const openOther = p.payments.find((x) => x.status === 'checkout' && x.checkout_url && x.method !== 'Card');
     const manual = p.manual && p.methods.length; // manual payment: on in Admin → Settings, with at least one account
     const statusPill = { pending: `<span class="pill warn">${L('Hinihintay', 'Waiting')}</span>`, checkout: `<span class="pill warn">${L('Hindi pa bayad', 'Not paid yet')}</span>`, approved: `<span class="pill ok">${L('Bayad na', 'Paid')}</span>`, rejected: `<span class="pill bad">${L('Hindi approved', 'Not approved')}</span>`, expired: '<span class="pill">Expired</span>' };
@@ -1577,8 +1580,8 @@
           : `<h3>🔒 ${L('Wala ka pang Premium', 'You do not have Premium yet')}</h3>
             <table class="small" style="width:100%;margin-top:8px"><tr><th></th><th>${L('Libre', 'Free')}</th><th>Premium</th></tr>
             <tr><td>${L('Practice kada subject', 'Practice by subject')}</td><td>${L(`${S.config.free.practice_daily}x kada araw, hanggang ${S.config.free.practice_items} tanong`, `${S.config.free.practice_daily}x a day, up to ${S.config.free.practice_items} questions`)}</td><td>${L('Walang limit', 'No limit')}</td></tr>
-            <tr><td>${L('Mock exam (Pro at Subpro)', 'Mock exam (Pro and Subpro)')}</td><td>${L(`Set 1 lang, ${S.config.free.mock_daily ?? 1}x kada araw`, `Set 1 only, ${S.config.free.mock_daily ?? 1}x a day`)}</td><td>${L('Lahat ng set + Bagong halo, walang limit', 'All sets + New mix, no limit')}</td></tr>
-            <tr><td>${L('Review ng mock exam', 'Mock exam review')}</td><td>${L('Score kada subject + letra ng tamang sagot', 'Score by subject + letter of the correct answer')}</td><td>${L('Buong tanong, paliwanag, score kada topic, PDF / email / print', 'Full questions, explanations, score by topic, PDF / email / print')}</td></tr>
+            <tr><td>${L('Mock exam (Pro at Subpro)', 'Mock exam (Pro and Subpro)')}</td><td>${L(`Set 1 lang, ${freeMock()} tanong kada subject, ${S.config.free.mock_daily ?? 1}x kada araw`, `Set 1 only, ${freeMock()} questions per subject, ${S.config.free.mock_daily ?? 1}x a day`)}</td><td>${L('Buong exam, lahat ng set + Bagong halo, walang limit', 'Full exam, all sets + New mix, no limit')}</td></tr>
+            <tr><td>${L('Review ng sagot (mock exam at practice)', 'Answer review (mock exam and practice)')}</td><td>${L(`Score kada subject + review ng ${freeReview()} tanong kada subject`, `Score by subject + review of ${freeReview()} questions per subject`)}</td><td>${L('Buong tanong, paliwanag, score kada topic, PDF / email / print', 'Full questions, explanations, score by topic, PDF / email / print')}</td></tr>
             <tr><td>Ads</td><td>${L('Mayroon', 'Yes')}</td><td>${L('Wala', 'None')}</td></tr>
             <tr><td>${L('Offline (walang internet)', 'Offline (no internet)')}</td><td>${L('Hindi', 'No')}</td><td>${L('Oo, buong app', 'Yes, the whole app')}</td></tr>
             <tr><td>${L('Bilis', 'Speed')}</td><td>${L('Hinihintay ang server', 'Waits for the server')}</td><td>${L('Agad-agad (naka-save sa device)', 'Instant (saved on the device)')}</td></tr>
@@ -1589,12 +1592,10 @@
         <p style="margin:6px 0"><span class="pill warn" style="font-size:15px">${L(`₱${esc(p.price)} para sa ${p.plan_days} araw`, `₱${esc(p.price)} for ${p.plan_days} days`)}</span></p>
         ${p.online ? `
         <p class="small" style="margin:8px 0">${L('Magbayad online gamit ang <b>GCash, Maya, card, GrabPay, o QR Ph</b> (para sa bank apps) at iba pa. Awtomatikong bubukas ang Premium pagkatapos magbayad.', 'Pay online with <b>GCash, Maya, card, GrabPay, or QR Ph</b> (for bank apps) and more. Premium opens automatically after you pay.')}</p>
-        ${openPay ? `<div class="notice" style="margin-bottom:10px">${L('May bukas kang bayaran. Kung nakapagbayad ka na, pindutin ang <b>I-check ang bayad</b>.', 'You have an open payment. If you already paid, tap <b>Check payment</b>.')}</div>` : ''}
         <div class="err" id="perr"></div>
-        ${p.card ? `<button class="btn block" id="paycard" data-m="card">💳 ${openCard ? L('Ituloy ang bayad gamit ang card', 'Continue paying by card') : L('Card (Visa / Mastercard)', 'Card (Visa / Mastercard)')}</button>
+        ${p.card ? `<button class="btn block" id="paycard" data-m="card">💳 ${L('Card (Visa / Mastercard)', 'Card (Visa / Mastercard)')}</button>
         <p class="muted small" style="margin:4px 0 8px">${L('Card details lang ang ilalagay mo; naka-fill na ang pangalan at email mula sa account mo. Sa PayMongo mo ita-type ang card, hindi sa app na ito.', 'You only type the card details; your name and email are filled in from your account. You type the card on PayMongo, not in this app.')}</p>` : ''}
-        <button class="btn block ${p.card ? 'secondary' : ''}" id="paynow">${p.card ? '📱 ' : '💳 '}${openOther ? L('Ituloy ang pagbayad', 'Continue payment') : p.card ? L('GCash, Maya, QR Ph at iba pa', 'GCash, Maya, QR Ph and more') : L('Magbayad online', 'Pay online')}</button>
-        ${openPay ? `<button class="btn block secondary" id="paycheck" style="margin-top:8px">${L('I-check ang bayad', 'Check payment')}</button>` : ''}` : ''}
+        <button class="btn block ${p.card ? 'secondary' : ''}" id="paynow">${p.card ? '📱 ' : '💳 '}${openOther ? L('Ituloy ang pagbayad', 'Continue payment') : p.card ? L('GCash, Maya, QR Ph at iba pa', 'GCash, Maya, QR Ph and more') : L('Magbayad online', 'Pay online')}</button>` : ''}
         ${manual ? fold('pay-manual', `<h3>${p.online ? L('O magbayad nang manual', 'Or pay manually') : L('Magbayad nang manual', 'Pay manually')}</h3>${pending ? `<span class="pill warn">${L('Hinihintay', 'Waiting')}</span>` : ''}`, `
         <p class="small" style="margin:6px 0">${L('Pumili kung saan magbabayad:', 'Choose where to pay:')}</p>
         <div class="seg" id="pmSel">${p.methods.map((m, i) => `<button type="button" data-pm="${esc(m.id)}" class="${i ? '' : 'active'}">${esc(m.name)}${p.methods.filter((x) => x.name === m.name).length > 1 && m.account ? ` <span class="small muted">…${esc(m.account.replace(/\s/g, '').slice(-4))}</span>` : ''}</button>`).join('')}</div>
@@ -1616,7 +1617,6 @@
       b.disabled = true;
       try { const r = await api('POST', '/api/payments/checkout', b.dataset.m ? { method: b.dataset.m } : {}); location.href = r.url; } catch (err) { $('#perr').textContent = err.message; b.disabled = false; }
     }));
-    if ($('#paycheck')) $('#paycheck').onclick = () => viewPremium();
     // Manual payment: the chosen account's details and QR code.
     let pm = p.methods[0], proof = null;
     const pmInfo = () => {
@@ -1726,6 +1726,7 @@
         <div class="meta"><span class="pill warn">${le.items} items</span><span class="pill warn">${fmtDur(le.minutes)}</span><span class="pill warn">Passing ${le.passing}%</span></div>
         <p class="muted small" style="margin:4px 0">${lv === 'pro' ? L('Para sa second-level positions sa gobyerno (hal. Admin Officer, Analyst).', 'For second-level government positions (e.g. Admin Officer, Analyst).') : L('Para sa first-level positions (hal. clerk, aide, technician).', 'For first-level positions (e.g. clerk, aide, technician).')}</p>
         <p class="small" style="margin:0 0 10px">${le.sections.map((s) => `${esc(subjName(s.subject))} (${s.count})`).join(' · ')}</p>
+        ${isFree() ? `<p class="small" style="margin:-4px 0 10px">🆓 ${L(`Libreng plan: ${freeMock()} tanong kada subject (${freeExam(le).items} tanong, ${fmtDur(freeExam(le).minutes)}). <a href="#/premium">Buong exam sa Premium →</a>`, `Free plan: ${freeMock()} questions per subject (${freeExam(le).items} questions, ${fmtDur(freeExam(le).minutes)}). <a href="#/premium">Full exam with Premium →</a>`)}</p>` : ''}
         <div class="row"><button class="btn" type="button" data-set1="${lv}">▶ ${L('Simulan ang Set 1', 'Start Set 1')}</button><a class="btn secondary" href="#/sets/${lv}">${L('Lahat ng exam set', 'All exam sets')}</a></div>
         </div></div>`;
     const freeMockDone = isFree() && (S.mockToday || 0) >= S.config.free.mock_daily;
@@ -1733,8 +1734,8 @@
       <h1>${L('Kumusta', 'Hello')}, ${esc(S.user.name.split(' ')[0])}! 👋</h1>
       ${premiumNotice()}
       ${Reminders.due() ? `<div class="notice" role="status" style="margin:8px 0">⏰ ${L('Oras na ng review mo ngayong araw. <a href="#/practice">Mag-practice</a> o <a href="#/review">balikan ang mga mali</a>.', 'It is your review time today. <a href="#/practice">Practice</a> or <a href="#/review">go over your mistakes</a>.')}</div>` : ''}
-      ${isFree() ? `<a class="notice" href="#/premium" style="display:block;margin:8px 0">${L(`🆓 <b>Libreng plan:</b> ${S.config.free.practice_daily} practice kada araw (hanggang ${S.config.free.practice_items} tanong), at ${S.config.free.mock_daily === 1 ? 'isang' : S.config.free.mock_daily} mock exam kada araw (Set 1 lang). Letra lang ng tamang sagot ang review. May ads at kailangan ng internet.<br>⭐ <b>Premium:</b> walang limit at walang ads, lahat ng exam set, buong review na may paliwanag, PDF/print/email ng resulta, at gumagana offline. Kumuha ng Premium →`,
-        `🆓 <b>Free plan:</b> ${S.config.free.practice_daily} practice a day (up to ${S.config.free.practice_items} questions), and ${S.config.free.mock_daily === 1 ? 'one' : S.config.free.mock_daily} mock exam a day (Set 1 only). The review shows only the letter of the correct answer. Has ads and needs internet.<br>⭐ <b>Premium:</b> no limits and no ads, all exam sets, full review with explanations, PDF/print/email of results, and works offline. Get Premium →`)}</a>` : ''}
+      ${isFree() ? `<a class="notice" href="#/premium" style="display:block;margin:8px 0">${L(`🆓 <b>Libreng plan:</b> ${S.config.free.practice_daily} practice kada araw (hanggang ${S.config.free.practice_items} tanong), at ${S.config.free.mock_daily === 1 ? 'isang' : S.config.free.mock_daily} mock exam kada araw (Set 1 lang, ${freeMock()} tanong kada subject). May review ng ${freeReview()} tanong kada subject pagkatapos ng exam. May ads at kailangan ng internet.<br>⭐ <b>Premium:</b> walang limit at walang ads, lahat ng exam set, buong review na may paliwanag, PDF/print/email ng resulta, at gumagana offline. Kumuha ng Premium →`,
+        `🆓 <b>Free plan:</b> ${S.config.free.practice_daily} practice a day (up to ${S.config.free.practice_items} questions), and ${S.config.free.mock_daily === 1 ? 'one' : S.config.free.mock_daily} mock exam a day (Set 1 only, ${freeMock()} questions per subject). A review of ${freeReview()} questions per subject after each exam. Has ads and needs internet.<br>⭐ <b>Premium:</b> no limits and no ads, all exam sets, full review with explanations, PDF/print/email of results, and works offline. Get Premium →`)}</a>` : ''}
       ${freeMockDone ? `<div class="notice" style="margin:8px 0;background:var(--warn-soft)">${L('✅ Nagamit mo na ang libreng mock exam ngayong araw. Bumalik bukas, o <a href="#/premium">kumuha ng Premium</a> para walang limit.', '✅ You have used today\'s free mock exam. Come back tomorrow, or <a href="#/premium">get Premium</a> for no limit.')}</div>` : ''}
       <p class="muted" style="margin-top:0">${L('Pumili ng mock exam. Nasa <a href="#/practice">Practice</a> ang practice kada subject.', 'Choose a mock exam. Practice by subject is in <a href="#/practice">Practice</a>.')}</p>
       ${list.some((a) => a.pending && a.finished_at) ? `<p class="muted small">${L('⏳ May mga resulta kang ginawa offline. Ise-save ang mga ito online kapag may internet na.', '⏳ You have results made offline. They will be saved online when the internet is back.')}</p>` : ''}
@@ -1832,9 +1833,9 @@
     }
     if (!(await privacyNotice())) return;
     if (mode !== 'practice') {
-      const e = S.meta.exams[mode];
-      const ok = await confirmBox(L(`Simulan ang ${e.title}?`, `Start the ${e.title}?`), L(`Mayroon itong <b>${e.items} tanong</b> at <b>${fmtDur(e.minutes)}</b> na oras, tulad ng totoong CSE (mga ${Math.round((e.minutes * 60) / e.items)} segundo kada tanong). Tuloy-tuloy ang timer kahit isara mo ang app, pero naka-save ang mga sagot mo. May paalala sa 30, 10, 5 at 1 minutong natitira. Kailangan ng ${e.passing}% para pumasa.<br><br>Para parang totoong exam: walang calculator at phone, at sagutan lahat (walang bawas ang mali).`,
-        `It has <b>${e.items} questions</b> and <b>${fmtDur(e.minutes)}</b> of time, like the real CSE (about ${Math.round((e.minutes * 60) / e.items)} seconds per question). The timer keeps running even if you close the app, but your answers are saved. You get a reminder at 30, 10, 5 and 1 minute left. You need ${e.passing}% to pass.<br><br>To make it like the real exam: no calculator or phone, and answer everything (wrong answers have no penalty).`), L('Simulan na', 'Start now'));
+      const full = S.meta.exams[mode], e = isFree() ? { ...full, ...freeExam(full) } : full;
+      const ok = await confirmBox(L(`Simulan ang ${e.title}?`, `Start the ${e.title}?`), L(`Mayroon itong <b>${e.items} tanong</b> at <b>${fmtDur(e.minutes)}</b> na oras, tulad ng totoong CSE (mga ${Math.round((e.minutes * 60) / e.items)} segundo kada tanong).${isFree() ? ` <b>Libreng plan: ${freeMock()} tanong kada subject.</b> Nasa Premium ang buong exam na ${full.items} tanong.` : ''} Tuloy-tuloy ang timer kahit isara mo ang app, pero naka-save ang mga sagot mo. May paalala sa 30, 10, 5 at 1 minutong natitira. Kailangan ng ${e.passing}% para pumasa.<br><br>Para parang totoong exam: walang calculator at phone, at sagutan lahat (walang bawas ang mali).`,
+        `It has <b>${e.items} questions</b> and <b>${fmtDur(e.minutes)}</b> of time, like the real CSE (about ${Math.round((e.minutes * 60) / e.items)} seconds per question).${isFree() ? ` <b>Free plan: ${freeMock()} questions per subject.</b> The full ${full.items}-question exam is with Premium.` : ''} The timer keeps running even if you close the app, but your answers are saved. You get a reminder at 30, 10, 5 and 1 minute left. You need ${e.passing}% to pass.<br><br>To make it like the real exam: no calculator or phone, and answer everything (wrong answers have no penalty).`), L('Simulan na', 'Start now'));
       if (!ok) return;
     }
     // Premium: the exam is made on the device, so it starts instantly (online or offline).
@@ -2344,14 +2345,14 @@
     const p = pct(a.score, a.total);
     const pass = p >= a.passing;
     const practice = a.mode === 'practice';
-    const lite = !!a.lite; // free plan: letters only
+    const lite = !!a.lite; // free plan: review of the first few questions of each subject only
+    const liteMock = lite && !practice;
     const mins = Math.round((a.finished_at - a.started_at) / 60000);
     const color = practice ? 'var(--primary)' : pass ? 'var(--ok)' : 'var(--bad)';
     const wrongCount = a.items.filter((it, i) => a.answers[i] !== undefined && a.answers[i] !== it.answer).length;
     const blankCount = a.items.filter((_, i) => a.answers[i] === undefined).length;
     const lv = levelOf(a);
     const tools = !lite && S.premium; // Premium: PDF, email, print
-    const noReview = practice && isFree(); // free plan: no "Review answers" after a practice (Premium has it)
     shell('history', `
       <div class="card" style="text-align:center">
         <div class="result-head">${showLevel() ? levelChip(lv, 'big') : ''}${setChip(a)}</div>
@@ -2359,28 +2360,27 @@
         <div class="score-ring" role="img" aria-label="Score ${p}% (${a.score}/${a.total})" style="background:conic-gradient(${color} ${p * 3.6}deg, var(--line) 0)"><div class="in" aria-hidden="true"><div><div class="pct">${p}%</div><div class="muted small">${a.score}/${a.total}</div></div></div></div>
         ${practice ? `<h2 style="margin:6px 0">${L('Tapos na ang practice!', 'Practice done!')}</h2>` : pass ? `<h2 style="margin:6px 0;color:var(--ok)">🎉 ${L('PASADO!', 'PASSED!')}</h2>` : `<h2 style="margin:6px 0;color:var(--bad)">${L('Hindi pa pasado', 'Not passed yet')}</h2>`}
         <p class="muted" style="margin:0">${practice ? L('Ituloy lang ang pag-practice!', 'Keep practicing!') : pass ? L(`Lampas sa ${a.passing}% na passing rate. Galing!`, `Above the ${a.passing}% passing rate. Great job!`) : L(`Kailangan ng ${a.passing}% para pumasa. Kaya mo 'yan, review pa!`, `You need ${a.passing}% to pass. You can do it, keep reviewing!`)}</p>
-        ${lite ? '' : `<p class="muted small">${L(`Tagal: ${mins} minuto · ${wrongCount} mali · ${blankCount} walang sagot`, `Time: ${mins} min · ${wrongCount} wrong · ${blankCount} unanswered`)}</p>`}
+        <p class="muted small">${L(`Tagal: ${mins} minuto · ${wrongCount} mali · ${blankCount} walang sagot`, `Time: ${mins} min · ${wrongCount} wrong · ${blankCount} unanswered`)}</p>
         ${isLocal(id) ? `<p class="muted small">${L('⏳ Ginawa offline. Ise-save ito online kapag may internet na.', '⏳ Made offline. It will be saved online when the internet is back.')}</p>` : ''}
-        <div class="row" style="justify-content:center"><a class="btn secondary" href="#/">Home</a>${lite ? `<a class="btn" href="#/premium">⭐ ${L('Buong review sa Premium', 'Full review with Premium')}</a>` : `<button class="btn" id="again">${L('Ulitin (bagong set)', 'Retake (new set)')}</button>`}</div>
+        <div class="row" style="justify-content:center">${liteMock ? `<a class="btn" href="#/premium">⭐ ${L('Buong review sa Premium', 'Full review with Premium')}</a>` : `<button class="btn" id="again">${L('Ulitin (bagong set)', 'Retake (new set)')}</button>`}</div>
         ${tools || isFree() ? `<div class="result-tools" role="group" aria-label="${L('I-save o ibahagi ang resulta', 'Save or share the result')}">
           <button class="btn secondary" id="rPdf" type="button">${tools ? '📄' : '🔒'} ${L('I-save bilang PDF', 'Save as PDF')}</button>
           <button class="btn secondary" id="rMail" type="button">${tools ? '✉️' : '🔒'} ${L('Ipadala sa email', 'Send to email')}</button>
           <button class="btn secondary" id="rPrint" type="button">${tools ? '🖨️' : '🔒'} Print</button></div>
           <p class="muted small" style="margin:6px 0 0">${!tools ? L('Para sa <a href="#/premium">Premium</a> ang PDF, email at print ng resulta na may lahat ng tanong, sagot at paliwanag.', 'Saving as PDF, email and print of the result with every question, answer and explanation are for <a href="#/premium">Premium</a>.') : L(`Kasama ang lahat ng tanong, sagot at paliwanag. Gumagana offline ang PDF at Print; ang email ay ipapadala sa ${esc(S.user.email)} (kapag offline, ipapadala ito pagbalik ng internet).`, `Includes every question, answer and explanation. PDF and Print work offline; the email goes to ${esc(S.user.email)} (when offline, it is sent once the internet is back).`)}</p>` : ''}
       </div>
-      <div class="card" style="margin-top:12px"><h3>${lite ? L('Kabuuang score kada subject', 'Total score by subject') : L('Score kada subject', 'Score by subject')}</h3>${subjectBars(a.breakdown || {})}</div>
+      <div class="card" style="margin-top:12px"><h3>${L('Score kada subject', 'Score by subject')}</h3>${subjectBars(a.breakdown || {})}</div>
       ${timeCard(a)}
-      ${!lite && wrongCount + (practice ? 0 : blankCount) > 0 ? `<a class="card review-link" href="#/review" style="margin-top:12px"><span class="ic" aria-hidden="true">🎯</span><span class="grow"><b>${L('Sagutan ulit ang mga mali', 'Answer your mistakes again')}</b><span class="muted small">${L('Nasa Balikan ang mali ang mga namali mo rito, kasama ang pinakamahinang topic mo.', 'Your mistakes here are in Go over your mistakes, with your weakest topics.')}</span></span><span aria-hidden="true">›</span></a>` : ''}
-      ${lite ? answerKey(a) : noReview ? `<a class="card review-link" href="#/premium" style="margin-top:12px"><span class="ic" aria-hidden="true">⭐</span><span class="grow"><b>${L('Review ng mga sagot: para sa Premium', 'Review answers: Premium only')}</b><span class="muted small">${L('Sa Premium, makikita mo ulit ang bawat tanong, ang sagot mo, ang tamang sagot at ang paliwanag pagkatapos ng practice. Kumuha ng Premium →', 'With Premium you can go over every question, your answer, the correct answer and the explanation after a practice. Get Premium →')}</span></span><span aria-hidden="true">›</span></a>` : `
+      ${!liteMock && wrongCount + (practice ? 0 : blankCount) > 0 ? `<a class="card review-link" href="#/review" style="margin-top:12px"><span class="ic" aria-hidden="true">🎯</span><span class="grow"><b>${L('Sagutan ulit ang mga mali', 'Answer your mistakes again')}</b><span class="muted small">${L('Nasa Balikan ang mali ang mga namali mo rito, kasama ang pinakamahinang topic mo.', 'Your mistakes here are in Go over your mistakes, with your weakest topics.')}</span></span><span aria-hidden="true">›</span></a>` : ''}
       ${tools ? topicTable(a) : ''}
       <h2>${L('Review ng mga sagot', 'Review answers')}</h2>
+      ${lite ? `<a class="notice" href="#/premium" style="display:block;margin-bottom:10px">${L(`🆓 Sa libreng plan, may review ang unang <b>${a.review_per_subject || 5} tanong kada subject</b>. ⭐ Buong review ng lahat ng tanong sa Premium →`, `🆓 On the free plan, the first <b>${a.review_per_subject || 5} questions of each subject</b> have a review. ⭐ Full review of every question with Premium →`)}</a>` : ''}
       <div class="tabs" id="rf"><button data-f="wrong" class="active">${L('Mali at walang sagot', 'Wrong and unanswered')}</button><button data-f="all">${L('Lahat', 'All')}</button></div>
-      <div class="list" id="rlist"></div>`}`);
+      <div class="list" id="rlist"></div>`);
     if (!tools && $('#rPdf')) ['#rPdf', '#rMail', '#rPrint'].forEach((k) => ($(k).onclick = () => go('#/premium')));
-    if (lite) return;
     const paint = (f) => {
       $$('#rf button').forEach((b) => b.classList.toggle('active', b.dataset.f === f));
-      const rows = a.items.map((it, i) => ({ it, i, ch: a.answers[i] })).filter((x) => f === 'all' || x.ch !== x.it.answer);
+      const rows = a.items.map((it, i) => ({ it, i, ch: a.answers[i] })).filter((x) => !x.it.locked && (f === 'all' || x.ch !== x.it.answer));
       $('#rlist').innerHTML = rows.length ? rows.slice(0, 200).map(({ it, i, ch }) => `
         <div class="review-item">
           <div class="row between"><span class="q-num">#${i + 1} · ${esc(subjName(it.subject))} · ${esc(it.topic)}</span>
@@ -2390,10 +2390,10 @@
           ${ch !== undefined && ch !== it.answer ? `<div class="ans-line" style="color:var(--bad)">${L('Sagot mo', 'Your answer')}: ${LETTERS[ch]}. ${esc(it.choices[ch])}</div>` : ''}
           <div class="ans-line" style="color:var(--ok)">${L('Tamang sagot', 'Correct answer')}: ${LETTERS[it.answer]}. ${esc(it.choices[it.answer])}</div>
           ${it.explanation ? `<div class="explain">${esc(it.explanation)}</div>` : ''}
-        </div>`).join('') + (rows.length > 200 ? `<p class="muted small">${L('Ipinapakita ang unang 200.', 'Showing the first 200.')}</p>` : '') : `<div class="card empty">${L('Perpekto! Walang mali. 🎉', 'Perfect! No mistakes. 🎉')}</div>`;
+        </div>`).join('') + (rows.length > 200 ? `<p class="muted small">${L('Ipinapakita ang unang 200.', 'Showing the first 200.')}</p>` : '') : `<div class="card empty">${lite ? L('Walang mali sa mga tanong na may review. 🎉', 'No mistakes in the questions with a review. 🎉') : L('Perpekto! Walang mali. 🎉', 'Perfect! No mistakes. 🎉')}</div>`;
     };
-    if (!noReview) { $$('#rf button').forEach((b) => (b.onclick = () => paint(b.dataset.f))); paint('wrong'); }
-    $('#again').onclick = () => {
+    $$('#rf button').forEach((b) => (b.onclick = () => paint(b.dataset.f))); paint('wrong');
+    if ($('#again')) $('#again').onclick = () => {
       if (practice) {
         const subject = a.items[0]?.subject || 'verbal';
         startExam('practice', { subject, count: a.total, minutes: Math.round(a.time_limit_sec / 60), level: subject === 'clerical' ? 'subpro' : lv || 'pro' });
@@ -2427,15 +2427,6 @@
     return `<div class="card" style="margin-top:12px"><h3>⏱️ ${L('Oras kada bahagi', 'Time per part')}</h3>
       <table class="small"><thead><tr><th>${L('Bahagi', 'Part')}</th><th style="text-align:right">${L('Oras', 'Time')}</th><th style="text-align:right">${L('Kada tanong', 'Per question')}</th></tr></thead><tbody>${rows}</tbody></table>
       <p class="muted small" style="margin:8px 0 0">${L(`Kabuuan: ${fmtTime(used)}`, `Total: ${fmtTime(used)}`)}${ideal ? L(` · Pace ng totoong CSE: ~${Math.round(ideal)}s kada tanong. Ang may ⚠ ay mas mabagal dito, kaya doon magsanay ng bilis.`, ` · Real CSE pace: ~${Math.round(ideal)}s per question. Parts with ⚠ were slower, so practice speed there.`) : ''}</p></div>`;
-  }
-  // Free plan review: the number of each question and the letter of the correct answer (green if you got it, red if not).
-  function answerKey(a) {
-    const parts = [...new Set(a.items.map((x) => x.subject))];
-    return `<div class="card" style="margin-top:12px"><h3>${L('Susi sa pagwawasto', 'Answer key')}</h3>
-      <p class="muted small" style="margin:0 0 8px">${L('Letra lang ng tamang sagot. Berde kung tama ka, pula kung mali o walang sagot. Sa <a href="#/premium">Premium</a>: buong tanong, sagot mo, paliwanag, at PDF/print/email.',
-        'Only the letter of the correct answer. Green if you got it, red if wrong or blank. With <a href="#/premium">Premium</a>: full questions, your answers, explanations, and PDF/print/email.')}</p>
-      ${parts.map((s) => `<h4 class="key-head">${esc(subjName(s))}</h4><div class="keygrid">${a.items.map((it, i) => it.subject !== s ? ''
-        : `<span class="key ${a.answers[i] === it.answer ? 'ok' : 'bad'}"><i>${i + 1}</i>${LETTERS[it.answer]}</span>`).join('')}</div>`).join('')}</div>`;
   }
   // Premium: score per topic, weakest first.
   function topicTable(a) {
