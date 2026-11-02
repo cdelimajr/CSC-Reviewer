@@ -495,12 +495,11 @@ body.guard { background: var(--desk); }
 .paper-ghost { position: absolute; top: 0; left: 0; right: 0; pointer-events: none; }
 .paper-ghost.top { z-index: 3; }
 .paper-ghost.under { z-index: 1; } /* above the two sheets peeking out underneath; the page (later in the stack) stays on top */
-/* page curl (see flip() in app.js): the back of the turned part at the fold, and its shadow on the next page */
-.paper.curling { overflow: hidden; }
-.curl-back, .curl-shadow { position: absolute; top: 50%; left: 0; pointer-events: none; z-index: 4; will-change: transform; }
-.curl-back { transform-origin: right center; background: linear-gradient(to right, rgba(0,0,0,0), rgba(0,0,0,.05) 35%, rgba(255,255,255,.5) 72%, rgba(0,0,0,.16)), var(--paper); box-shadow: -10px 0 18px -6px rgba(16,24,40,.28); }
-.curl-shadow { transform-origin: left center; background: linear-gradient(to right, rgba(16,24,40,.26), rgba(16,24,40,.08) 45%, transparent); }
-html[data-theme="dark"] .curl-back { background: linear-gradient(to right, rgba(0,0,0,0), rgba(0,0,0,.12) 35%, rgba(255,255,255,.08) 72%, rgba(0,0,0,.3)), var(--paper); }
+/* lift and turn (see flip() in app.js): the sheet turns on its left edge in 3D; a soft shadow falls on the page under it */
+.paper.turning { overflow: hidden; }
+.paper.lifted { overflow: visible; transform-origin: left center; box-shadow: 0 2px 4px rgba(0,0,0,.08), 0 18px 36px rgba(16,24,40,.22); }
+.turn-shade { position: absolute; inset: 0; pointer-events: none; z-index: 4; border-radius: inherit; will-change: opacity; background: linear-gradient(to right, rgba(16,24,40,.22), rgba(16,24,40,.08) 40%, rgba(16,24,40,.02)); }
+html[data-theme="dark"] .turn-shade { background: linear-gradient(to right, rgba(0,0,0,.45), rgba(0,0,0,.18) 40%, rgba(0,0,0,.04)); }
 .paper .q-text { font-family: Georgia, "Times New Roman", serif; font-size: 1.1875rem; font-weight: 500; line-height: 1.55; }
 .paper .q-no { font-weight: 800; }
 .paper .passage { font-family: Georgia, "Times New Roman", serif; background: transparent; border: 1px dashed var(--paper-line); border-left: 4px solid var(--accent); }
@@ -532,7 +531,7 @@ html[data-theme="dark"] .curl-back { background: linear-gradient(to right, rgba(
 /* exam top bar: question number + answered, timer, ☰ all questions (Submit is there and on the last page). ⚑ Mark is on the paper. */
 .paper-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
 .paper-head .q-section { flex: 1; min-width: 0; padding-top: 4px; }
-.paper-flag { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 5px; font: inherit; font-size: 0.8125rem; font-weight: 700; padding: 5px 11px; border-radius: 99px; border: 1px solid var(--paper-line); background: transparent; color: var(--muted); cursor: pointer; position: relative; z-index: 2; }
+.paper-flag { flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center; min-width: 40px; min-height: 40px; font: inherit; font-size: 1.125rem; line-height: 1; padding: 0 10px; border-radius: 99px; border: 1px solid var(--paper-line); background: transparent; color: var(--muted); cursor: pointer; position: relative; z-index: 2; }
 .paper-flag:hover { border-color: var(--accent); }
 .paper-flag.on { border-color: transparent; }
 .exam-count { flex: 1; min-width: 0; display: flex; flex-direction: column; line-height: 1.2; }
@@ -634,7 +633,7 @@ html[data-theme] #undo .u-time { background: var(--primary); }
   .paper { padding: 40px 56px 96px 72px; background-image: linear-gradient(to right, transparent 38px, var(--margin-line) 38px, var(--margin-line) 39px, transparent 39px); }
   .paper .q-section { font-size: 1.125rem; }
   .paper .q-section .pill { font-size: 0.9375rem; }
-  .paper-flag { font-size: 1.0625rem; padding: 8px 16px; }
+  .paper-flag { font-size: 1.375rem; min-width: 48px; min-height: 48px; }
   .paper .q-num { font-size: 1.25rem; }
   .paper .q-text { font-size: clamp(1.875rem, 0.6rem + 1.75vw, 2.75rem); line-height: 1.5; margin: 16px 0 28px; }
   .paper .passage { font-size: clamp(1.375rem, 0.6rem + 0.95vw, 1.875rem); line-height: 1.6; padding: 20px 24px; max-height: calc(48vh / var(--z)); }

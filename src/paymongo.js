@@ -30,18 +30,25 @@ async function call(method, path, body) {
 
 module.exports = {
   enabled: !!SECRET,
+  methods: METHODS,
   webhookReady: !!SECRET && !!WEBHOOK_SECRET,
 
   // https://developers.paymongo.com/reference/create-a-checkout
-  createCheckout({ reference, amount, email, name, description, returnUrl }) {
+  // types: only these payment options (e.g. ['card'] so the user goes straight to the card form).
+  // billing: the user's name and email from the account, so PayMongo fills them in and the user only types the card.
+  // Card numbers are typed on PayMongo's own page and never reach our server.
+  createCheckout({ reference, amount, email, name, description, returnUrl, types }) {
+    const billing = {};
+    if (name && String(name).trim()) billing.name = String(name).trim().slice(0, 100);
+    if (email) billing.email = email;
     return call('POST', '/v1/checkout_sessions', {
       data: {
         attributes: {
           line_items: [{ currency: 'PHP', amount: Math.round(amount * 100), name: description, quantity: 1 }],
-          payment_method_types: METHODS,
+          payment_method_types: types && types.length ? types : METHODS,
           description,
           reference_number: reference,
-          billing: { name, email },
+          ...(Object.keys(billing).length ? { billing } : {}),
           send_email_receipt: true,
           show_description: true,
           show_line_items: true,

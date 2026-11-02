@@ -3,7 +3,7 @@
   'use strict';
   const $app = document.getElementById('app');
   const LETTERS = ['A', 'B', 'C', 'D'];
-  const APP_VERSION = '1.24.0'; // keep in step with package.json and docs/DOKUMENTASYON.md
+  const APP_VERSION = '1.25.0'; // keep in step with package.json and docs/DOKUMENTASYON.md
   const S = { user: null, meta: null, exam: null, timer: null, saveT: null };
 
   /* ---------------- helpers ---------------- */
@@ -519,7 +519,7 @@
       ctx.resume().then(() => { if (ctx.state === 'running') now(); }).catch(() => {});
       setTimeout(() => { done = true; off(); }, 120e3); // too late to mean "updated"
     }
-    // A page of paper being turned: a soft paper rustle (soft, warm noise in a few small grains, no sharp "fwip").
+    // A page of paper being turned: a crisp page turn, a clear quick "fwip" (bright noise swept upward fast) and a light tick as it lands.
     // Made on the device like the other sounds, so it works offline. Follows the Sounds on/off and volume.
     let noise = null;
     function flip() {
@@ -529,27 +529,27 @@
         ctx = ctx || new (window.AudioContext || window.webkitAudioContext)();
         if (ctx.state === 'suspended') ctx.resume();
         if (!noise) {
-          // Soft ("pink-ish") noise: white noise smoothed a little, so it sounds like paper, not hiss.
+          // Bright noise, only lightly smoothed, so the turn sounds crisp like paper.
           noise = ctx.createBuffer(1, Math.floor(ctx.sampleRate * 0.6), ctx.sampleRate);
           const d = noise.getChannelData(0); let b = 0;
-          for (let i = 0; i < d.length; i++) { b = 0.82 * b + 0.18 * (Math.random() * 2 - 1); d[i] = b * 3.2; }
+          for (let i = 0; i < d.length; i++) { b = 0.35 * b + 0.65 * (Math.random() * 2 - 1); d[i] = b * 1.6; }
         }
-        const t0 = ctx.currentTime + 0.005, v = Math.max(0.0002, st.vol * 0.34);
-        const out = ctx.createBiquadFilter(); out.type = 'lowpass'; out.frequency.value = 3200; out.Q.value = 0.4; out.connect(ctx.destination);
-        const grain = (at, len, f0, f1, peak) => {
+        const t0 = ctx.currentTime + 0.005, v = Math.max(0.0002, st.vol * 0.4);
+        const out = ctx.createBiquadFilter(); out.type = 'highpass'; out.frequency.value = 500; out.Q.value = 0.5; out.connect(ctx.destination);
+        // A quick burst: fast rise (crisp, not soft), the filter sweeping up for the "fw-ip".
+        const burst = (at, len, f0, f1, peak, q) => {
           const src = ctx.createBufferSource(), bp = ctx.createBiquadFilter(), g = ctx.createGain(), s0 = t0 + at;
-          src.buffer = noise; bp.type = 'bandpass'; bp.Q.value = 0.6;
+          src.buffer = noise; bp.type = 'bandpass'; bp.Q.value = q;
           bp.frequency.setValueAtTime(f0, s0); bp.frequency.exponentialRampToValueAtTime(f1, s0 + len);
           g.gain.setValueAtTime(0.0001, s0);
-          g.gain.exponentialRampToValueAtTime(peak, s0 + len * 0.4); // slow rise: soft, not a click
+          g.gain.exponentialRampToValueAtTime(peak, s0 + len * 0.25);
           g.gain.exponentialRampToValueAtTime(0.0001, s0 + len);
           src.connect(bp); bp.connect(g); g.connect(out);
           src.start(s0, Math.random() * 0.2); src.stop(s0 + len + 0.03);
         };
-        const j = () => 0.85 + Math.random() * 0.3; // each turn sounds a little different, like real paper
-        grain(0, 0.16 * j(), 900, 1900, v * 0.7);           // the sheet starts to lift
-        grain(0.07, 0.2 * j(), 1500, 2600, v);              // brushing over the next page
-        grain(0.2, 0.18 * j(), 1100, 600, v * 0.45);        // and settling down
+        const j = () => 0.9 + Math.random() * 0.2; // each turn sounds a little different, like real paper
+        burst(0, 0.13 * j(), 1400 * j(), 5200, v, 1.1);       // "fwip": the page sweeps over
+        burst(0.11, 0.035, 3000 * j(), 2200, v * 0.4, 2.5);   // light tick as the page lands
       } catch { /* no sound on this device */ }
     }
     // A very short buzz on Android phones when something is tapped (Account → Sounds → Vibrate).
@@ -1570,6 +1570,8 @@
     const until = p.until > Date.now() ? new Date(p.until).toLocaleDateString('en-PH', { year: 'numeric', month: 'long', day: 'numeric' }) : '';
     const pending = p.payments.find((x) => x.status === 'pending');
     const openPay = p.payments.find((x) => x.status === 'checkout' && x.checkout_url);
+    const openCard = p.payments.find((x) => x.status === 'checkout' && x.checkout_url && x.method === 'Card');
+    const openOther = p.payments.find((x) => x.status === 'checkout' && x.checkout_url && x.method !== 'Card');
     const manual = p.manual && p.methods.length; // manual payment: on in Admin → Settings, with at least one account
     const statusPill = { pending: `<span class="pill warn">${L('Hinihintay', 'Waiting')}</span>`, checkout: `<span class="pill warn">${L('Hindi pa bayad', 'Not paid yet')}</span>`, approved: `<span class="pill ok">${L('Bayad na', 'Paid')}</span>`, rejected: `<span class="pill bad">${L('Hindi approved', 'Not approved')}</span>`, expired: '<span class="pill">Expired</span>' };
     if (S.user.role !== 'admin' && p.active && p.until !== S.user.premium_until) refreshMe().catch(() => {}); // Premium just started or was extended
@@ -1597,7 +1599,9 @@
         <p class="small" style="margin:8px 0">${L('Magbayad online gamit ang <b>GCash, Maya, card, GrabPay, o QR Ph</b> (para sa bank apps) at iba pa. Awtomatikong bubukas ang Premium pagkatapos magbayad.', 'Pay online with <b>GCash, Maya, card, GrabPay, or QR Ph</b> (for bank apps) and more. Premium opens automatically after you pay.')}</p>
         ${openPay ? `<div class="notice" style="margin-bottom:10px">${L('May bukas kang bayaran. Kung nakapagbayad ka na, pindutin ang <b>I-check ang bayad</b>.', 'You have an open payment. If you already paid, tap <b>Check payment</b>.')}</div>` : ''}
         <div class="err" id="perr"></div>
-        <button class="btn block" id="paynow">💳 ${openPay ? L('Ituloy ang pagbayad', 'Continue payment') : L('Magbayad online', 'Pay online')}</button>
+        ${p.card ? `<button class="btn block" id="paycard" data-m="card">💳 ${openCard ? L('Ituloy ang bayad gamit ang card', 'Continue paying by card') : L('Card (Visa / Mastercard)', 'Card (Visa / Mastercard)')}</button>
+        <p class="muted small" style="margin:4px 0 8px">${L('Card details lang ang ilalagay mo; naka-fill na ang pangalan at email mula sa account mo. Sa PayMongo mo ita-type ang card, hindi sa app na ito.', 'You only type the card details; your name and email are filled in from your account. You type the card on PayMongo, not in this app.')}</p>` : ''}
+        <button class="btn block ${p.card ? 'secondary' : ''}" id="paynow">${p.card ? '📱 ' : '💳 '}${openOther ? L('Ituloy ang pagbayad', 'Continue payment') : p.card ? L('GCash, Maya, QR Ph at iba pa', 'GCash, Maya, QR Ph and more') : L('Magbayad online', 'Pay online')}</button>
         ${openPay ? `<button class="btn block secondary" id="paycheck" style="margin-top:8px">${L('I-check ang bayad', 'Check payment')}</button>` : ''}` : ''}
         ${manual ? fold('pay-manual', `<h3>${p.online ? L('O magbayad nang manual', 'Or pay manually') : L('Magbayad nang manual', 'Pay manually')}</h3>${pending ? `<span class="pill warn">${L('Hinihintay', 'Waiting')}</span>` : ''}`, `
         <p class="small" style="margin:6px 0">${L('Pumili kung saan magbabayad:', 'Choose where to pay:')}</p>
@@ -1615,10 +1619,11 @@
         <div class="muted small">${fmtDate(x.created_at)}${x.note ? ' · ' + esc(x.note) : ''}</div></div>${statusPill[x.status] || ''}${x.status === 'approved' ? `<button type="button" class="btn ghost small" data-rc="${x.id}" aria-label="${L('Resibo', 'Receipt')} ₱${esc(x.amount)}">🧾 ${L('Resibo', 'Receipt')}</button>` : ''}</div>`).join('')}</div>`, { card: false }) : ''}`);
     $$('[data-rc]').forEach((b) => (b.onclick = () => showReceipt(+b.dataset.rc)));
     // PayMongo's checkout page. In the phone and desktop apps it opens in the browser.
-    if ($('#paynow')) $('#paynow').onclick = async (e) => {
-      e.target.disabled = true;
-      try { const r = await api('POST', '/api/payments/checkout', {}); location.href = r.url; } catch (err) { $('#perr').textContent = err.message; e.target.disabled = false; }
-    };
+    // 💳 Card opens PayMongo's card form right away (name and email already filled in from the account).
+    $$('#paynow, #paycard').forEach((b) => (b.onclick = async () => {
+      b.disabled = true;
+      try { const r = await api('POST', '/api/payments/checkout', b.dataset.m ? { method: b.dataset.m } : {}); location.href = r.url; } catch (err) { $('#perr').textContent = err.message; b.disabled = false; }
+    }));
     if ($('#paycheck')) $('#paycheck').onclick = () => viewPremium();
     // Manual payment: the chosen account's details and QR code.
     let pm = p.methods[0], proof = null;
@@ -2099,7 +2104,7 @@
      animation with a paper sound (Account → Sounds). ☰ Lahat / the page number opens every question.
      Answers are saved on every tap, as before. Premium turns pages a little faster. */
   const reduceMotion = () => a11y().motion || (window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches);
-  const flipMs = () => (S.premium ? 440 : 520);
+  const flipMs = () => (S.premium ? 460 : 540);
   function turn(d, to) {
     const ex = S.exam; if (!ex || document.querySelector('.modal-bg')) return;
     const n = ex.a.items.length, next = to ?? ex.idx + d;
@@ -2146,9 +2151,9 @@
     desk.addEventListener('pointerup', end);
     desk.addEventListener('pointercancel', end);
   }
-  /* Page curl: the sheet turns from its bottom-right corner along a slanted fold, like real paper.
-     The part already turned shows its back (a shaded strip at the fold) and casts a soft shadow on the next page.
-     Only transform, opacity and clip-path change, on one sheet, so it stays smooth on most phones.
+  /* Lift and turn: the sheet lifts a little off the stack, turns over on its left edge in 3D (like a page
+     in a stapled booklet), then the next page lands with a small settle. A soft shadow falls on the page under it.
+     Only transform and opacity change, so it stays smooth on most phones.
      Less motion (Account) or a low-memory phone: a short, light slide instead. */
   const lightFlip = () => reduceMotion() || (navigator.deviceMemory && navigator.deviceMemory <= 2);
   function flip(page, ghost, dir) {
@@ -2161,33 +2166,30 @@
       page.animate([{ opacity: 0.25, transform: `translateX(${dir * k}px)` }, { opacity: 1, transform: 'none' }], { duration: reduceMotion() ? 140 : 220, easing: 'cubic-bezier(.2,.7,.3,1)' });
       return;
     }
-    // Forward: the old page (ghost, on top) curls away. Back: the previous page (page) curls back on top of the old one.
+    // Forward: the old page (ghost, on top) lifts and turns away. Back: the previous page (page) turns back on top and lands.
     const sheet = dir > 0 ? ghost : page, under = dir > 0 ? page : ghost;
     if (dir > 0) { ghost.classList.add('top'); stack.appendChild(ghost); } else { ghost.classList.add('under'); stack.insertBefore(ghost, page); }
-    const W = stack.clientWidth || 360, H = Math.max(200, sheet.offsetHeight || 600);
-    const s = Math.min(W * 0.35, H * 0.5);               // how far the top of the fold leans right of the bottom
-    const ang = Math.atan2(s, H) * 180 / Math.PI;
-    const B = W * 0.16;                                  // width of the curled strip at the fold
-    const fold = (p) => { const xb = W - p * (W + s); return { xb, xt: xb + s, xm: xb + s / 2 }; };
-    const N = 6, steps = Array.from({ length: N + 1 }, (_, i) => i / N);
-    const clip = steps.map((p) => { const f = fold(p); return { clipPath: `polygon(0px 0px, ${f.xt}px 0px, ${f.xb}px ${H}px, 0px ${H}px)` }; });
-    const bandK = steps.map((p) => { const f = fold(p), k = Math.max(0.001, Math.min(1, (W - f.xm) / B, (f.xm + s) / B)); return { transform: `translateX(${f.xm - B}px) rotate(${ang}deg) scaleX(${k})` }; });
-    const shadeK = steps.map((p, i) => ({ transform: `translateX(${fold(p).xm}px) rotate(${ang}deg)`, opacity: i === N ? 0 : Math.min(1, p * 4) }));
-    const band = document.createElement('div'); band.className = 'curl-back';
-    const shade = document.createElement('div'); shade.className = 'curl-shadow';
-    [band, shade].forEach((el) => { el.style.height = H * 1.8 + 'px'; el.style.marginTop = -H * 0.9 + 'px'; });
-    band.style.width = B + 'px'; shade.style.width = W * 0.14 + 'px';
-    sheet.classList.add('curling'); under.classList.add('curling'); sheet.appendChild(band); under.appendChild(shade);
-    const o = { duration: dur, easing: 'cubic-bezier(.45,.05,.35,1)', direction: dir > 0 ? 'normal' : 'reverse', fill: 'both' };
-    const anim = sheet.animate(clip, o);
-    const a2 = band.animate(bandK, o), a3 = shade.animate(shadeK, o);
+    const P = `perspective(${Math.max(1200, (stack.clientWidth || 360) * 3)}px)`;
+    const turnK = [
+      { offset: 0, transform: `${P} translateZ(0) rotateY(0deg)`, opacity: 1, easing: 'cubic-bezier(.3,0,.4,1)' },
+      { offset: 0.2, transform: `${P} translateZ(18px) rotateX(1.5deg) rotateY(-10deg)`, opacity: 1, easing: 'cubic-bezier(.4,0,.6,1)' }, // lifts
+      { offset: 0.88, transform: `${P} translateZ(18px) rotateY(-88deg)`, opacity: 1 },                                           // turns on its edge
+      { offset: 1, transform: `${P} translateZ(18px) rotateY(-92deg)`, opacity: 0 },
+    ];
+    const shade = document.createElement('div'); shade.className = 'turn-shade';
+    under.classList.add('turning'); sheet.classList.add('turning', 'lifted'); under.appendChild(shade);
+    const o = { duration: dur, direction: dir > 0 ? 'normal' : 'reverse', fill: 'both' };
+    const anim = sheet.animate(turnK, o);
+    const a2 = shade.animate([{ opacity: 0 }, { opacity: 1, offset: 0.25 }, { opacity: 0 }], o);
     S.flipAnim = anim;
     let over = false;
     const done = () => {
       if (over) return; over = true;
-      a2.cancel(); a3.cancel(); band.remove(); shade.remove(); sheet.classList.remove('curling'); under.classList.remove('curling');
-      if (dir < 0) anim.cancel(); // the page stays; drop the clip
+      a2.cancel(); shade.remove(); sheet.classList.remove('turning', 'lifted'); under.classList.remove('turning');
+      anim.cancel(); // drop the 3D transform
       ghost.remove(); if (S.flipAnim === anim) S.flipAnim = null;
+      // The page that is now in front lands on the stack with a small settle.
+      page.animate([{ transform: 'translateY(-3px) scale(1.004)' }, { transform: 'translateY(1px)', offset: 0.6 }, { transform: 'none' }], { duration: 160, easing: 'ease-out' });
     };
     anim.onfinish = done; anim.oncancel = done;
   }
@@ -2223,7 +2225,7 @@
     const tag = qTag(a);
     page.innerHTML = `
       <div class="paper-head"><div class="q-section">${a.mode === 'practice' ? esc(subjName(it.subject)) : `Part ${roman}: ${esc(subjName(it.subject))}`}${sectionStart(a.items, idx) && a.mode !== 'practice' ? ` <span class="pill">${L('Bagong bahagi', 'New part')}</span>` : ''}</div>
-        <button type="button" class="flag-btn paper-flag${ex.flags.has(idx) ? ' on' : ''}" data-flag aria-pressed="${ex.flags.has(idx)}" title="${L('Markahan para balikan', 'Mark to come back to')}">⚑ <span>${ex.flags.has(idx) ? L('Minarkahan', 'Marked') : L('Markahan', 'Mark')}</span></button></div>
+        <button type="button" class="flag-btn paper-flag${ex.flags.has(idx) ? ' on' : ''}" data-flag aria-pressed="${ex.flags.has(idx)}" title="${ex.flags.has(idx) ? L('Minarkahan (pindutin para alisin)', 'Marked (tap to remove)') : L('Markahan para balikan', 'Mark to come back to')}" aria-label="${ex.flags.has(idx) ? L('Minarkahan', 'Marked') : L('Markahan para balikan', 'Mark to come back to')}"><span aria-hidden="true">⚑</span></button></div>
       <div class="q-num">${L(`${tag} ${idx + 1} sa ${a.items.length}`, `${tag} ${idx + 1} of ${a.items.length}`)} · ${esc(it.topic)}</div>
       ${it.passage ? `<div class="passage">${esc(it.passage)}</div>` : ''}
       <div class="q-text"><span class="q-no">${idx + 1}.</span> ${esc(it.question)}</div>
@@ -3314,7 +3316,7 @@
       </div>
       <h2>${L('Mga madalas itanong', 'Common questions')}</h2>
       <div class="stack">
-      ${Q('mock', L('Paano mag-mock exam?', 'How do I take a mock exam?'), L(`<ol><li>Sa <a href="#/">Home</a>, piliin ang <b>PRO</b> (Professional) o <b>SUBPRO</b> (Subprofessional).</li><li>Pindutin ang <b>▶ Simulan ang Set 1</b>, o <b>Lahat ng exam set</b> para pumili ng ibang set o <b>Bagong halo</b>.</li><li>Parang papel ang exam: <b>i-swipe</b> pakaliwa o pakanan (o pindutin ang nakatiklop na kanto) para ilipat ang pahina. <b>☰ Lahat</b> para makita ang lahat ng tanong, <b>⚑ Markahan</b> (kanang itaas ng papel) para balikan, at <b>Isumite ✓</b> kapag tapos na.</li></ol>Tuloy-tuloy ang timer kahit isara ang app, pero naka-save ang mga sagot mo. Ituloy ito mula sa Home.`,
+      ${Q('mock', L('Paano mag-mock exam?', 'How do I take a mock exam?'), L(`<ol><li>Sa <a href="#/">Home</a>, piliin ang <b>PRO</b> (Professional) o <b>SUBPRO</b> (Subprofessional).</li><li>Pindutin ang <b>▶ Simulan ang Set 1</b>, o <b>Lahat ng exam set</b> para pumili ng ibang set o <b>Bagong halo</b>.</li><li>Parang papel ang exam: <b>i-swipe</b> pakaliwa o pakanan (o pindutin ang nakatiklop na kanto) para ilipat ang pahina. <b>☰ Lahat</b> para makita ang lahat ng tanong, <b>⚑</b> (kanang itaas ng papel) para markahan at balikan, at <b>Isumite ✓</b> kapag tapos na.</li></ol>Tuloy-tuloy ang timer kahit isara ang app, pero naka-save ang mga sagot mo. Ituloy ito mula sa Home.`,
         `<ol><li>On <a href="#/">Home</a>, choose <b>PRO</b> (Professional) or <b>SUBPRO</b> (Subprofessional).</li><li>Tap <b>▶ Start Set 1</b>, or <b>All exam sets</b> to pick another set or <b>New mix</b>.</li><li>The exam is like a paper test: <b>swipe</b> left or right (or tap the folded corner) to turn the page. <b>☰ All</b> shows every question, <b>⚑ Mark</b> (top right of the paper) marks one to come back to, and <b>Submit ✓</b> when you are done.</li></ol>The timer keeps running even if you close the app, but your answers are saved. Continue it from Home.`))}
       ${Q('set1', L('Ano ang Set 1 at ang mga exam set?', 'What are Set 1 and the exam sets?'), L('Ang <b>Set 1</b> ay laging nasa Home at bukas sa lahat. May bagong set bawat linggo (Set 2, 3…), makikita sa <b>Lahat ng exam set</b>, pinakabago muna. Ang <b>Bagong halo</b> ay bagong random na exam tuwing pipindutin.',
         '<b>Set 1</b> is always on Home and open to everyone. A new set comes every week (Set 2, 3…), listed in <b>All exam sets</b>, newest first. <b>New mix</b> is a new random exam every time.'))}
