@@ -14,6 +14,7 @@ const web = require('./webbuild');
 const audit = require('./audit');
 const review = require('./review');
 const jobs = require('./jobs');
+const releases = require('./releases');
 
 const PORT = Number(process.env.PORT) || 3000;
 const ADMIN_EMAIL = (process.env.ADMIN_EMAIL || '').trim().toLowerCase();
@@ -817,6 +818,7 @@ app.get('/api/premium', auth, wrap(async (req, res) => {
     card: onlinePayOn(st) && paymongo.methods.includes('card'),
     manual: manualPayOn(st), methods: manualPayOn(st) ? payMethods(st).filter((m) => m.on) : [],
     price: st.price, plan_days: Number(st.plan_days) || 30, note: st.pay_note, payments,
+    paid: await paidUser(user), // can download the app installers (GET /api/app/installers)
   });
 }));
 
@@ -845,10 +847,22 @@ async function markPaid(p, method) {
     ['UPDATE payments SET period_from = ?, period_to = ?, days = ? WHERE id = ?', [from, to, days, p.id]],
   ]);
   const u = await db.get('SELECT * FROM users WHERE id = ?', p.user_id);
-  if (u) mail.payment(u.email, u.name, 'approved', u.premium_until, '', await receiptOf(p.id));
+  if (u) mail.payment(u.email, u.name, 'approved', u.premium_until, '', await receiptOf(p.id), await releases.latest());
   await audit.log(null, 'payment_paid_online', { userId: p.user_id, actorId: null, detail: `₱${p.amount} · ${method || 'Online'}` });
   return true;
 }
+
+/* App installers for paid users: the newest Android .apk and Windows .exe from the latest GitHub Release
+   (src/releases.js), shown on the Premium page with an install guide. Only for a user whose payment was
+   approved (online or by the admin) and whose Premium is still running, and for admins. */
+const paidUser = async (u) => u.role === 'admin' || ((u.premium_until || 0) > Date.now()
+  && !!(await db.get(`SELECT 1 FROM payments WHERE user_id = ? AND status = 'approved' LIMIT 1`, u.id)));
+app.get('/api/app/installers', auth, verified, wrap(async (req, res) => {
+  if (!(await paidUser(req.user))) return res.status(403).json({ error: 'Para sa may bayad na Premium lang ang download ng app.', code: 'not_paid' });
+  const rel = await releases.latest();
+  if (!rel || !rel.files.length) return res.status(503).json({ error: 'Hindi makuha ang pinakabagong app ngayon. Subukan ulit mamaya.' });
+  res.set('Cache-Control', 'private, no-store').json(rel);
+}));
 
 /* Receipt of an approved payment (proof of payment in the app, not a BIR invoice). The number is
    CSE-<year>-<payment id>. The same receipt is in the approval email (as a PDF) and in Premium → Your payments. */
@@ -1078,7 +1092,7 @@ app.post('/api/admin/payments/:id', admin, wrap(async (req, res) => {
     stmts.push(['UPDATE payments SET period_from = ?, period_to = ?, days = ? WHERE id = ?', [from, until, days, p.id]]);
   }
   await db.batch(stmts);
-  if (u) mail.payment(u.email, u.name, approve ? 'approved' : 'rejected', until, note, approve ? await receiptOf(p.id) : null);
+  if (u) mail.payment(u.email, u.name, approve ? 'approved' : 'rejected', until, note, approve ? await receiptOf(p.id) : null, approve ? await releases.latest() : null);
   await audit.log(req, approve ? 'payment_approve' : 'payment_reject', { userId: p.user_id, detail: `₱${p.amount} · ${p.method} · ref ${p.reference}${note ? ' · ' + note : ''}` });
   res.json({ ok: true, until });
 }));

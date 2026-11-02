@@ -163,6 +163,18 @@ const lastCode = (to) => {
   assert.equal((await F('POST', `/api/attempts/${fid}/email`, {})).status, 402, 'email of the full review is Premium');
   assert.equal((await A('GET', `/api/attempts/${fid}`)).data.lite, undefined, 'admin sees the full review');
   assert.equal((await U('GET', '/api/offline/pack')).status, 402, 'offline is Premium only');
+  // App installers (latest GitHub Release, faked here): only .apk and .exe, only for paid users
+  const releases = require('../src/releases');
+  const dl = (n) => `https://github.com/x/y/releases/download/v1.0.9/${n}`;
+  releases._set({ tag_name: 'v1.0.9', html_url: 'https://github.com/x/y/releases/tag/v1.0.9', published_at: new Date().toISOString(),
+    assets: ['CSE-Reviewer-1.0.9-portable.exe', 'CSE-Reviewer-Setup-1.0.9.exe', 'CSE-Reviewer-Setup-1.0.9.exe.blockmap', 'CSE-Reviewer-unsigned.ipa', 'CSE-Reviewer.apk', 'latest.yml']
+      .map((name) => ({ name, size: 1048576 * 10, browser_download_url: dl(name) })) });
+  assert.equal((await U('GET', '/api/app/installers')).status, 403, 'no installers before paying');
+  assert.equal((await F('GET', '/api/app/installers')).status, 403, 'no installers for free users');
+  r = await A('GET', '/api/app/installers');
+  assert.equal(r.status, 200, 'admin sees the installers');
+  assert.deepEqual(r.data.files.map((f) => f.kind), ['apk', 'setup', 'portable'], 'only .apk and .exe, Android first');
+  assert.equal(r.data.version, '1.0.9');
   assert.equal((await U('POST', '/api/payments', { reference: 'GC123456', amount: '1' })).status, 200);
   assert.ok(mail.outbox.some((m) => m.to === 'admin@test.ph' && m.subject.startsWith('Bagong bayad')), 'admin notified');
   r = await A('GET', '/api/admin/payments');
@@ -174,6 +186,11 @@ const lastCode = (to) => {
   // Receipt: in the approval email (with a PDF) and in Premium → Your payments; only for the owner (and admins)
   const apr = mail.outbox.filter((m) => m.to === 'juan@test.ph' && m.subject.startsWith('Aktibo na')).pop();
   assert.ok(/Resibo CSE-\d{4}-\d{5}/.test(apr.subject) && apr.attachments[0].startsWith('Resibo-CSE-'), 'receipt PDF in the approval email');
+  assert.ok(apr.html.includes(dl('CSE-Reviewer.apk')) && apr.html.includes(dl('CSE-Reviewer-Setup-1.0.9.exe')) && !apr.html.includes('.ipa'), 'installers in the approval email');
+  assert.ok(apr.html.includes('Paano i-install sa Android') && apr.text.includes(dl('CSE-Reviewer.apk')), 'install guide in the approval email');
+  const inst = await U('GET', '/api/app/installers');
+  assert.equal(inst.status, 200, 'paid user gets the installers');
+  assert.ok(inst.data.files.every((f) => /\.(apk|exe)$/.test(f.name)));
   const paidId = r.data.payments.find((x) => x.status === 'approved').id;
   r = await U('GET', `/api/payments/${paidId}/receipt`);
   assert.match(r.data.no, /^CSE-\d{4}-\d{5}$/); assert.equal(r.data.amount, '99'); assert.equal(r.data.days, 30);
