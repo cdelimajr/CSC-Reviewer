@@ -395,7 +395,56 @@ const lastCode = (to) => {
   assert.equal((await Boss('GET', '/api/bulk')).data.length, 2, 'admin-made group is the buyer\'s');
   r = await A('GET', '/api/admin/audit?filter=admin');
   assert.ok(['bulk_checkout', 'bulk_paid', 'bulk_redeem', 'bulk_seat_email', 'bulk_admin_create'].every((a) => r.data.rows.some((x) => x.action === a)), 'group actions in the audit log');
+  // 📅 Monthly and yearly plans: the server sets the price and days of each
+  await A('PUT', '/api/admin/settings', { price_year: '990', plan_year_days: '365' });
+  r = await Boss('GET', '/api/premium');
+  assert.deepEqual(r.data.plans.map((x) => [x.id, x.price, x.days]), [['month', 99, 30], ['year', 990, 365]], 'monthly and yearly plans');
+  assert.ok(r.data.plans[1].save > 0, 'yearly shows how much is saved');
+  await A('POST', '/api/admin/promos', { code: 'GROUP10', kind: 'percent', value: 10 });
+  await A('POST', '/api/admin/promos', { code: 'ALLFREE', kind: 'percent', value: 100 });
+  r = await Boss('POST', '/api/promo/check', { code: 'GROUP10', plan: 'year' });
+  assert.deepEqual([r.data.price, r.data.amount, r.data.days], [990, 891, 365], 'promo code on the yearly price');
+  const yBefore = (await G1('GET', '/api/premium')).data.until;
+  await G1('POST', '/api/payments/checkout', { agree_no_refund: true, plan: 'year', amount: 1 });
+  const ycs = Object.values(sessions).at(-1);
+  assert.equal(ycs.attributes.line_items[0].amount, 99000, 'PayMongo charges the yearly price');
+  payIt(ycs, 'gcash'); await hook(ycs.id);
+  r = await G1('GET', '/api/premium');
+  assert.ok(Math.abs(r.data.until - (Math.max(Date.now(), yBefore) + 365 * 864e5)) < 5000, 'yearly plan adds 365 days');
+  assert.equal(r.data.payments.find((x) => x.provider === 'paymongo').days, 365);
+  // 🏷️👥 Promo code on Group Premium: taken off the group total after the group discount
+  r = await Boss('GET', '/api/bulk/quote?qty=10&code=group10');
+  assert.equal(r.data.total, 757.35, '10 × ₱99 − 15% − 10%'); assert.equal(r.data.promo.code, 'GROUP10');
+  r = await Boss('GET', '/api/bulk/quote?qty=2&plan=year');
+  assert.deepEqual([r.data.total, r.data.days], [1980, 365], 'group on the yearly plan');
+  assert.match((await Boss('GET', '/api/bulk/quote?qty=10&code=ALLFREE')).data.error, /Group Premium/, 'no 100%-off code on a group');
+  assert.equal((await Boss('GET', '/api/bulk/quote?qty=10&code=NOPE')).data.code, 'promo', 'bad code refused');
+  await Boss('POST', '/api/bulk/checkout', { qty: 10, code: 'GROUP10', total: 1, agree_no_refund: true });
+  const gcs2 = Object.values(sessions).at(-1);
+  assert.equal(gcs2.attributes.line_items[0].amount, 75735, 'PayMongo charges the group price less the code');
+  payIt(gcs2, 'gcash'); await hook(gcs2.id); await hook(gcs2.id);
+  assert.equal((await A('GET', '/api/admin/promos')).data.rows.find((x) => x.code === 'GROUP10').used, 1, 'group promo counted once');
+  assert.match((await Boss('POST', '/api/promo/check', { code: 'GROUP10' })).data.error, /Nagamit mo na/, 'one use per account, group too');
+  const gpay2 = (await Boss('GET', '/api/premium')).data.payments.find((x) => x.promo_code === 'GROUP10');
+  r = await Boss('GET', `/api/payments/${gpay2.id}/receipt`);
+  assert.deepEqual([r.data.promo_code, r.data.amount, r.data.group.qty], ['GROUP10', '757.35', 10], 'promo and group on the receipt');
+  assert.equal((await Boss('GET', '/api/bulk')).data.length, 3);
   fake.close();
+
+  // 🛡️ Security headers, health check, and Admin → Server monitoring
+  let h = await fetch(base + '/api/health');
+  assert.equal(h.status, 200); assert.equal((await h.json()).ok, true);
+  assert.equal(h.headers.get('x-frame-options'), 'DENY'); assert.equal(h.headers.get('x-content-type-options'), 'nosniff');
+  assert.equal(h.headers.get('x-powered-by'), null, 'server software not shown');
+  assert.equal(h.headers.get('cache-control'), 'no-store', 'API answers are not cached');
+  h = await fetch(base + '/api/meta', { headers: { Origin: 'https://localhost' } });
+  assert.equal(h.headers.get('access-control-allow-origin'), '*', 'apps can call the API');
+  assert.equal(h.headers.get('access-control-allow-credentials'), null, 'no cookies across sites');
+  assert.equal((await U('GET', '/api/admin/health')).status, 403, 'monitoring is for admins');
+  r = await A('GET', '/api/admin/health');
+  assert.ok(['ok', 'warn', 'bad'].includes(r.data.level)); assert.equal(typeof r.data.percent, 'number');
+  assert.ok(r.data.active_users >= 2 && r.data.capacity === 150, 'active users against the capacity');
+  assert.equal(r.data.db_ok, true); assert.ok(r.data.req_per_min > 0);
 
   // Offline: question pack, then sync results taken without internet (saved once only)
   r = await U('GET', '/api/offline/pack');

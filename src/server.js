@@ -17,6 +17,7 @@ const jobs = require('./jobs');
 const releases = require('./releases');
 const promo = require('./promo');
 const bulk = require('./bulk');
+const monitor = require('./monitor');
 
 const PORT = Number(process.env.PORT) || 3000;
 const ADMIN_EMAIL = (process.env.ADMIN_EMAIL || '').trim().toLowerCase();
@@ -58,17 +59,48 @@ const SETTING_DEFAULTS = {
   // Group Premium (src/bulk.js): on/off, smallest and largest group, discount by group size
   // ("people:percent", comma separated), and how many days an unused seat code lasts.
   bulk_on: '1', bulk_min: '2', bulk_max: '50', bulk_tiers: '5:10,10:15,20:20', bulk_seat_days: '90',
+  // Yearly plan (Premium page: "Buwanan" or "Taunan"). The monthly plan is price + plan_days above.
+  // ₱1,490 for 365 days is about 10 months' price: 2 months free.
+  year_on: '1', price_year: '1490', plan_year_days: '365',
+  // Admin → Overview → Server monitoring: how many people the server can serve at the same time
+  // (Render free plan: about 150). Used for the % load. Raise it after moving to a bigger plan.
+  capacity_users: '150',
 };
 const LONG_SETTINGS = { pay_methods: 20000 };
 // [key, smallest, largest] for the settings that are numbers (Admin → Settings).
 const NUM_SETTINGS = [['price', 0, 100000], ['plan_days', 1, 3650], ['free_practice_daily', 0, 100], ['free_practice_items', 5, 100],
-  ['free_sets', 1, 1000], ['free_mock_daily', 0, 100], ['bulk_min', 2, 100], ['bulk_max', 2, 500], ['bulk_seat_days', 7, 730]];
+  ['free_sets', 1, 1000], ['free_mock_daily', 0, 100], ['bulk_min', 2, 100], ['bulk_max', 2, 500], ['bulk_seat_days', 7, 730],
+  ['price_year', 0, 1000000], ['plan_year_days', 30, 3650], ['capacity_users', 10, 1000000]];
+// Settings are read on almost every request, so they are kept in memory for a few seconds (one database
+// call less per request: faster answers, most of all for Premium). Saving the settings clears it right away.
+const SETTINGS_TTL = 15e3;
+let stCache = null, stAt = 0;
 async function getSettings() {
+  if (stCache && Date.now() - stAt < SETTINGS_TTL) return { ...stCache };
   const rows = await db.all(`SELECT key, value FROM meta WHERE key LIKE 'set:%'`);
   const out = { ...SETTING_DEFAULTS };
   rows.forEach((r) => { out[r.key.slice(4)] = r.value; });
+  stCache = out; stAt = Date.now();
+  return { ...out };
+}
+const settingsChanged = () => { stCache = null; };
+/* Premium plans: monthly (price, plan_days) and yearly (price_year, plan_year_days), picked on the Premium page.
+   The server always works out the price from the plan the app names; the app never sends a price.
+   save: how much cheaper the yearly plan is than paying monthly for the same days (%). */
+function plans(st) {
+  const month = { id: 'month', price: Number(st.price) || 0, days: Number(st.plan_days) || 30 };
+  const out = [month];
+  const yp = Number(st.price_year) || 0, yd = Number(st.plan_year_days) || 365;
+  if (st.year_on !== '0' && yp > 0) {
+    const same = month.price * yd / month.days;
+    out.push({ id: 'year', price: yp, days: yd, save: same > yp ? Math.round((1 - yp / same) * 100) : 0 });
+  }
   return out;
 }
+const planOf = (st, id) => plans(st).find((p) => p.id === id) || plans(st)[0];
+const planName = (pl) => (pl.id === 'year' ? 'Taunan' : 'Buwanan');
+// The settings with the price and days of one plan (for the promo and group price, which read price and plan_days).
+const withPlan = (st, pl) => ({ ...st, price: String(pl.price), plan_days: String(pl.days) });
 const PAY_TYPES = { gcash: 'GCash', maya: 'Maya', paypal: 'PayPal', bank: 'Bank transfer', gotyme: 'GoTyme', shopeepay: 'ShopeePay', other: 'Iba pa' };
 // The manual payment accounts, added by the admin with "+ Add an account" (Admin → Settings → Manual payment).
 // The name shown to users comes from the type (GCash, Maya...); for a bank it is the bank's name, and for
@@ -195,12 +227,55 @@ setInterval(() => {
 /* ------------------------------ app ------------------------------ */
 const app = express();
 app.set('trust proxy', 1);
+app.disable('x-powered-by'); // do not tell the world which server software runs here
+app.use(monitor.track); // Admin → Overview → Server monitoring
+
+/* Security headers (every answer). The site can't be put inside another site's frame (clickjacking),
+   the browser must not guess file types, links don't leak the full address to other sites, the browser
+   features the app does not use are off, and on HTTPS the browser always uses HTTPS (HSTS). */
+app.use((req, res, next) => {
+  res.set({
+    'X-Content-Type-Options': 'nosniff',
+    'X-Frame-Options': 'DENY',
+    'Content-Security-Policy': "frame-ancestors 'none'; base-uri 'self'; object-src 'none'",
+    'Referrer-Policy': 'strict-origin-when-cross-origin',
+    'Permissions-Policy': 'geolocation=(), microphone=(), camera=(), usb=(), payment=()',
+    'Cross-Origin-Resource-Policy': 'cross-origin',
+  });
+  if (req.secure) res.set('Strict-Transport-Security', 'max-age=15552000; includeSubDomains');
+  if (req.path.startsWith('/api/')) res.set('Cache-Control', 'no-store'); // answers with personal data are never kept by the browser or proxies
+  next();
+});
+
+/* Rate limit for the whole API: at most API_RATE_PER_MIN requests a minute from one IP address (600 by default,
+   far more than one person needs). Stops bots and floods before they slow the server for everyone.
+   Logins, codes and payments have their own stricter limits (see limited()). */
+const API_RATE = Number(process.env.API_RATE_PER_MIN) || 600;
+const ipHits = new Map(); // ip -> { m: minute, n: count }
+app.use('/api', (req, res, next) => {
+  if (req.method === 'OPTIONS' || req.path === '/payments/paymongo/webhook') return next();
+  const m = Math.floor(Date.now() / 60e3), ip = req.ip || '';
+  let h = ipHits.get(ip);
+  if (!h || h.m !== m) { h = { m, n: 0 }; ipHits.set(ip, h); }
+  if (++h.n > API_RATE) {
+    res.set('Retry-After', '60');
+    return res.status(429).json({ error: 'Masyadong maraming request. Maghintay ng isang minuto.' });
+  }
+  next();
+});
+setInterval(() => { const m = Math.floor(Date.now() / 60e3); for (const [ip, h] of ipHits) if (h.m < m) ipHits.delete(ip); }, 60e3).unref();
+
 app.use(compression()); // smaller downloads (the offline question pack shrinks about 5x)
 // The apps load the screens from the device and call this server from another origin.
-// They log in with a token (not a cookie), so allowing any origin is safe here.
+// They log in with a token (not a cookie), and no cookie is ever sent across origins (no
+// Allow-Credentials), so any origin is allowed by default. To allow only some, set CORS_ORIGINS
+// (comma separated, e.g. "https://localhost,capacitor://localhost,null" for the Android, iPhone and Windows apps).
+const CORS_ORIGINS = (process.env.CORS_ORIGINS || '').split(',').map((s) => s.trim()).filter(Boolean);
 app.use('/api', (req, res, next) => {
-  if (req.get('origin')) {
-    res.set('Access-Control-Allow-Origin', '*');
+  const origin = req.get('origin');
+  if (origin && (!CORS_ORIGINS.length || CORS_ORIGINS.includes(origin))) {
+    res.set('Access-Control-Allow-Origin', CORS_ORIGINS.length ? origin : '*');
+    if (CORS_ORIGINS.length) res.vary('Origin');
     res.set('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-App');
     res.set('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
     res.set('Access-Control-Max-Age', '86400');
@@ -217,7 +292,7 @@ app.use(async (req, res, next) => {
     try {
       const row = await db.get(`SELECT u.*, s.expires_at, s.replaced_at FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token = ?`, sha(token));
       if (row && row.replaced_at) req.replaced = true; // logged in on another device
-      else if (row && row.expires_at > Date.now() && !row.disabled) req.user = row;
+      else if (row && row.expires_at > Date.now() && !row.disabled) { req.user = row; monitor.userSeen(row.id); }
     } catch (e) { console.error(e); }
   }
   next();
@@ -426,8 +501,7 @@ app.get('/api/me', wrap(async (req, res) => {
     ...(req.replaced ? { ended: 'replaced' } : {}),
     config: { verify: REQUIRE_VERIFY, mail: mail.enabled, premium_required: st.premium_required === '1', free: freeLimits(st), online_pay: onlinePayOn(st), ...clientConfig(st) },
     premium: req.user ? hasPremium(req.user, st) : false,
-    practice_today: req.user ? await practiceToday(req.user.id) : 0,
-    mock_today: req.user ? await mockToday(req.user.id) : 0,
+    ...(req.user ? await (async () => { const [p, m] = await Promise.all([practiceToday(req.user.id), mockToday(req.user.id)]); return { practice_today: p, mock_today: m }; })() : { practice_today: 0, mock_today: 0 }),
   });
 }));
 
@@ -480,7 +554,14 @@ app.get('/api/me/logins', auth, wrap(async (req, res) => {
     ORDER BY id DESC LIMIT 15`, req.user.id));
 }));
 
-app.get('/api/meta', (req, res) => res.json({ subjects: SUBJECTS, exams: EXAMS }));
+app.get('/api/meta', (req, res) => res.set('Cache-Control', 'public, max-age=300').json({ subjects: SUBJECTS, exams: EXAMS }));
+// Health check for Render and uptime monitors (no login): is the server up and does the database answer?
+app.get('/api/health', wrap(async (req, res) => {
+  const t0 = Date.now();
+  let ok = true;
+  try { await db.get('SELECT 1 AS ok'); } catch { ok = false; }
+  res.status(ok ? 200 : 503).json({ ok, db_ms: Date.now() - t0 });
+}));
 
 /* ------------------------------ attempts ------------------------------ */
 // Items sent to the browser. Answers are hidden during a timed mock exam.
@@ -811,22 +892,34 @@ app.get('/api/premium', auth, wrap(async (req, res) => {
   // If the user just came back from the PayMongo checkout, check it now (in case the webhook is late).
   let user = req.user;
   if (paymongo.enabled) {
-    const open = await db.all(`SELECT * FROM payments WHERE user_id = ? AND provider = 'paymongo' AND status = 'checkout' ORDER BY id DESC LIMIT 3`, user.id);
-    for (const p of open) await syncCheckout(p).catch((e) => console.error('PayMongo check failed:', e.message));
-    if (open.length) user = await db.get('SELECT * FROM users WHERE id = ?', user.id);
+    // Only checkouts from the last 2 days (a PayMongo link lasts 24 hours), all at once, and never longer than
+    // 4 seconds, so the Premium page is not kept waiting by PayMongo.
+    const open = await db.all(`SELECT * FROM payments WHERE user_id = ? AND provider = 'paymongo' AND status = 'checkout' AND created_at > ? ORDER BY id DESC LIMIT 3`, user.id, Date.now() - 2 * 864e5);
+    if (open.length) {
+      const all = Promise.all(open.map((p) => syncCheckout(p).catch((e) => console.error('PayMongo check failed:', e.message))));
+      await Promise.race([all, new Promise((r) => setTimeout(r, 4000).unref())]);
+      user = await db.get('SELECT * FROM users WHERE id = ?', user.id);
+    }
   }
-  const payments = await db.all(`SELECT id, amount, method, reference, status, note, created_at, decided_at, provider, (proof IS NOT NULL) AS has_proof, promo_code, discount, bulk_id,
-    CASE WHEN status = 'checkout' THEN checkout_url END AS checkout_url FROM payments
-    WHERE user_id = ? AND NOT (provider = 'xendit' AND status = 'checkout') ORDER BY created_at DESC LIMIT 20`, user.id);
+  // The database calls below don't depend on each other, so they run at the same time.
+  const [payments, paid, promoOn, groups] = await Promise.all([
+    db.all(`SELECT id, amount, method, reference, status, note, created_at, decided_at, provider, (proof IS NOT NULL) AS has_proof, promo_code, discount, bulk_id, days,
+      CASE WHEN status = 'checkout' THEN checkout_url END AS checkout_url FROM payments
+      WHERE user_id = ? AND NOT (provider = 'xendit' AND status = 'checkout') ORDER BY created_at DESC LIMIT 20`, user.id),
+    paidUser(user),
+    db.get('SELECT 1 FROM promo_codes WHERE active = 1 LIMIT 1'),
+    db.get(`SELECT COUNT(*) AS n FROM bulk_orders WHERE buyer_id = ? AND status = 'paid'`, user.id),
+  ]);
   res.json({
     required: st.premium_required === '1', active: hasPremium(user, st), until: user.premium_until || 0, online: onlinePayOn(st),
     card: onlinePayOn(st) && paymongo.methods.includes('card'),
     manual: manualPayOn(st), methods: manualPayOn(st) ? payMethods(st).filter((m) => m.on) : [],
     price: st.price, plan_days: Number(st.plan_days) || 30, note: st.pay_note, payments,
-    paid: await paidUser(user), // can download the app installers (GET /api/app/installers)
-    promo: !!(await db.get('SELECT 1 FROM promo_codes WHERE active = 1 LIMIT 1')), // show the promo code box
+    plans: plans(st), // monthly and (when on) yearly
+    paid, // can download the app installers (GET /api/app/installers)
+    promo: !!promoOn, // show the promo code box
     bulk: bulkOn(st) ? bulkInfo(st) : null, // Group Premium: buy for several people
-    groups: (await db.get(`SELECT COUNT(*) AS n FROM bulk_orders WHERE buyer_id = ? AND status = 'paid'`, user.id)).n, // groups this user bought
+    groups: groups.n, // groups this user bought
   });
 }));
 
@@ -847,7 +940,7 @@ async function markPaid(p, method) {
   const r = await db.run(`UPDATE payments SET status = 'approved', method = ?, decided_at = ? WHERE id = ? AND status IN ('checkout', 'expired')`,
     String(method || 'Online').slice(0, 40), Date.now(), p.id);
   if (r.changes !== 1) return false; // already done
-  if (p.bulk_id) return bulkPaid(p, method); // Group Premium: seats for others, not Premium for the buyer
+  if (p.bulk_id) { await bulkPaid(p, method); await promo.used(p); return true; } // Group Premium: seats for others, not Premium for the buyer
   const days = Number(p.days) || Number((await getSettings()).plan_days) || 30;
   const before = await db.get('SELECT premium_until FROM users WHERE id = ?', p.user_id);
   const from = Math.max(Date.now(), (before && before.premium_until) || 0), to = from + days * 864e5;
@@ -923,10 +1016,11 @@ app.post('/api/payments/checkout', auth, verified, wrap(async (req, res) => {
   if (!onlinePayOn(st)) return res.status(404).json({ error: 'Hindi pa naka-set up ang online na bayad.' });
   if (!agreedNoRefund(req)) return res.status(400).json({ error: NO_REFUND_ERR, code: 'no_refund' });
   // A promo code: the server works out the price (the app only sends the code).
+  const plan = planOf(st, req.body && req.body.plan);
   const pc = await promoFor(req, st);
   if (pc && !pc.ok) return res.status(400).json({ error: pc.error, code: 'promo' });
   if (pc && pc.free) return res.status(400).json({ error: 'Libre na ang Premium sa promo code na ito. Pindutin ang "Gamitin ang code".', code: 'promo_free' });
-  const amount = pc ? pc.online : Number(st.price);
+  const amount = pc ? pc.online : plan.price;
   const promoId = pc ? pc.promo.id : null;
   // "Card": a checkout with only the card option, so PayMongo opens the card form right away.
   const card = req.body && req.body.method === 'card' && paymongo.methods.includes('card');
@@ -936,18 +1030,18 @@ app.post('/api/payments/checkout', auth, verified, wrap(async (req, res) => {
   // Reuse an unpaid checkout from the last 23 hours (the link lasts 24 hours).
   const open = await db.get(`SELECT * FROM payments WHERE user_id = ? AND provider = 'paymongo' AND status = 'checkout' AND method = ? AND bulk_id IS NULL AND created_at > ? ORDER BY id DESC LIMIT 1`,
     req.user.id, kind, Date.now() - 23 * 3600e3);
-  if (open && Number(open.amount) === amount && (open.promo_id || null) === promoId && open.checkout_url) {
+  if (open && Number(open.amount) === amount && (open.promo_id || null) === promoId && Number(open.days) === plan.days && open.checkout_url) {
     await db.run('UPDATE payments SET no_refund_at = ? WHERE id = ?', Date.now(), open.id);
     return res.json({ url: open.checkout_url });
   }
   if (limited('checkout:' + req.user.id, 10, 60 * 60 * 1000)) return res.status(429).json({ error: 'Masyadong maraming subok. Maghintay muna.' });
-  const days = Number(st.plan_days) || 30;
+  const days = plan.days;
   const reference = `cse-${req.user.id}-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`;
   let cs;
   try {
     cs = await paymongo.createCheckout({
       reference, amount, email: req.user.email, name: req.user.name, types: card ? ['card'] : null,
-      description: `CSE Reviewer Premium (${days} araw)${pc ? ` · promo ${pc.promo.code}` : ''}`, returnUrl: publicUrl(req) + '/#/premium',
+      description: `CSE Reviewer Premium ${planName(plan)} (${days} araw)${pc ? ` · promo ${pc.promo.code}` : ''}`, returnUrl: publicUrl(req) + '/#/premium',
     });
   } catch (e) {
     console.error('PayMongo checkout failed:', e.message);
@@ -995,10 +1089,11 @@ app.post('/api/payments', auth, verified, wrap(async (req, res) => {
   const pc = await promoFor(req, st);
   if (pc && !pc.ok) return res.status(400).json({ error: pc.error, code: 'promo' });
   if (pc && pc.free) return res.status(400).json({ error: 'Libre na ang Premium sa promo code na ito. Pindutin ang "Gamitin ang code".', code: 'promo_free' });
-  // The amount is the current price (not what the app sends), less the promo code, so the admin sees what the user should have paid.
-  const p = { amount: String(pc ? pc.amount : st.price).slice(0, 20), method: m.name, reference, promo_code: pc ? pc.promo.code : null, discount: pc ? String(pc.discount) : null, list_price: pc ? String(pc.price) : null };
-  await db.run('INSERT INTO payments (user_id, amount, method, reference, created_at, proof, promo_id, promo_code, list_price, discount, no_refund_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-    req.user.id, p.amount, p.method, p.reference, Date.now(), proof, pc ? pc.promo.id : null, p.promo_code, p.list_price, p.discount, Date.now());
+  // The amount is the current price of the plan (not what the app sends), less the promo code, so the admin sees what the user should have paid.
+  const plan = planOf(st, req.body.plan);
+  const p = { amount: String(pc ? pc.amount : plan.price).slice(0, 20), method: m.name, reference, promo_code: pc ? pc.promo.code : null, discount: pc ? String(pc.discount) : null, list_price: pc ? String(pc.price) : null, days: plan.days, plan: planName(plan) };
+  await db.run('INSERT INTO payments (user_id, amount, method, reference, created_at, proof, promo_id, promo_code, list_price, discount, no_refund_at, days) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    req.user.id, p.amount, p.method, p.reference, Date.now(), proof, pc ? pc.promo.id : null, p.promo_code, p.list_price, p.discount, Date.now(), plan.days);
   const admins = await db.all(`SELECT email FROM users WHERE role = 'admin' AND disabled = 0`);
   admins.forEach((a) => mail.newPayment(a.email, req.user, p));
   res.json({ ok: true });
@@ -1007,20 +1102,23 @@ app.post('/api/payments', auth, verified, wrap(async (req, res) => {
 /* Promo codes (src/promo.js). The user types a code on the Premium page and sees the new price;
    the server works out the price again on every payment. */
 // The code in the request, checked for this user, or null when there is none.
-async function promoFor(req, st) {
+// price: the price the code takes off from; by default the chosen plan's price (body.plan: month or year).
+async function promoFor(req, st, price) {
   const code = req.body && req.body.code ? String(req.body.code) : '';
   if (!code.trim()) return null;
-  return promo.check(req.user.id, code, st.price);
+  return promo.check(req.user.id, code, price ?? planOf(st, req.body.plan).price);
 }
-const promoOut = (pc) => ({ code: pc.promo.code, kind: pc.promo.kind, value: pc.promo.value, price: pc.price, discount: pc.discount, amount: pc.amount, online: pc.online, free: pc.free });
+const promoOut = (pc, plan) => ({ code: pc.promo.code, kind: pc.promo.kind, value: pc.promo.value, price: pc.price, discount: pc.discount, amount: pc.amount, online: pc.online, free: pc.free, ...(plan ? { plan: plan.id, days: plan.days } : {}) });
 app.post('/api/promo/check', auth, verified, wrap(async (req, res) => {
   // Stop guessing codes one after another.
   if (limited('promo:' + req.user.id, 15, 10 * 60 * 1000)) return res.status(429).json({ error: 'Masyadong maraming subok. Maghintay muna ng ilang minuto.' });
   if (bulk.isCode(req.body && req.body.code)) return res.json({ group: true, code: bulk.normCode(req.body.code) }); // a Group Premium code: use POST /api/bulk/redeem
-  const pc = await promoFor(req, await getSettings());
+  const st = await getSettings();
+  const plan = planOf(st, req.body && req.body.plan);
+  const pc = await promoFor(req, st);
   if (!pc) return res.status(400).json({ error: promo.ERR.bad, code: 'promo' });
   if (!pc.ok) return res.status(400).json({ error: pc.error, code: 'promo' });
-  res.json(promoOut(pc));
+  res.json(promoOut(pc, plan));
 }));
 // A 100%-off code: Premium starts now, with no payment. Kept as a ₱0 "payment" (provider 'promo') so it is in
 // the user's list, the receipt, the admin's Approved list and the audit log.
@@ -1033,7 +1131,7 @@ app.post('/api/promo/redeem', auth, verified, wrap(async (req, res) => {
   if (!pc.free) return res.status(400).json({ error: 'Hindi libre ang Premium sa code na ito. Magbayad ng natitirang halaga.', code: 'promo_paid' });
   const claim = await promo.claimFree(pc.promo, req.user.id, pc.price);
   if (!claim.ok) return res.status(409).json({ error: claim.error, code: 'promo' });
-  const days = Number(st.plan_days) || 30;
+  const days = planOf(st, req.body.plan).days;
   const u = await db.get('SELECT * FROM users WHERE id = ?', req.user.id);
   const from = Math.max(Date.now(), u.premium_until || 0), to = from + days * 864e5, now = Date.now();
   const r = await db.run(`INSERT INTO payments (user_id, amount, method, reference, status, provider, days, created_at, decided_at, period_from, period_to, promo_id, promo_code, list_price, discount)
@@ -1096,13 +1194,34 @@ async function newGroup({ buyer, q, emails, org, base, createdBy = null }) {
   return r.lastInsertRowid;
 }
 
+/* The group price: the chosen plan's price (monthly or yearly) × people, less the group discount, then less a
+   promo code when one is given (the code takes its % or pesos off the group total). A 100%-off code is for one's
+   own Premium only, not for a group. */
+const PROMO_GROUP_FREE = 'Hindi pwede ang 100% na libreng promo code sa Group Premium. Gamitin ito sa sarili mong Premium.';
+async function groupPrice(req, st, src) {
+  const plan = planOf(st, src.plan);
+  const q = bulk.quote(withPlan(st, plan), Number(src.qty));
+  if (q.error) return { error: q.error };
+  q.plan = plan.id;
+  const code = src.code ? String(src.code).trim() : '';
+  if (!code) return { q };
+  const pc = await promo.check(req.user.id, code, q.total);
+  if (!pc.ok) return { error: pc.error, code: 'promo' };
+  if (pc.free) return { error: PROMO_GROUP_FREE, code: 'promo' };
+  q.promo = { code: pc.promo.code, kind: pc.promo.kind, value: pc.promo.value, discount: pc.discount };
+  q.before_promo = q.total;
+  q.total = pc.amount; q.each = Math.round(pc.amount / q.qty * 100) / 100; q.online = pc.online;
+  return { q, pc };
+}
+
 // The price for a group size (the Premium page also works it out, but this is the one that counts).
 app.get('/api/bulk/quote', auth, verified, wrap(async (req, res) => {
   const st = await getSettings();
   if (!bulkOn(st)) return res.status(404).json({ error: 'Hindi pa bukas ang Group Premium.' });
-  const q = bulk.quote(st, Number(req.query.qty));
-  if (q.error) return res.status(400).json({ error: q.error });
-  res.json(q);
+  if (req.query.code && limited('promo:' + req.user.id, 15, 10 * 60 * 1000)) return res.status(429).json({ error: 'Masyadong maraming subok. Maghintay muna ng ilang minuto.' });
+  const g = await groupPrice(req, st, req.query);
+  if (g.error) return res.status(400).json({ error: g.error, ...(g.code ? { code: g.code } : {}) });
+  res.json(g.q);
 }));
 
 // Buy Premium for a group: PayMongo checkout for the whole amount, paid once.
@@ -1110,8 +1229,9 @@ app.post('/api/bulk/checkout', auth, verified, wrap(async (req, res) => {
   const st = await getSettings();
   if (!bulkOn(st)) return res.status(404).json({ error: 'Hindi pa bukas ang Group Premium.' });
   if (!agreedNoRefund(req)) return res.status(400).json({ error: NO_REFUND_ERR, code: 'no_refund' });
-  const q = bulk.quote(st, Number(req.body.qty));
-  if (q.error) return res.status(400).json({ error: q.error });
+  const g = await groupPrice(req, st, req.body);
+  if (g.error) return res.status(400).json({ error: g.error, ...(g.code ? { code: g.code } : {}) });
+  const { q, pc } = g;
   const em = bulk.cleanEmails(req.body.emails, q.qty);
   if (em.error) return res.status(400).json({ error: em.error });
   const org = String(req.body.org || '').trim().slice(0, 80);
@@ -1123,7 +1243,7 @@ app.post('/api/bulk/checkout', auth, verified, wrap(async (req, res) => {
   try {
     cs = await paymongo.createCheckout({
       reference, amount: q.online, email: req.user.email, name: req.user.name,
-      description: `CSE Reviewer Group Premium · ${q.qty} tao × ${q.days} araw${q.pct ? ` · ${q.pct}% group discount` : ''}${org ? ` · ${org}` : ''}`,
+      description: `CSE Reviewer Group Premium · ${q.qty} tao × ${q.days} araw${q.pct ? ` · ${q.pct}% group discount` : ''}${pc ? ` · promo ${pc.promo.code}` : ''}${org ? ` · ${org}` : ''}`,
       returnUrl: base + '/#/premium',
     });
   } catch (e) {
@@ -1131,11 +1251,14 @@ app.post('/api/bulk/checkout', auth, verified, wrap(async (req, res) => {
     await db.run(`UPDATE bulk_orders SET status = 'expired' WHERE id = ?`, orderId);
     return res.status(502).json({ error: 'Hindi mabuksan ang bayaran ngayon. Subukan ulit mamaya.' });
   }
-  const pay = await db.run(`INSERT INTO payments (user_id, amount, method, reference, status, provider, invoice_id, checkout_url, days, created_at, list_price, discount, bulk_id, no_refund_at)
-    VALUES (?, ?, 'Online', ?, 'checkout', 'paymongo', ?, ?, ?, ?, ?, ?, ?, ?)`, req.user.id, String(q.online), reference, cs.id, cs.attributes.checkout_url, q.days, Date.now(),
-    q.pct ? String(q.list) : null, q.pct ? String(q.discount) : null, orderId, Date.now());
+  // With a promo code: list_price is the group price before the code and discount is what the code took off
+  // (the group discount is kept on the group itself), so the receipt shows both.
+  const pay = await db.run(`INSERT INTO payments (user_id, amount, method, reference, status, provider, invoice_id, checkout_url, days, created_at, list_price, discount, bulk_id, no_refund_at, promo_id, promo_code)
+    VALUES (?, ?, 'Online', ?, 'checkout', 'paymongo', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, req.user.id, String(q.online), reference, cs.id, cs.attributes.checkout_url, q.days, Date.now(),
+    pc ? String(q.before_promo) : q.pct ? String(q.list) : null, pc ? String(pc.discount) : q.pct ? String(q.discount) : null, orderId, Date.now(),
+    pc ? pc.promo.id : null, pc ? pc.promo.code : null);
   await db.run('UPDATE bulk_orders SET payment_id = ? WHERE id = ?', pay.lastInsertRowid, orderId);
-  await audit.log(req, 'bulk_checkout', { userId: req.user.id, detail: `Group #${orderId} · ${q.qty} tao · ₱${q.online}${q.pct ? ` (−${q.pct}%)` : ''}` });
+  await audit.log(req, 'bulk_checkout', { userId: req.user.id, detail: `Group #${orderId} · ${q.qty} tao · ${q.plan === 'year' ? 'Taunan' : 'Buwanan'} · ₱${q.online}${q.pct ? ` (−${q.pct}%)` : ''}${pc ? ` · promo ${pc.promo.code} (−₱${pc.discount})` : ''}` });
   res.json({ url: cs.attributes.checkout_url, id: orderId });
 }));
 
@@ -1205,6 +1328,20 @@ app.get('/api/admin/overview', admin, wrap(async (req, res) => {
     alerts7d: await one(`SELECT COUNT(*) FROM audit_log WHERE alert = 1 AND at > ${Date.now() - 7 * 864e5}`),
     mail: { enabled: mail.enabled, provider: mail.provider, verify: REQUIRE_VERIFY },
   });
+}));
+
+/* Server monitoring (Admin → Overview): % load, active users against the capacity in Settings, and whether
+   access is still OK (database, speed, errors). See src/monitor.js. The admin screen asks every 15 seconds. */
+app.get('/api/admin/health', admin, wrap(async (req, res) => {
+  const st = await getSettings();
+  const t0 = Date.now();
+  let dbOk = true;
+  try { await db.get('SELECT 1 AS ok'); } catch { dbOk = false; }
+  const dbMs = Date.now() - t0;
+  let liveScreens = 0;
+  for (const set of live.values()) liveScreens += set.size;
+  const premiumNow = (await db.get('SELECT COUNT(*) AS n FROM users WHERE premium_until > ?', Date.now())).n;
+  res.json({ ...monitor.status(Number(st.capacity_users) || 150, { live: liveScreens, db_ms: dbMs, db_ok: dbOk }), premium_users: premiumNow });
 }));
 
 app.get('/api/admin/users', admin, wrap(async (req, res) => {
@@ -1280,7 +1417,7 @@ app.post('/api/admin/users/:id/report', admin, wrap(async (req, res) => {
 app.get('/api/admin/payments', admin, wrap(async (req, res) => {
   const status = ['pending', 'approved', 'rejected'].includes(req.query.status) ? req.query.status : 'pending';
   res.json(await db.all(`SELECT p.id, p.user_id, p.amount, p.method, p.reference, p.status, p.note, p.created_at, p.decided_at, p.provider,
-      (p.proof IS NOT NULL) AS has_proof, p.promo_code, p.list_price, p.discount, u.name, u.email, u.premium_until FROM payments p JOIN users u ON u.id = p.user_id
+      (p.proof IS NOT NULL) AS has_proof, p.promo_code, p.list_price, p.discount, p.days, u.name, u.email, u.premium_until FROM payments p JOIN users u ON u.id = p.user_id
     WHERE p.status = ? ORDER BY p.created_at DESC LIMIT 200`, status));
 }));
 
@@ -1300,7 +1437,7 @@ app.post('/api/admin/payments/:id', admin, wrap(async (req, res) => {
   let until = u?.premium_until || 0;
   const stmts = [['UPDATE payments SET status = ?, note = ?, decided_at = ? WHERE id = ?', [approve ? 'approved' : 'rejected', note, Date.now(), p.id]]];
   if (approve && u) {
-    const days = Number(req.body.days) || Number((await getSettings()).plan_days) || 30;
+    const days = Number(req.body.days) || Number(p.days) || Number((await getSettings()).plan_days) || 30; // the plan the user chose (monthly or yearly)
     const from = Math.max(Date.now(), until);
     until = from + days * 864e5;
     stmts.push(['UPDATE users SET premium_until = ? WHERE id = ?', [until, u.id]]);
@@ -1331,7 +1468,7 @@ app.put('/api/admin/settings', admin, wrap(async (req, res) => {
   }
   const stmts = Object.keys(SETTING_DEFAULTS).filter((k) => body[k] !== undefined)
     .map((k) => [`INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`, ['set:' + k, String(body[k]).slice(0, LONG_SETTINGS[k] || 500)]]);
-  if (stmts.length) await db.batch(stmts);
+  if (stmts.length) { await db.batch(stmts); settingsChanged(); }
   if (stmts.length) {
     const changed = Object.keys(SETTING_DEFAULTS).filter((k) => body[k] !== undefined && String(body[k]).slice(0, LONG_SETTINGS[k] || 500) !== String(before[k] ?? ''));
     if (changed.length) await audit.log(req, 'admin_settings', { detail: changed.join(', ') });
@@ -1348,6 +1485,7 @@ app.put('/api/admin/pay-qr/:id', admin, wrap(async (req, res) => {
   const st = await getSettings();
   const list = payMethods(st).map((m) => (m.id === id ? { ...m, has_qr: !!data } : m));
   await db.run(`INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`, 'set:pay_methods', JSON.stringify(list));
+  settingsChanged();
   await audit.log(req, 'admin_pay_qr', { detail: `${id}: ${data ? 'bagong QR' : 'inalis ang QR'}` });
   res.json({ ok: true, has_qr: !!data });
 }));
@@ -1592,6 +1730,7 @@ app.ready = (async () => {
   if (!(await db.get(`SELECT value FROM meta WHERE key = 'mig:free_items_10'`))) {
     await db.run(`UPDATE meta SET value = '10' WHERE key = 'set:free_practice_items' AND value = '20'`);
     await db.run(`INSERT INTO meta (key, value) VALUES ('mig:free_items_10', '1') ON CONFLICT(key) DO NOTHING`);
+    settingsChanged();
   }
 })();
 // Render's free plan puts the server to sleep after 15 minutes without visitors, and the next visit

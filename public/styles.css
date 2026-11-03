@@ -264,6 +264,16 @@ html[data-theme="dark"] {
   --bar: #23262d; --on-primary: #15181d;
   color-scheme: dark;
 }
+/* Free plan: plain white screen (no color themes, no dark mode, no zoom). Set by app.js. */
+html[data-theme="plain"] {
+  --bg: #ffffff; --card: #ffffff; --text: #172033; --muted: #5b6478; --line: #e2e6ef;
+  --primary: #1e40af; --primary-2: #2f5bd8; --primary-soft: #e8eefc; --accent: #f5b301;
+  --ok: #0f8a5f; --ok-soft: #e3f6ee; --bad: #c62f3b; --bad-soft: #fde8ea; --warn-soft: #fff6dc; --warn-text: #7a5a00;
+  --shadow: 0 1px 2px rgba(16, 24, 40, .06), 0 2px 8px rgba(16, 24, 40, .06);
+  --bar: #ffffff; --on-primary: #fff; --z: 1;
+  color-scheme: light;
+}
+html[data-theme="plain"] .card { border: 1px solid var(--line); }
 html[data-theme] body { line-height: 1.6; }
 html[data-theme] .topbar { background: var(--bar); color: var(--text); border-bottom: 1px solid var(--line); }
 html[data-theme] .brand, html[data-theme] .topbar .link { color: var(--text); }
@@ -702,4 +712,19 @@ html[data-theme] #undo .u-time { background: var(--primary); }
 
 /* No refunds notice before paying (Premium page and Group Premium) */
 .no-refund { margin: 10px 0 4px; background: var(--warn-soft); }
-.pc-list li { margin: 3px 0; }
+
+/* Premium page: monthly or yearly plan */
+.plan-seg { margin: 8px 0 4px; }
+.plan-seg button { display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 10px 8px; }
+.plan-seg button .small { font-weight: 500; }
+.plan-seg button .pill { margin-top: 2px; }
+.plan-seg button.active .pill { background: var(--card); color: var(--ok); }
+
+/* Admin → Overview: server monitoring */
+.mon-bar { height: 12px; border-radius: 6px; background: var(--line); overflow: hidden; margin: 6px 0; }
+.mon-bar > div { height: 100%; border-radius: 6px; background: var(--ok); transition: width .4s; }
+.mon-bar.warn > div { background: var(--accent); }
+.mon-bar.bad > div { background: var(--bad); }
+.mon-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px; margin-top: 8px; }
+.mon-grid > div { border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; }
+.mon-grid b { display: block; font-size: 1.1rem; }
