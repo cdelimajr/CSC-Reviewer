@@ -11,7 +11,7 @@
     "dist:win": "npm run web && electron-builder --win nsis portable --publish never"
   },
   "devDependencies": {
-    "electron": "^45.0.0",
+    "electron": "^45.2.1",
     "electron-builder": "^26.0.0"
   },
   "build": {
