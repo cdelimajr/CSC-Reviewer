@@ -3,7 +3,7 @@
   'use strict';
   const $app = document.getElementById('app');
   const LETTERS = ['A', 'B', 'C', 'D'];
-  const APP_VERSION = '1.34.0'; // keep in step with package.json and docs/DOKUMENTASYON.md
+  const APP_VERSION = '1.35.0'; // keep in step with package.json and docs/DOKUMENTASYON.md
   const S = { user: null, meta: null, exam: null, timer: null, saveT: null };
 
   /* ---------------- helpers ---------------- */
@@ -3743,7 +3743,7 @@
       ${check('weekon', st.week_on !== '0', L('Ipakita ang lingguhang plan', 'Show the weekly plan'))}
       <div class="row"><div style="flex:1;min-width:120px"><label>${L('Presyo (₱)', 'Price (₱)')}</label><input type="number" id="priceWeek" value="${esc(st.price_week)}"></div>
       <div style="flex:1;min-width:120px"><label>${L('Ilang araw (2 hanggang 29)', 'Number of days (2 to 29)')}</label><input type="number" id="daysWeek" value="${esc(st.plan_week_days)}"></div></div>
-      <p class="muted small" style="margin:4px 0 0">${L('₱20 ang pinakamababang online na bayad sa PayMongo, kaya huwag ibaba sa ₱20 ang presyo kung online ang bayad. Hindi kasama ang 1-araw at lingguhang plan sa Group Premium.', 'PayMongo\'s smallest online payment is ₱20, so keep the price at ₱20 or more if people pay online. The daily and weekly plans are not part of Group Premium.')}</p>
+      <p class="muted small" style="margin:4px 0 0">${L('₱20 ang pinakamababang presyo na pwedeng singilin online sa PayMongo (hindi ito bawas o fee), kaya huwag ibaba sa ₱20 ang presyo kung online ang bayad. Eksaktong presyo ng plan ang sinisingil; walang sukli. Hindi kasama ang 1-araw at lingguhang plan sa Group Premium.', 'PayMongo\'s smallest online charge is ₱20 (it is not a fee or a deduction), so keep the price at ₱20 or more if people pay online. The exact plan price is charged; there is no change. The daily and weekly plans are not part of Group Premium.')}</p>
       <h4 style="margin:10px 0 0">${L('Buwanan', 'Monthly')}</h4>
       <div class="row"><div style="flex:1;min-width:120px"><label>${L('Presyo (₱)', 'Price (₱)')}</label><input type="number" id="price" value="${esc(st.price)}"></div>
       <div style="flex:1;min-width:120px"><label>${L('Ilang araw', 'Number of days')}</label><input type="number" id="days" value="${esc(st.plan_days)}"></div></div>
@@ -3761,7 +3761,7 @@
 
       ${sec('online', `💳 ${L('Online na bayad (PayMongo)', 'Online payment (PayMongo)')}`, `
       ${check('payon', st.pay_online_on !== '0', L('Naka-on ang online na bayad', 'Online payment on'))}
-      <p class="muted small" style="margin:4px 0 0">${st.online_ready ? L('GCash, Maya, card, GrabPay, QR Ph (bank apps) at iba pa. Awtomatikong bubukas ang Premium pagkabayad.', 'GCash, Maya, card, GrabPay, QR Ph (bank apps) and more. Premium opens by itself after payment.')
+      <p class="muted small" style="margin:4px 0 0">${st.online_ready ? L('GCash, Maya, card, GrabPay, QR Ph (bank apps) at iba pa. Awtomatikong bubukas ang Premium pagkabayad. Ang pera ay pumapasok muna sa PayMongo balance mo (bawas na ang fee ng PayMongo), hindi diretso sa GCash: makikita ito at mawi-withdraw sa dashboard.paymongo.com papunta sa naka-link na bangko o e-wallet.', 'GCash, Maya, card, GrabPay, QR Ph (bank apps) and more. Premium opens by itself after payment. The money goes to your PayMongo balance first (less PayMongo\'s fee), not straight to GCash: see and withdraw it at dashboard.paymongo.com to your linked bank or e-wallet.')
         : L('⚠️ Hindi pa naka-set up: ilagay ang <code>PAYMONGO_SECRET_KEY</code> at <code>PAYMONGO_WEBHOOK_SECRET</code> sa server. Hangga\'t wala ang mga ito, hindi lalabas ang online na bayad kahit naka-on dito.', '⚠️ Not set up yet: set <code>PAYMONGO_SECRET_KEY</code> and <code>PAYMONGO_WEBHOOK_SECRET</code> on the server. Until then, online payment does not show even when on here.')}</p>`)}
 
       ${sec('manual', `🧾 ${L('Manual na bayad', 'Manual payment')}`, `
