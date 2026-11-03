@@ -3,7 +3,7 @@
   'use strict';
   const $app = document.getElementById('app');
   const LETTERS = ['A', 'B', 'C', 'D'];
-  const APP_VERSION = '1.35.0'; // keep in step with package.json and docs/DOKUMENTASYON.md
+  const APP_VERSION = '1.36.0'; // keep in step with package.json and docs/DOKUMENTASYON.md
   const S = { user: null, meta: null, exam: null, timer: null, saveT: null };
 
   /* ---------------- helpers ---------------- */
@@ -1454,9 +1454,10 @@
      A button that shows the current choice; tapping it opens a list below it. Picking an item, tapping
      outside, or Esc closes it. Used for the Admin tabs. */
   function ddMenu(id, items, cur) {
-    const it = items.find(([k]) => k === cur) || items[0];
+    // An item ['-', 'Title'] is a heading that groups the items below it.
+    const it = items.find(([k]) => k === cur) || items.find(([k]) => k !== '-');
     return `<div class="dd" id="${id}"><button type="button" class="dd-btn" aria-haspopup="menu" aria-expanded="false"><span class="dd-cur">${it[2] || ''} ${it[1]}</span><span class="chev" aria-hidden="true"></span></button>
-      <div class="dd-list" role="menu" hidden>${items.map(([k, l, ic]) => `<button type="button" role="menuitem" data-t="${k}" class="${k === it[0] ? 'active' : ''}">${ic || ''} ${l}</button>`).join('')}</div></div>`;
+      <div class="dd-list" role="menu" hidden>${items.map(([k, l, ic]) => (k === '-' ? `<div class="dd-head" role="presentation">${l}</div>` : `<button type="button" role="menuitem" data-t="${k}" class="${k === it[0] ? 'active' : ''}">${ic || ''} ${l}</button>`)).join('')}</div></div>`;
   }
   function ddPick(dd, key) {
     const b = $(`[data-t="${key}"]`, dd);
@@ -1771,25 +1772,34 @@
     let promo = null, promoCode = ''; // promoCode: the code the user applied, kept when a plan it does not work on is picked
     const peso = pesos;
     const priceNow = () => (promo ? peso(promo.amount) : peso(plan.price));
+    // Online (PayMongo) is at least ₱20, so a code that brings the price under ₱20 still costs ₱20 online.
+    // Manual payment is the exact price. Both are shown, so the price on the screen is what is charged.
+    const lowOnline = () => !!(promo && p.online && promo.online > promo.amount);
+    const priceShown = () => (lowOnline() && !manual ? peso(promo.online) : priceNow());
     const paintPromo = () => {
       // The plan buttons show the price big, with no days. The chosen plan shows the price after the code.
       $$('#planSel [data-pp]').forEach((el) => {
         const x = plans.find((y) => y.id === el.dataset.pp);
-        el.innerHTML = promo && x === plan ? `<s>${esc(peso(x.price))}</s> ${esc(priceNow())}` : esc(peso(x.price));
+        el.innerHTML = promo && x === plan ? `<s>${esc(peso(x.price))}</s> ${esc(priceShown())}` : esc(peso(x.price));
       });
       // The days are still written once below the plans, so the user knows what the price buys (RA 11967).
       const tag = $('#priceTag');
       const per = L(`Premium sa loob ng <b>${plan.days} araw</b>`, `Premium for <b>${plan.days} ${plan.days === 1 ? 'day' : 'days'}</b>`) + (plans.length > 1 ? ` · ${PLAN_NAME(plan)}` : '');
       const tagPromo = promo ? ` <span class="pill ok">${esc(promo.code)} −${esc(promo.kind === 'percent' ? promo.value + '%' : peso(promo.value))}</span>` : '';
+      const both = lowOnline() && manual ? ` <span class="small">${L(`(online: ${esc(peso(promo.online))})`, `(online: ${esc(peso(promo.online))})`)}</span>` : '';
       if (tag) tag.innerHTML = plans.length > 1
-        ? `<span class="small">${L('Babayaran', 'You pay')}: <b>${esc(priceNow())}</b> · ${per}</span>${tagPromo}`
-        : `<span class="price-big">${promo ? `<s class="muted">${esc(peso(plan.price))}</s> ` : ''}${esc(priceNow())}</span> <span class="small">${per}</span>${tagPromo}`;
+        ? `<span class="small">${L('Babayaran', 'You pay')}: <b>${esc(priceShown())}</b>${both} · ${per}</span>${tagPromo}`
+        : `<span class="price-big">${promo ? `<s class="muted">${esc(peso(plan.price))}</s> ` : ''}${esc(priceShown())}</span>${both} <span class="small">${per}</span>${tagPromo}`;
+      const pay = $('#paynow');
+      if (pay) pay.innerHTML = `💳 ${L('Ituloy ang pagbayad', 'Continue payment')} · ${esc(promo ? peso(promo.online) : peso(plan.price))}`;
       const info = $('#promoInfo');
       if (info) info.innerHTML = !promo ? '' : promo.free
         ? `<div class="notice" style="margin:8px 0">🎉 ${L(`Libre ang Premium (${plan.days} araw) sa code na ito. Walang babayaran.`, `Premium (${plan.days} days) is free with this code. Nothing to pay.`)}</div>
           <button class="btn block" type="button" id="promoFree">🎁 ${L('Gamitin ang code', 'Use the code')}</button>`
-        : `<p class="small" style="margin:6px 0">✅ ${L(`Bawas na ang <b>${esc(peso(promo.discount))}</b>. Babayaran: <b>${esc(priceNow())}</b>.`, `<b>${esc(peso(promo.discount))}</b> off. You pay: <b>${esc(priceNow())}</b>.`)}
-          ${promo.online > promo.amount ? `<br><span class="muted">${L(`Sa online na bayad, ₱${promo.online} ang pinakamababa (patakaran ng PayMongo).`, `Online payment is at least ₱${promo.online} (PayMongo's rule).`)}</span>` : ''}
+        : `<p class="small" style="margin:6px 0">✅ ${L(`Bawas na ang <b>${esc(peso(promo.discount))}</b>. Babayaran: <b>${esc(priceShown())}</b>.`, `<b>${esc(peso(promo.discount))}</b> off. You pay: <b>${esc(priceShown())}</b>.`)}
+          ${lowOnline() ? `<br><span class="muted">${manual
+            ? L(`Sa online na bayad, ${esc(peso(promo.online))} ang singil (pinakamababa ng PayMongo). Sa manual na bayad, ${esc(priceNow())} lang.`, `Online payment is ${esc(peso(promo.online))} (PayMongo's smallest charge). Manual payment is just ${esc(priceNow())}.`)
+            : L(`${esc(peso(promo.online))} ang singil online: ito ang pinakamababa ng PayMongo.`, `The online charge is ${esc(peso(promo.online))}: PayMongo's smallest charge.`)}</span>` : ''}
           <a href="#" id="promoX">${L('Alisin ang code', 'Remove the code')}</a></p>`;
       // With a free code there is nothing to pay, so the pay buttons are hidden.
       $$('#paynow, .pay-fold').forEach((x) => x.classList.toggle('promo-hide', !!(promo && promo.free)));
@@ -3282,8 +3292,13 @@
   /* ---------------- admin ---------------- */
   async function viewAdmin(tab = 'overview') {
     if (S.user.role !== 'admin') return go('#/');
-    const tabs = [['overview', 'Overview', '📊'], ['payments', 'Payments', '💳'], ['promos', L('Promo code', 'Promo codes'), '🏷️'], ['groups', 'Group Premium', '👥'], ['users', 'Users', '👥'], ['sets', 'Exam sets', '🗂️'], ['questions', L('Mga tanong', 'Questions'), '❓'], ['results', L('Resulta', 'Results'), '📈'], ['audit', 'Audit log', '🛡️'], ['settings', 'Settings', '⚙️']];
-    if (!tabs.some(([k]) => k === tab)) return go('#/admin');
+    // The menu in groups, so each task is easy to find.
+    const tabs = [['overview', 'Overview', '📊'],
+      ['-', L('Benta at Premium', 'Sales and Premium')], ['payments', 'Payments', '💳'], ['promos', L('Promo code', 'Promo codes'), '🏷️'], ['groups', 'Group Premium', '👥'],
+      ['-', L('Users at seguridad', 'Users and security')], ['users', 'Users', '🧑'], ['audit', 'Audit log', '🛡️'],
+      ['-', L('Nilalaman', 'Content')], ['sets', 'Exam sets', '🗂️'], ['questions', L('Mga tanong', 'Questions'), '❓'], ['results', L('Resulta', 'Results'), '📈'],
+      ['-', L('App', 'App')], ['settings', 'Settings', '⚙️']];
+    if (tab === '-' || !tabs.some(([k]) => k === tab)) return go('#/admin');
     /* The tabs are one dropdown menu. Switching tabs only changes the part below it:
        the menu is not drawn again and the screen does not jump. */
     const bar = $('#admTabs');
@@ -3626,7 +3641,7 @@
       <p class="muted small" style="margin:10px 0 0">${L(`Presyo ngayon: ${allPrices}. Isang beses lang magagamit ng bawat account ang isang code. Sa online na bayad, ₱${r.min_online} ang pinakamababa (PayMongo). Ang 100% na code ay nagbubukas agad ng Premium nang walang bayad (hindi ito kasama sa download ng app, na para sa may bayad lang).`, `Price now: ${allPrices}. Each account can use a code once. Online payments are at least ₱${r.min_online} (PayMongo). A 100% code turns on Premium right away with no payment (it does not include the app download, which is for paid users only).`)}</p></div>
       <div class="list" style="margin-top:12px">${r.rows.map((x) => `<div class="review-item">
         <div class="row between"><div><b style="font-family:monospace;font-size:15px">${esc(x.code)}</b> · −${esc(off(x))} ${state(x)}</div><span class="pill">${planTag(x)}</span></div>
-        <div class="small" style="margin:4px 0">${(x.prices || []).map((pr) => `${PLAN_NAME(pr)}: <s class="muted">${esc(pesos(pr.price))}</s> <b>${esc(pesos(pr.amount))}</b>${pr.free ? ` (${L('libre', 'free')})` : ''}`).join(' · ') || `<span class="muted">${L('Wala sa mga bukas na plan ngayon.', 'Not on any plan that is on now.')}</span>`}</div>
+        <div class="small" style="margin:4px 0">${(x.prices || []).map((pr) => `${PLAN_NAME(pr)}: <s class="muted">${esc(pesos(pr.price))}</s> <b>${esc(pesos(pr.amount))}</b>${pr.free ? ` (${L('libre', 'free')})` : pr.online > pr.amount ? ` <span class="muted">(online ${esc(pesos(pr.online))})</span>` : ''}`).join(' · ') || `<span class="muted">${L('Wala sa mga bukas na plan ngayon.', 'Not on any plan that is on now.')}</span>`}</div>
         <div class="muted small" style="margin:4px 0">${L('Nagamit', 'Used')}: <b>${x.used}</b>${x.max_uses ? ` / ${x.max_uses}` : ''} · ${x.expires_at ? L(`Hanggang ${day(x.expires_at)}`, `Until ${day(x.expires_at)}`) : L('Walang katapusan', 'No end date')} · ${L('Ginawa', 'Made')} ${fmtDate(x.created_at)}${x.note ? ` · ${esc(x.note)}` : ''}</div>
         <div class="row"><button class="btn small ${x.active ? 'ghost' : ''}" data-tog="${x.id}" data-on="${x.active ? 0 : 1}">${x.active ? L('I-off', 'Turn off') : L('I-on', 'Turn on')}</button>
           <button class="btn ghost small" data-edit="${x.id}">✏️ ${L('Baguhin', 'Edit')}</button>
@@ -3701,16 +3716,49 @@
       again();
     }));
   }
+  /* Admin → Settings, in groups (Plans and prices, Payments and receipts, Group Premium, Free plan and ads,
+     Exam screen, Server). One group shows at a time; the search box finds a setting in every group.
+     - Undo / Redo: every change in the form is kept in a list (up to 100 steps), so the admin can step back and
+       forward. Buttons at the bottom, or Ctrl/Cmd + Z, Ctrl/Cmd + Shift + Z (or Ctrl + Y). Ctrl/Cmd + S saves.
+     - Reset: "Default" puts a group back to the first values of the app; "Reset" at the bottom can also throw
+       away the changes not saved yet, or put every group back to default. A reset is only in the form until Save,
+       and Undo takes it back. The payment accounts (GCash, Maya…) are never removed by a reset.
+     - Nothing reaches users until "Save". The groups and the bar show how many changes are not saved yet. */
+  const SET_SECS = () => [
+    { k: 'plans', ic: '💰', t: L('Mga plan at presyo', 'Plans and prices'), kw: 'premium price presyo plan day week month year araw lingguhan buwanan taunan',
+      d: L('Kung kailangan ng Premium, at ang presyo at araw ng bawat plan.', 'Whether Premium is needed, and the price and days of each plan.'),
+      keys: ['premium_required', 'day_on', 'price_day', 'plan_day_days', 'week_on', 'price_week', 'plan_week_days', 'price', 'plan_days', 'year_on', 'price_year', 'plan_year_days'] },
+    { k: 'pay', ic: '💳', t: L('Bayad at resibo', 'Payments and receipts'), kw: 'paymongo gcash maya paypal bank qr online manual resibo receipt',
+      d: L('Online na bayad (PayMongo), mga account para sa manual na bayad, at ang nasa resibo.', 'Online payment (PayMongo), accounts for manual payment, and what is on receipts.'),
+      keys: ['pay_online_on', 'pay_manual_on', 'pay_methods', 'pay_note', 'biz_name', 'biz_contact'] },
+    { k: 'group', ic: '👥', t: 'Group Premium', kw: 'bulk group grupo opisina discount',
+      d: L('Isang tao ang nagbabayad ng Premium para sa ilang tao.', 'One person pays Premium for several people.'),
+      keys: ['bulk_on', 'bulk_min', 'bulk_max', 'bulk_seat_days', 'bulk_tiers'] },
+    { k: 'free', ic: '🆓', t: L('Libreng plan at ads', 'Free plan and ads'), kw: 'free libre limit ads adsense admob patalastas',
+      d: L('Ang limit ng libreng plan (kapag naka-on ang Premium) at ang ads.', 'The free plan limits (when Premium is on) and ads.'),
+      keys: ['free_practice_daily', 'free_practice_items', 'free_mock_daily', 'free_sets', 'ads_on', 'adsense_client', 'adsense_slot', 'admob_banner'] },
+    { k: 'exam', ic: '🔒', t: L('Exam at privacy', 'Exam and privacy'), kw: 'exam privacy ra 10173 babala warning screenshot',
+      d: L('Ang makikita sa screen habang nag-e-exam.', 'What shows on the screen during an exam.'), keys: ['exam_privacy_strip'] },
+    { k: 'server', ic: '🖥️', t: 'Server', kw: 'server capacity kapasidad render monitoring load',
+      d: L('Para sa monitoring sa Overview.', 'For the monitoring in Overview.'), keys: ['capacity_users'] },
+  ];
+  // Each setting: its box in the form and its kind (check: '1' or '0'; trim: text without spaces at the ends).
+  const SET_FIELDS = {
+    premium_required: ['preq', 'check'], day_on: ['dayon', 'check'], price_day: ['priceDay'], plan_day_days: ['daysDay'], week_on: ['weekon', 'check'],
+    price_week: ['priceWeek'], plan_week_days: ['daysWeek'], price: ['price'], plan_days: ['days'], year_on: ['yearon', 'check'], price_year: ['priceYear'],
+    plan_year_days: ['daysYear'], pay_online_on: ['payon', 'check'], pay_manual_on: ['payman', 'check'], pay_note: ['pnote'], biz_name: ['bizName', 'trim'],
+    biz_contact: ['bizContact', 'trim'], bulk_on: ['bulkon', 'check'], bulk_min: ['bmin'], bulk_max: ['bmax'], bulk_seat_days: ['bdays'], bulk_tiers: ['btiers', 'trim'],
+    free_practice_daily: ['fdaily'], free_practice_items: ['fitems'], free_mock_daily: ['fmock'], free_sets: ['fsets'], ads_on: ['adson', 'check'],
+    adsense_client: ['asc', 'trim'], adsense_slot: ['ass', 'trim'], admob_banner: ['amb', 'trim'], exam_privacy_strip: ['stripon', 'check'], capacity_users: ['capUsers'],
+  };
+  // A check box is "on" unless the setting is '0' (ads are the other way: on only when '1').
+  const setOn = (k, v) => (k === 'ads_on' || k === 'premium_required' ? v === '1' : v !== '0');
   async function admSettings(el) {
     const st = await api('GET', '/api/admin/settings');
+    const DEF = st.defaults || {};
     let methods = st.pay_methods;
-    // The saved values, so "Undo" after Save can put them all back.
-    const KEYS = ['premium_required', 'price', 'plan_days', 'year_on', 'price_year', 'plan_year_days', 'day_on', 'price_day', 'plan_day_days', 'week_on', 'price_week', 'plan_week_days', 'pay_note', 'pay_online_on', 'pay_manual_on', 'pay_methods', 'free_practice_daily', 'free_practice_items',
-      'free_mock_daily', 'free_sets', 'ads_on', 'adsense_client', 'adsense_slot', 'admob_banner', 'exam_watermark', 'exam_privacy_strip',
-      'bulk_on', 'bulk_min', 'bulk_max', 'bulk_tiers', 'bulk_seat_days'];
-    const snap = (o) => Object.fromEntries(KEYS.filter((k) => o[k] !== undefined).map((k) => [k, o[k]]));
-    let before = snap(st);
-    const check = (id, on, text) => `<label class="check"><input type="checkbox" id="${id}" ${on ? 'checked' : ''}> ${text}</label>`;
+    const SECS = SET_SECS();
+    const secOf = (k) => SECS.find((s) => s.keys.includes(k));
     const TYPES = [['gcash', 'GCash'], ['maya', 'Maya'], ['paypal', 'PayPal'], ['bank', L('Bangko', 'Bank')], ['gotyme', 'GoTyme'], ['shopeepay', 'ShopeePay'], ['other', L('Iba pa', 'Other')]];
     // The name users see comes from the type (GCash, Maya…), the bank's name, or the service's name for "Other".
     const typeName = (m) => (m.type === 'bank' ? m.bank || L('Bangko', 'Bank') : m.type === 'other' ? m.bank || L('Iba pa', 'Other') : (TYPES.find(([k]) => k === m.type) || [0, m.name])[1]);
@@ -3728,98 +3776,169 @@
           <label class="btn ghost small" style="margin:0">📷 ${m.has_qr ? L('Palitan ang QR', 'Change QR') : L('Mag-upload ng QR', 'Upload QR')}<input type="file" accept="image/*" data-qrup hidden></label>
           ${m.has_qr ? `<button type="button" class="btn ghost small" data-qrdel>${L('Alisin ang QR', 'Remove QR')}</button>` : ''}</div>
       </div>`;
-    // Each part of the settings opens and closes (drop down / up). Only one is open at a time, and they stay
-    // open while the admin works in them. Everything is saved together with the Save button.
-    const sec = (key, title, body, pill = '') => fold('adm-' + key, `<h3>${title}</h3>${pill}`, body, { stay: true });
-    el.innerHTML = `<form id="stf" class="stack adm-settings">
-      ${sec('premium', `⭐ ${L('Premium (bayad para sa mock exams)', 'Premium (paid mock exams)')}`, `
-      ${check('preq', st.premium_required === '1', L('Kailangan ng Premium para sa mock exams', 'Mock exams need Premium'))}
-      <p class="muted small" style="margin:4px 0 0">${L('Kapag naka-off, libre ang lahat at gumagana offline para sa lahat. Kapag naka-on, online lang ang libreng plan at may limit (Libreng plan sa ibaba).', 'When off, everything is free and works offline for everyone. When on, the free plan is online only and has limits (Free plan below).')}</p>
-      <h4 style="margin:10px 0 0">${L('Isang araw', 'Daily')}</h4>
-      ${check('dayon', st.day_on !== '0', L('Ipakita ang 1-araw na plan (para sa mabilisang review bago ang exam)', 'Show the 1-day plan (for a quick review before the exam)'))}
-      <div class="row"><div style="flex:1;min-width:120px"><label>${L('Presyo (₱)', 'Price (₱)')}</label><input type="number" id="priceDay" value="${esc(st.price_day)}"></div>
-      <div style="flex:1;min-width:120px"><label>${L('Ilang araw (1 hanggang 6)', 'Number of days (1 to 6)')}</label><input type="number" id="daysDay" value="${esc(st.plan_day_days)}"></div></div>
-      <h4 style="margin:10px 0 0">${L('Lingguhan', 'Weekly')}</h4>
-      ${check('weekon', st.week_on !== '0', L('Ipakita ang lingguhang plan', 'Show the weekly plan'))}
-      <div class="row"><div style="flex:1;min-width:120px"><label>${L('Presyo (₱)', 'Price (₱)')}</label><input type="number" id="priceWeek" value="${esc(st.price_week)}"></div>
-      <div style="flex:1;min-width:120px"><label>${L('Ilang araw (2 hanggang 29)', 'Number of days (2 to 29)')}</label><input type="number" id="daysWeek" value="${esc(st.plan_week_days)}"></div></div>
-      <p class="muted small" style="margin:4px 0 0">${L('₱20 ang pinakamababang presyo na pwedeng singilin online sa PayMongo (hindi ito bawas o fee), kaya huwag ibaba sa ₱20 ang presyo kung online ang bayad. Eksaktong presyo ng plan ang sinisingil; walang sukli. Hindi kasama ang 1-araw at lingguhang plan sa Group Premium.', 'PayMongo\'s smallest online charge is ₱20 (it is not a fee or a deduction), so keep the price at ₱20 or more if people pay online. The exact plan price is charged; there is no change. The daily and weekly plans are not part of Group Premium.')}</p>
-      <h4 style="margin:10px 0 0">${L('Buwanan', 'Monthly')}</h4>
-      <div class="row"><div style="flex:1;min-width:120px"><label>${L('Presyo (₱)', 'Price (₱)')}</label><input type="number" id="price" value="${esc(st.price)}"></div>
-      <div style="flex:1;min-width:120px"><label>${L('Ilang araw', 'Number of days')}</label><input type="number" id="days" value="${esc(st.plan_days)}"></div></div>
-      <h4 style="margin:10px 0 0">${L('Taunan', 'Yearly')}</h4>
-      ${check('yearon', st.year_on !== '0', L('Ipakita ang taunang plan (mas mura kada buwan)', 'Show the yearly plan (cheaper per month)'))}
-      <div class="row"><div style="flex:1;min-width:120px"><label>${L('Presyo (₱)', 'Price (₱)')}</label><input type="number" id="priceYear" value="${esc(st.price_year)}"></div>
-      <div style="flex:1;min-width:120px"><label>${L('Ilang araw', 'Number of days')}</label><input type="number" id="daysYear" value="${esc(st.plan_year_days)}"></div></div>
-      <p class="muted small" style="margin:4px 0 0">${L('Gumagana ang promo code, PayMongo at manual na bayad sa lahat ng plan; ang Group Premium ay sa buwanan at taunan lang. Walang refund sa lahat ng plan.', 'Promo codes, PayMongo and manual payment work with every plan; Group Premium is for monthly and yearly only. No refunds on any plan.')}</p>
-      <label>${L('Kapasidad ng server (ilang tao ang kaya nang sabay)', 'Server capacity (people at the same time)')}</label><input type="number" id="capUsers" value="${esc(st.capacity_users)}" style="max-width:160px">
-      <p class="muted small" style="margin:4px 0 0">${L('Para sa % load sa Overview → Monitoring. Render Free: mga 150. Starter: mga 600. Standard: mga 1,500.', 'For the % load in Overview → Monitoring. Render Free: about 150. Starter: about 600. Standard: about 1,500.')}</p>
-      <label>${L('Pangalan ng negosyo sa resibo (opsyonal)', 'Business name on receipts (optional)')}</label><input type="text" id="bizName" value="${esc(st.biz_name)}" placeholder="${L('hal.', 'e.g.')} CSE Reviewer ni Juan Dela Cruz">
-      <label>${L('Contact sa resibo (email, phone o address)', 'Contact on receipts (email, phone or address)')}</label><input type="text" id="bizContact" value="${esc(st.biz_contact)}">
-      <p class="muted small" style="margin:4px 0 0">${L('Lalabas sa resibo ng bawat na-approve na bayad (RA 11967: dapat kilala ang nagbebenta). Hindi ito BIR invoice.', 'Shown on the receipt of every approved payment (RA 11967: the seller must be known). It is not a BIR invoice.')}</p>`,
-      st.premium_required === '1' ? `<span class="pill ok">${L('Naka-on', 'On')} · ₱${esc(st.price)}</span>` : `<span class="pill">${L('Naka-off', 'Off')}</span>`)}
+    // One setting in the form, in a box the search can show or hide.
+    const sf = (key, html, kw = '') => `<div class="sf" data-sk="${key}" data-kw="${esc(kw)}">${html}</div>`;
+    const check = (key, text, kw) => sf(key, `<label class="check"><input type="checkbox" id="${SET_FIELDS[key][0]}" ${setOn(key, st[key]) ? 'checked' : ''}> ${text}</label>`, kw);
+    const num = (key, label, extra = '') => `<div class="sf" data-sk="${key}" style="flex:1;min-width:120px"><label>${label}</label><input type="number" id="${SET_FIELDS[key][0]}" value="${esc(st[key])}" ${extra}></div>`;
+    const text = (key, label, ph = '', kw = '') => sf(key, `<label>${label}</label><input type="text" id="${SET_FIELDS[key][0]}" value="${esc(st[key])}" placeholder="${esc(ph)}">`, kw);
+    const note = (html) => `<p class="muted small" style="margin:4px 0 0">${html}</p>`;
+    const plan = (name, onKey, onText, priceKey, daysKey, daysLabel) => `<div class="sf-group"><h4>${name}</h4>
+      ${onKey ? check(onKey, onText, name) : ''}
+      <div class="row">${num(priceKey, `${L('Presyo (₱)', 'Price (₱)')} · ${name}`, 'min="0"')}${num(daysKey, `${daysLabel} · ${name}`, 'min="1"')}</div></div>`;
+    const BODY = {
+      plans: `${check('premium_required', L('Kailangan ng Premium para sa mock exams', 'Mock exams need Premium'), 'premium required')}
+        ${note(L('Kapag naka-off, libre ang lahat at gumagana offline para sa lahat. Kapag naka-on, online lang ang libreng plan at may limit (nasa "Libreng plan at ads").', 'When off, everything is free and works offline for everyone. When on, the free plan is online only and has limits (in "Free plan and ads").'))}
+        ${plan(L('Isang araw', 'Daily'), 'day_on', L('Ipakita ang 1-araw na plan (para sa mabilisang review bago ang exam)', 'Show the 1-day plan (for a quick review before the exam)'), 'price_day', 'plan_day_days', L('Ilang araw (1 hanggang 6)', 'Days (1 to 6)'))}
+        ${plan(L('Lingguhan', 'Weekly'), 'week_on', L('Ipakita ang lingguhang plan', 'Show the weekly plan'), 'price_week', 'plan_week_days', L('Ilang araw (2 hanggang 29)', 'Days (2 to 29)'))}
+        ${plan(L('Buwanan', 'Monthly'), '', '', 'price', 'plan_days', L('Ilang araw', 'Days'))}
+        ${plan(L('Taunan', 'Yearly'), 'year_on', L('Ipakita ang taunang plan (mas mura kada buwan)', 'Show the yearly plan (cheaper per month)'), 'price_year', 'plan_year_days', L('Ilang araw', 'Days'))}
+        <div id="priceWarn" role="status"></div>
+        ${note(L('₱20 ang pinakamababang masisingil online sa PayMongo (hindi ito bawas o fee). Kapag mas mababa sa ₱20 ang presyo pagkatapos ng promo code, ₱20 pa rin ang singil online; sa manual na bayad, eksaktong presyo. Gumagana ang promo code sa lahat ng plan; ang Group Premium ay sa buwanan at taunan lang. Walang refund sa lahat ng plan.', 'PayMongo\'s smallest online charge is ₱20 (it is not a fee or a deduction). When the price after a promo code is under ₱20, the online charge is still ₱20; manual payment is the exact price. Promo codes work on every plan; Group Premium is monthly and yearly only. No refunds on any plan.'))}`,
+      pay: `<div class="sf-group"><h4>${L('Online (PayMongo)', 'Online (PayMongo)')}</h4>
+        ${check('pay_online_on', L('Naka-on ang online na bayad', 'Online payment on'), 'paymongo gcash maya card qr ph')}
+        ${note(st.online_ready ? L('GCash, Maya, card, GrabPay, QR Ph (bank apps) at iba pa. Awtomatikong bubukas ang Premium pagkabayad. Ang pera ay pumapasok muna sa PayMongo balance mo (bawas na ang fee ng PayMongo), hindi diretso sa GCash: makikita ito at mawi-withdraw sa dashboard.paymongo.com papunta sa naka-link na bangko o e-wallet.', 'GCash, Maya, card, GrabPay, QR Ph (bank apps) and more. Premium opens by itself after payment. The money goes to your PayMongo balance first (less PayMongo\'s fee), not straight to GCash: see and withdraw it at dashboard.paymongo.com to your linked bank or e-wallet.')
+          : L('⚠️ Hindi pa naka-set up: ilagay ang <code>PAYMONGO_SECRET_KEY</code> at <code>PAYMONGO_WEBHOOK_SECRET</code> sa server. Hangga\'t wala ang mga ito, hindi lalabas ang online na bayad kahit naka-on dito.', '⚠️ Not set up yet: set <code>PAYMONGO_SECRET_KEY</code> and <code>PAYMONGO_WEBHOOK_SECRET</code> on the server. Until then, online payment does not show even when on here.'))}</div>
+        <div class="sf-group"><h4>${L('Manual na bayad', 'Manual payment')}</h4>
+        ${check('pay_manual_on', L('Naka-on ang manual na bayad (nagpapadala ang user ng reference number at screenshot, ikaw ang mag-a-approve)', 'Manual payment on (the user sends the reference number and a screenshot, you approve it)'), 'manual reference')}
+        ${sf('pay_methods', `<div class="row pm-add"><select id="pmType" aria-label="${L('Uri ng account', 'Account type')}">${TYPES.map(([k, n]) => `<option value="${k}">${n}</option>`).join('')}</select><button type="button" class="btn ghost" id="pmAdd">+ ${L('Magdagdag ng account', 'Add an account')}</button></div>
+          <p class="muted small">${L('Pumili ng uri sa itaas, tapos pindutin ang "Magdagdag ng account". Lalabas lang sa user ang mga account na naka-check.', 'Pick a type above, then tap "Add an account". Users see only the checked accounts.')}</p>
+          <div id="pmList" class="stack"></div>`, 'account gcash maya paypal bank bangko gotyme shopeepay qr')}
+        ${sf('pay_note', `<label>${L('Paalala sa lahat ng user', 'Note to all users')}</label><textarea id="pnote">${esc(st.pay_note)}</textarea>`, 'note')}</div>
+        <div class="sf-group"><h4>${L('Resibo', 'Receipt')}</h4>
+        ${text('biz_name', L('Pangalan ng negosyo sa resibo (opsyonal)', 'Business name on receipts (optional)'), L('hal. CSE Reviewer ni Juan Dela Cruz', 'e.g. CSE Reviewer by Juan Dela Cruz'), 'business negosyo')}
+        ${text('biz_contact', L('Contact sa resibo (email, phone o address)', 'Contact on receipts (email, phone or address)'), '', 'contact')}
+        ${note(L('Lalabas sa resibo ng bawat na-approve na bayad (RA 11967: dapat kilala ang nagbebenta). Hindi ito BIR invoice.', 'Shown on the receipt of every approved payment (RA 11967: the seller must be known). It is not a BIR invoice.'))}</div>`,
+      group: `${check('bulk_on', L('Pwedeng bumili ng Premium para sa ilang tao (online na bayad)', 'Allow buying Premium for several people (online payment)'))}
+        <div class="row">${num('bulk_min', L('Pinakakaunting tao', 'Fewest people'), 'min="2"')}${num('bulk_max', L('Pinakamaraming tao', 'Most people'), 'min="2"')}${num('bulk_seat_days', L('Expire ng hindi nagamit na code (araw)', 'Unused codes expire after (days)'), 'min="7"')}</div>
+        ${text('bulk_tiers', L('Discount ayon sa dami (tao:%, may kuwit)', 'Discount by size (people:%, comma separated)'), '5:10,10:15,20:20', 'tier discount')}
+        ${note(L('Hal. "5:10,10:15,20:20" = 10% bawas sa 5 tao pataas, 15% sa 10 pataas, 20% sa 20 pataas. Presyo ng Premium × bilang ng tao, bawas ang discount; server ang nagkukuwenta. Pwedeng maglagay ng promo code ang bumibili: ibabawas ito pagkatapos ng group discount (hindi pwede ang 100% na code).', 'E.g. "5:10,10:15,20:20" = 10% off for 5 or more people, 15% for 10 or more, 20% for 20 or more. Premium price × number of people, less the discount; the server works it out. The buyer can add a promo code: it comes off after the group discount (a 100% code cannot be used).'))}`,
+      free: `<div class="sf-group"><h4>${L('Libreng plan (kapag naka-on ang Premium)', 'Free plan (when Premium is on)')}</h4>
+        <div class="row">${num('free_practice_daily', L('Practice kada araw', 'Practice per day'), 'min="0"')}${num('free_practice_items', L('Tanong bawat practice', 'Questions per practice'), 'min="5"')}
+        ${num('free_mock_daily', L('Mock exam kada araw', 'Mock exams per day'), 'min="0"')}${num('free_sets', L('Libreng exam set (Set 1 hanggang…)', 'Free exam sets (Set 1 to…)'), 'min="1"')}</div>
+        ${note(L('Laging libre ang Set 1 para sa lahat.', 'Set 1 is always free for everyone.'))}</div>
+        <div class="sf-group"><h4>Ads</h4>
+        ${check('ads_on', L('Magpakita ng ads sa libreng plan', 'Show ads on the free plan'), 'ads')}
+        ${note(L('Hindi kailanman lalabas sa Premium, habang nag-e-exam o nagpa-practice, sa Account, Premium o Admin. Kapag wala pang ID, isang "Premium" card ang lalabas sa puwesto ng ad.', 'Never for Premium, never during an exam or practice, never on Account, Premium or Admin. Without IDs, a "Premium" card shows in the ad spot.'))}
+        <div class="row"><div style="flex:1;min-width:180px">${text('adsense_client', 'AdSense publisher ID (website)', 'ca-pub-1234567890123456', 'adsense')}</div>
+        <div style="flex:1;min-width:140px">${text('adsense_slot', 'AdSense ad unit ID', '1234567890', 'adsense')}</div></div>
+        ${text('admob_banner', 'AdMob banner ID (Android app)', 'ca-app-pub-1234567890123456/1234567890', 'admob android')}
+        ${note(L('Para sa Android: ilagay din ang AdMob <b>App ID</b> sa GitHub (Settings → Secrets and variables → Actions → Variables → <code>ADMOB_APP_ID</code>) bago i-build ang APK.', 'For Android: also set the AdMob <b>App ID</b> in GitHub (Settings → Secrets and variables → Actions → Variables → <code>ADMOB_APP_ID</code>) before building the APK.'))}</div>`,
+      exam: `${check('exam_privacy_strip', L('Babala ng Data Privacy Act of 2012 (RA 10173) sa itaas ng exam', 'Data Privacy Act of 2012 (RA 10173) warning above the exam'), 'privacy babala')}
+        ${note(L('Naka-block pa rin ang screenshot sa Android at Windows app kahit naka-off ito.', 'Screenshots stay blocked in the Android and Windows apps even when this is off.'))}`,
+      server: `${sf('capacity_users', `<label>${L('Kapasidad ng server (ilang tao ang kaya nang sabay)', 'Server capacity (people at the same time)')}</label><input type="number" min="10" id="capUsers" value="${esc(st.capacity_users)}" style="max-width:160px">`)}
+        ${note(L('Para sa % load sa Overview → Monitoring. Render Free: mga 150. Starter: mga 600. Standard: mga 1,500.', 'For the % load in Overview → Monitoring. Render Free: about 150. Starter: about 600. Standard: about 1,500.'))}`,
+    };
+    let cur = store.get('cse-adm-sec');
+    if (!SECS.some((s) => s.k === cur)) cur = 'plans';
+    const kbd = /Mac|iPhone|iPad/.test(navigator.platform || '') ? '⌘' : 'Ctrl+';
+    el.innerHTML = `<div class="set-top">
+        <input type="search" id="sq" placeholder="🔍 ${L('Hanapin ang setting (hal. presyo, GCash, ads)', 'Find a setting (e.g. price, GCash, ads)')}" aria-label="${L('Hanapin ang setting', 'Find a setting')}" autocomplete="off">
+        <div class="tabs set-tabs" id="sTabs" role="tablist">${SECS.map((s) => `<button type="button" role="tab" data-sec="${s.k}" aria-selected="${s.k === cur}" class="${s.k === cur ? 'active' : ''}">${s.ic} ${s.t}<span class="dirty-dot" hidden></span></button>`).join('')}</div>
+      </div>
+      <form id="stf" class="stack adm-settings" novalidate>
+        ${SECS.map((s) => `<section class="card set-sec" data-sec="${s.k}" aria-label="${esc(s.t)}"${s.k === cur ? '' : ' hidden'}>
+          <div class="row between sec-head"><h3>${s.ic} ${s.t}</h3><button type="button" class="btn ghost small" data-reset="${s.k}" title="${L('Ibalik sa default ang grupong ito', 'Put this group back to default')}">↺ Default</button></div>
+          <p class="muted small" style="margin:0 0 8px">${s.d}</p>${BODY[s.k]}</section>`).join('')}
+        <div class="card empty" id="sNone" hidden>${L('Walang setting na tugma. Subukan ang ibang salita.', 'No setting matches. Try another word.')}</div>
+        <div class="set-bar" role="toolbar" aria-label="${L('Mga aksyon sa settings', 'Settings actions')}">
+          <span class="set-state small" id="sState" aria-live="polite"></span>
+          <button type="button" class="btn ghost small" id="sUndo" title="${L('I-undo', 'Undo')} (${kbd}Z)" aria-label="${L('I-undo', 'Undo')}">↶ <span class="hide-mobile">${L('Undo', 'Undo')}</span></button>
+          <button type="button" class="btn ghost small" id="sRedo" title="${L('I-redo', 'Redo')} (${kbd}Shift+Z)" aria-label="${L('I-redo', 'Redo')}">↷ <span class="hide-mobile">${L('Redo', 'Redo')}</span></button>
+          <button type="button" class="btn ghost small" id="sReset" title="${L('I-reset', 'Reset')}">↺ Reset</button>
+          <button type="submit" class="btn small" id="sSave" title="${L('I-save', 'Save')} (${kbd}S)">💾 ${L('I-save', 'Save')}</button>
+        </div></form>`;
 
-      ${sec('online', `💳 ${L('Online na bayad (PayMongo)', 'Online payment (PayMongo)')}`, `
-      ${check('payon', st.pay_online_on !== '0', L('Naka-on ang online na bayad', 'Online payment on'))}
-      <p class="muted small" style="margin:4px 0 0">${st.online_ready ? L('GCash, Maya, card, GrabPay, QR Ph (bank apps) at iba pa. Awtomatikong bubukas ang Premium pagkabayad. Ang pera ay pumapasok muna sa PayMongo balance mo (bawas na ang fee ng PayMongo), hindi diretso sa GCash: makikita ito at mawi-withdraw sa dashboard.paymongo.com papunta sa naka-link na bangko o e-wallet.', 'GCash, Maya, card, GrabPay, QR Ph (bank apps) and more. Premium opens by itself after payment. The money goes to your PayMongo balance first (less PayMongo\'s fee), not straight to GCash: see and withdraw it at dashboard.paymongo.com to your linked bank or e-wallet.')
-        : L('⚠️ Hindi pa naka-set up: ilagay ang <code>PAYMONGO_SECRET_KEY</code> at <code>PAYMONGO_WEBHOOK_SECRET</code> sa server. Hangga\'t wala ang mga ito, hindi lalabas ang online na bayad kahit naka-on dito.', '⚠️ Not set up yet: set <code>PAYMONGO_SECRET_KEY</code> and <code>PAYMONGO_WEBHOOK_SECRET</code> on the server. Until then, online payment does not show even when on here.')}</p>`)}
-
-      ${sec('manual', `🧾 ${L('Manual na bayad', 'Manual payment')}`, `
-      ${check('payman', st.pay_manual_on !== '0', L('Naka-on ang manual na bayad (nagpapadala ang user ng reference number at screenshot, ikaw ang mag-a-approve)', 'Manual payment on (the user sends the reference number and a screenshot, you approve it)'))}
-      <div class="row pm-add"><select id="pmType" aria-label="${L('Uri ng account', 'Account type')}">${TYPES.map(([k, n]) => `<option value="${k}">${n}</option>`).join('')}</select><button type="button" class="btn ghost" id="pmAdd">+ ${L('Magdagdag ng account', 'Add an account')}</button></div>
-      <p class="muted small">${L('Pumili ng uri sa itaas, tapos pindutin ang "Magdagdag ng account". Lalabas lang sa user ang mga account na naka-check.', 'Pick a type above, then tap "Add an account". Users see only the checked accounts.')}</p>
-      <div id="pmList" class="stack"></div>
-      <label>${L('Paalala sa lahat ng user', 'Note to all users')}</label><textarea id="pnote">${esc(st.pay_note)}</textarea>`)}
-
-      ${sec('group', `👥 Group Premium`, `
-      ${check('bulkon', st.bulk_on !== '0', L('Pwedeng bumili ng Premium para sa ilang tao (online na bayad)', 'Allow buying Premium for several people (online payment)'))}
-      <div class="row"><div style="flex:1;min-width:100px"><label>${L('Pinakakaunting tao', 'Fewest people')}</label><input type="number" min="2" id="bmin" value="${esc(st.bulk_min)}"></div>
-      <div style="flex:1;min-width:100px"><label>${L('Pinakamaraming tao', 'Most people')}</label><input type="number" min="2" id="bmax" value="${esc(st.bulk_max)}"></div>
-      <div style="flex:1;min-width:100px"><label>${L('Expire ng hindi nagamit na code (araw)', 'Unused codes expire after (days)')}</label><input type="number" min="7" id="bdays" value="${esc(st.bulk_seat_days)}"></div></div>
-      <label>${L('Discount ayon sa dami (tao:%, may kuwit)', 'Discount by size (people:%, comma separated)')}</label><input type="text" id="btiers" value="${esc(st.bulk_tiers)}" placeholder="5:10,10:15,20:20">
-      <p class="muted small" style="margin:4px 0 0">${L('Hal. "5:10,10:15,20:20" = 10% bawas sa 5 tao pataas, 15% sa 10 pataas, 20% sa 20 pataas. Presyo ng Premium × bilang ng tao, bawas ang discount; server ang nagkukuwenta. Hindi pwedeng isabay ang promo code.', 'E.g. "5:10,10:15,20:20" = 10% off for 5 or more people, 15% for 10 or more, 20% for 20 or more. Premium price × number of people, less the discount; the server works it out. Promo codes cannot be added on top.')}</p>`,
-      st.bulk_on !== '0' ? `<span class="pill ok">${L('Naka-on', 'On')}</span>` : `<span class="pill">${L('Naka-off', 'Off')}</span>`)}
-
-      ${sec('free', `🆓 ${L('Libreng plan (kapag naka-on ang Premium)', 'Free plan (when Premium is on)')}`, `
-      <div class="row"><div style="flex:1;min-width:100px"><label>${L('Practice kada araw', 'Practice per day')}</label><input type="number" min="0" id="fdaily" value="${esc(st.free_practice_daily)}"></div>
-      <div style="flex:1;min-width:100px"><label>${L('Tanong bawat practice', 'Questions per practice')}</label><input type="number" min="5" id="fitems" value="${esc(st.free_practice_items)}"></div>
-      <div style="flex:1;min-width:100px"><label>${L('Mock exam kada araw', 'Mock exams per day')}</label><input type="number" min="0" id="fmock" value="${esc(st.free_mock_daily)}"></div>
-      <div style="flex:1;min-width:100px"><label>${L('Libreng exam set (Set 1 hanggang…)', 'Free exam sets (Set 1 to…)')}</label><input type="number" min="1" id="fsets" value="${esc(st.free_sets)}"></div></div>
-      <p class="muted small" style="margin:4px 0 0">${L('Laging libre ang Set 1 para sa lahat.', 'Set 1 is always free for everyone.')}</p>`)}
-
-      ${sec('ads', `📺 ${L('Ads (libreng plan lang)', 'Ads (free plan only)')}`, `
-      ${check('adson', st.ads_on === '1', L('Magpakita ng ads sa libreng plan', 'Show ads on the free plan'))}
-      <p class="muted small" style="margin:4px 0 0">${L('Hindi kailanman lalabas sa Premium, habang nag-e-exam o nagpa-practice, sa Account, Premium o Admin. Kapag wala pang ID, isang "Premium" card ang lalabas sa puwesto ng ad.', 'Never for Premium, never during an exam or practice, never on Account, Premium or Admin. Without IDs, a "Premium" card shows in the ad spot.')}</p>
-      <div class="row"><div style="flex:1;min-width:180px"><label>AdSense publisher ID (website)</label><input type="text" id="asc" value="${esc(st.adsense_client)}" placeholder="ca-pub-1234567890123456"></div>
-      <div style="flex:1;min-width:140px"><label>AdSense ad unit ID</label><input type="text" id="ass" value="${esc(st.adsense_slot)}" placeholder="1234567890"></div></div>
-      <label>AdMob banner ID (Android app)</label><input type="text" id="amb" value="${esc(st.admob_banner)}" placeholder="ca-app-pub-1234567890123456/1234567890">
-      <p class="muted small">${L('Para sa Android: ilagay din ang AdMob <b>App ID</b> sa GitHub (Settings → Secrets and variables → Actions → Variables → <code>ADMOB_APP_ID</code>) bago i-build ang APK.', 'For Android: also set the AdMob <b>App ID</b> in GitHub (Settings → Secrets and variables → Actions → Variables → <code>ADMOB_APP_ID</code>) before building the APK.')}</p>`)}
-
-      ${sec('exam', `🔒 ${L('Screen habang nag-e-exam', 'Exam screen')}`, `
-      ${check('stripon', st.exam_privacy_strip !== '0', L('Babala ng Data Privacy Act of 2012 (RA 10173) sa itaas ng exam', 'Data Privacy Act of 2012 (RA 10173) warning above the exam'))}
-      <p class="muted small" style="margin:4px 0 0">${L('Naka-block pa rin ang screenshot sa Android at Windows app kahit naka-off ang mga ito.', 'Screenshots stay blocked in the Android and Windows apps even when these are off.')}</p>`)}
-      <button class="btn block" type="submit">${L('I-save ang settings', 'Save settings')}</button></form>`;
-    foldSync();
+    /* ---- the form's values ---- */
     const collect = () => $$('#pmList .pm-card').map((c) => ({
       id: c.dataset.id, type: c.dataset.type, has_qr: !!c.dataset.qr, on: $('[data-k=on]', c).checked,
       ...Object.fromEntries($$('input[type=text][data-k]', c).map((i) => [i.dataset.k, i.value.trim()])),
     }));
+    const pmJSON = (list) => JSON.stringify(list.map(({ id, type, on, bank = '', account_name = '', account = '', note: n = '' }) => ({ id, type, on: !!on, bank, account_name, account, note: n })));
+    // read(): every setting as text, as it is now in the form. write(): put values in the form.
+    const read = () => {
+      const o = {};
+      for (const [k, [id, kind]] of Object.entries(SET_FIELDS)) {
+        const b = $('#' + id); if (!b) continue;
+        o[k] = kind === 'check' ? (b.checked ? '1' : '0') : kind === 'trim' ? b.value.trim() : b.value;
+      }
+      o.pay_methods = pmJSON(collect());
+      return o;
+    };
+    const write = (o) => {
+      for (const [k, [id, kind]] of Object.entries(SET_FIELDS)) {
+        const b = $('#' + id); if (!b || o[k] === undefined) continue;
+        if (kind === 'check') b.checked = setOn(k, o[k]); else b.value = o[k];
+      }
+      if (o.pay_methods !== undefined) {
+        // The QR pictures are already on the server, so whether an account has one comes from now, not the step.
+        const qr = new Map(collect().map((m) => [m.id, m.has_qr]));
+        methods = JSON.parse(o.pay_methods).map((m) => ({ ...m, name: typeName(m), has_qr: qr.has(m.id) ? qr.get(m.id) : !!(methods.find((x) => x.id === m.id) || {}).has_qr }));
+        paintPm();
+      }
+      paintWarn(); paintState();
+    };
+    const fromServer = (s) => { const o = {}; for (const k of Object.keys(SET_FIELDS)) o[k] = s[k] === undefined ? '' : String(s[k]); o.pay_methods = pmJSON(s.pay_methods || []); return o; };
+    let saved; // the values on the server
+
+    /* ---- Undo / Redo: a list of the form's values after each change ---- */
+    const H = { list: [], at: -1, t: 0 };
+    const same = (a, b) => Object.keys(a).every((k) => a[k] === b[k]);
+    const commit = () => {
+      clearTimeout(H.t); H.t = 0;
+      if (!$('#stf')) return;
+      const now = read();
+      if (H.at >= 0 && same(now, H.list[H.at])) return paintState();
+      H.list = H.list.slice(0, H.at + 1); H.list.push(now);
+      if (H.list.length > 100) H.list.shift();
+      H.at = H.list.length - 1;
+      paintState();
+    };
+    const step = (d) => {
+      if (H.t) commit(); // typing that was not counted yet counts first, so Undo takes it back
+      const to = H.at + d;
+      if (to < 0 || to >= H.list.length) return;
+      H.at = to; write(H.list[to]);
+      toast(d < 0 ? L('Na-undo.', 'Undone.') : L('Na-redo.', 'Redone.'));
+    };
+    const changed = (o = read()) => Object.keys(o).filter((k) => o[k] !== saved[k]);
+    const paintState = () => {
+      if (!$('#stf')) return;
+      const ch = changed();
+      $('#sUndo').disabled = H.at <= 0; $('#sRedo').disabled = H.at >= H.list.length - 1;
+      $('#sState').innerHTML = ch.length ? `<b>${L(`${ch.length} pagbabago`, `${ch.length} change${ch.length > 1 ? 's' : ''}`)}</b> ${L('na hindi pa naka-save', 'not saved yet')}` : `✓ ${L('Naka-save lahat', 'All saved')}`;
+      $('#stf').classList.toggle('dirty', !!ch.length);
+      SECS.forEach((s) => {
+        const n = ch.filter((k) => s.keys.includes(k)).length;
+        const dot = $(`#sTabs [data-sec="${s.k}"] .dirty-dot`);
+        dot.hidden = !n; dot.textContent = n || '';
+        dot.title = L(`${n} hindi pa naka-save`, `${n} not saved`);
+      });
+      $$('.sf', el).forEach((f) => f.classList.toggle('changed', ch.includes(f.dataset.sk)));
+    };
+    // A price under PayMongo's ₱20 cannot be paid online.
+    const paintWarn = () => {
+      const w = $('#priceWarn'); if (!w) return;
+      const low = [['day_on', 'price_day', L('Isang araw', 'Daily')], ['week_on', 'price_week', L('Lingguhan', 'Weekly')], ['', 'price', L('Buwanan', 'Monthly')], ['year_on', 'price_year', L('Taunan', 'Yearly')]]
+        .filter(([on, k]) => { const v = Number($('#' + SET_FIELDS[k][0]).value); return (!on || $('#' + SET_FIELDS[on][0]).checked) && v > 0 && v < 20; }).map((x) => x[2]);
+      w.innerHTML = low.length && $('#payon').checked ? `<div class="notice warn" style="margin-top:10px">⚠️ ${L(`Mas mababa sa ₱20 ang ${low.join(', ')}: hindi ito mababayaran online (PayMongo). Manual na bayad lang ang gagana.`, `${low.join(', ')} is under ₱20: it cannot be paid online (PayMongo). Only manual payment works.`)}</div>` : '';
+    };
+
+    /* ---- payment accounts ---- */
     const paintPm = () => {
       if (!$('#pmList')) return; // the admin left this tab
       $('#pmList').innerHTML = methods.map((m) => ({ ...m, has_qr: m.has_qr && !Undo.waiting('qr:' + m.id) })).map(pmCard).join('');
-      // Remove an account from the form; Undo puts it back in the same place (it is saved only with "Save settings").
+      // Remove an account from the form (Undo at the bottom puts it back; it is gone for good only after Save).
       $$('#pmList [data-pmdel]').forEach((b) => (b.onclick = () => {
-        const all = collect(), at = all.findIndex((m) => m.id === b.closest('.pm-card').dataset.id), gone = all[at];
-        methods = all.filter((m) => m !== gone); paintPm();
-        Undo.show({ msg: L(`Inalis ang ${typeName(gone)}. I-save ang settings para tuluyang maalis.`, `${typeName(gone)} removed. Save the settings to remove it for good.`),
-          revert: () => { if (!$('#pmList')) return; methods = collect(); methods.splice(Math.min(at, methods.length), 0, gone); paintPm(); } });
+        const gone = collect().find((m) => m.id === b.closest('.pm-card').dataset.id);
+        methods = collect().filter((m) => m.id !== gone.id); paintPm(); commit();
+        toast(L(`Inalis ang ${typeName(gone)}. Pindutin ang ↶ Undo para ibalik, o I-save para tuluyang maalis.`, `${typeName(gone)} removed. Tap ↶ Undo to bring it back, or Save to remove it for good.`));
       }));
       $$('#pmList [data-qrup]').forEach((inp) => (inp.onchange = async () => {
         const id = inp.closest('.pm-card').dataset.id, file = inp.files[0];
         if (!file) return;
         try { await api('PUT', '/api/admin/pay-qr/' + id, { data: await readImage(file, 800, true) }); methods = collect().map((m) => (m.id === id ? { ...m, has_qr: true } : m)); paintPm(); toast(L('Na-upload ang QR.', 'QR uploaded.')); } catch (e) { toast(e.message); }
       }));
-      // Remove QR: gone from the form at once, removed on the server after Undo's 10 seconds.
+      // Remove QR: gone from the form at once, removed on the server after the 10-second Undo bar.
       $$('#pmList [data-qrdel]').forEach((b) => (b.onclick = () => {
         const id = b.closest('.pm-card').dataset.id;
         methods = collect().map((m) => (m.id === id ? { ...m, has_qr: false } : m)); paintPm();
@@ -3828,6 +3947,8 @@
       }));
     };
     paintPm();
+    saved = fromServer(st);
+    H.list = [read()]; H.at = 0;
     $('#pmList').addEventListener('input', (e) => {
       const i = e.target;
       if (i.dataset.k !== 'bank') return;
@@ -3837,35 +3958,117 @@
     $('#pmAdd').onclick = () => {
       const type = $('#pmType').value, name = TYPES.find(([k]) => k === type)[1];
       methods = [...collect(), { id: type + '-' + Date.now().toString(36), type, name: type === 'other' ? '' : name, account_name: '', account: '', bank: '', note: '', on: true }];
-      paintPm();
+      paintPm(); commit();
       const last = $$('#pmList .pm-card').pop(); last.scrollIntoView({ block: 'center' }); $('input[type=text]', last).focus();
     };
-    $('#stf').onsubmit = async (e) => {
-      e.preventDefault();
-      const btn = $('button[type=submit]', e.target); btn.disabled = true;
-      try {
-        const v = (id) => $('#' + id).value, on = (id) => ($('#' + id).checked ? '1' : '0');
-        const saved = await api('PUT', '/api/admin/settings', {
-          premium_required: on('preq'), price: v('price'), plan_days: v('days'), year_on: on('yearon'), price_year: v('priceYear'), plan_year_days: v('daysYear'),
-          day_on: on('dayon'), price_day: v('priceDay'), plan_day_days: v('daysDay'), week_on: on('weekon'), price_week: v('priceWeek'), plan_week_days: v('daysWeek'), capacity_users: v('capUsers'), pay_note: v('pnote'), biz_name: v('bizName').trim(), biz_contact: v('bizContact').trim(),
-          pay_online_on: on('payon'), pay_manual_on: on('payman'), pay_methods: collect(),
-          free_practice_daily: v('fdaily'), free_practice_items: v('fitems'), free_mock_daily: v('fmock'), free_sets: v('fsets'),
-          ads_on: on('adson'), adsense_client: v('asc').trim(), adsense_slot: v('ass').trim(), admob_banner: v('amb').trim(),
-          exam_privacy_strip: on('stripon'),
-          bulk_on: on('bulkon'), bulk_min: v('bmin'), bulk_max: v('bmax'), bulk_seat_days: v('bdays'), bulk_tiers: v('btiers').trim(),
+
+    /* ---- groups and search ---- */
+    const showSec = (k) => {
+      cur = k; store.set('cse-adm-sec', k);
+      $$('#sTabs [data-sec]').forEach((b) => { const on = b.dataset.sec === k; b.classList.toggle('active', on); b.setAttribute('aria-selected', String(on)); });
+      filter();
+    };
+    const norm = (s) => String(s).toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+    const filter = () => {
+      const q = norm($('#sq').value.trim());
+      const words = q.split(/\s+/).filter(Boolean);
+      let any = false;
+      $$('.set-sec', el).forEach((sec) => {
+        const s = SECS.find((x) => x.k === sec.dataset.sec);
+        if (!words.length) { sec.hidden = s.k !== cur; $$('.sf, .sf-group', sec).forEach((f) => (f.hidden = false)); return; }
+        const secHit = words.every((w) => norm(s.t + ' ' + s.kw).includes(w));
+        let hits = 0;
+        $$('.sf', sec).forEach((f) => {
+          const ok = secHit || words.every((w) => norm(f.textContent + ' ' + f.dataset.kw + ' ' + $$('input', f).map((i) => i.placeholder).join(' ')).includes(w));
+          f.hidden = !ok; if (ok) hits++;
         });
-        methods = saved.pay_methods; paintPm();
+        $$('.sf-group', sec).forEach((g) => (g.hidden = !$$('.sf', g).some((f) => !f.hidden)));
+        sec.hidden = !hits; if (hits) any = true;
+      });
+      $('#sTabs').classList.toggle('searching', !!words.length);
+      $('#sNone').hidden = !words.length || any;
+    };
+    $$('#sTabs [data-sec]').forEach((b) => (b.onclick = () => { $('#sq').value = ''; showSec(b.dataset.sec); }));
+    $('#sq').oninput = filter;
+    $('#sq').onkeydown = (e) => { if (e.key === 'Escape' && $('#sq').value) { e.stopPropagation(); $('#sq').value = ''; filter(); } };
+
+    /* ---- every change goes in the Undo list (typing: after a short pause) ---- */
+    const f = $('#stf');
+    f.addEventListener('input', (e) => {
+      if (e.target.type === 'file') return;
+      clearTimeout(H.t);
+      if (e.target.type === 'checkbox' || e.target.tagName === 'SELECT') commit(); else { H.t = setTimeout(commit, 500); paintState(); }
+      paintWarn();
+    });
+    f.addEventListener('change', (e) => { if (e.target.type !== 'file' && e.target.id !== 'pmType') commit(); });
+
+    /* ---- Reset ---- */
+    const DEFS = () => { const o = {}; for (const k of Object.keys(SET_FIELDS)) o[k] = DEF[k] === undefined ? saved[k] : String(DEF[k]); return o; };
+    const resetKeys = async (keys, title) => {
+      const d = DEFS(), now = read();
+      const diff = keys.filter((k) => k !== 'pay_methods' && d[k] !== now[k]);
+      if (!diff.length) return toast(L('Nasa default na ito.', 'This is already the default.'));
+      const ok = await confirmBox(title, L(`Ibabalik sa default ang <b>${diff.length}</b> na setting. Hindi pa ito naka-save: makikita mo muna, at pwede itong i-undo. Pindutin ang <b>I-save</b> para gumana. Hindi aalisin ang mga account ng bayad (GCash, Maya…).`,
+        `<b>${diff.length}</b> setting(s) go back to default. It is not saved yet: you can look first, and you can undo it. Tap <b>Save</b> to make it work. Payment accounts (GCash, Maya…) are not removed.`), L('Ibalik sa default', 'Reset to default'), true);
+      if (!ok) return;
+      write(Object.fromEntries(diff.map((k) => [k, d[k]]))); commit();
+      toast(L('Naibalik sa default. I-save para gumana.', 'Back to default. Save to make it work.'));
+    };
+    $$('[data-reset]', el).forEach((b) => (b.onclick = () => { const s = SECS.find((x) => x.k === b.dataset.reset); resetKeys(s.keys, L(`Ibalik sa default ang ${s.t}?`, `Reset ${s.t} to default?`)); }));
+    $('#sReset').onclick = () => {
+      const s = SECS.find((x) => x.k === cur), n = changed().length;
+      modal(`<h2 style="margin-top:0">↺ Reset</h2><p class="muted">${L('Ano ang ibabalik? Pwede itong i-undo, at walang mababago hangga\'t hindi pinipindot ang I-save.', 'What should go back? You can undo it, and nothing changes until you tap Save.')}</p>
+        <div class="stack">
+          <button type="button" class="btn secondary block" data-r="saved" ${n ? '' : 'disabled'}>${L(`Itapon ang ${n} pagbabagong hindi pa naka-save`, `Discard ${n} unsaved change${n === 1 ? '' : 's'}`)}</button>
+          <button type="button" class="btn secondary block" data-r="sec">${L(`Ibalik sa default: ${s.ic} ${s.t}`, `Default for: ${s.ic} ${s.t}`)}</button>
+          <button type="button" class="btn danger block" data-r="all">${L('Ibalik LAHAT sa default', 'Reset ALL to default')}</button>
+        </div><div class="row" style="justify-content:flex-end;margin-top:12px"><button class="btn ghost" data-x>${L('Bumalik', 'Back')}</button></div>`, (bg, close) => {
+        $('[data-x]', bg).onclick = close;
+        $('[data-r=saved]', bg).onclick = () => { close(); write(saved); commit(); toast(L('Ibinalik sa huling na-save.', 'Back to the last save.')); };
+        $('[data-r=sec]', bg).onclick = () => { close(); resetKeys(s.keys, L(`Ibalik sa default ang ${s.t}?`, `Reset ${s.t} to default?`)); };
+        $('[data-r=all]', bg).onclick = () => { close(); resetKeys(Object.keys(SET_FIELDS), L('Ibalik LAHAT ng settings sa default?', 'Reset ALL settings to default?')); };
+      });
+    };
+    $('#sUndo').onclick = () => step(-1);
+    $('#sRedo').onclick = () => step(1);
+
+    /* ---- keyboard: Ctrl/Cmd + Z, Shift + Z or Y, S, and "/" for search ---- */
+    const onKey = (e) => {
+      if (!f.isConnected) return document.removeEventListener('keydown', onKey);
+      if (document.querySelector('.modal-bg')) return;
+      const mod = e.ctrlKey || e.metaKey, k = e.key.toLowerCase();
+      if (mod && k === 'z') { e.preventDefault(); step(e.shiftKey ? 1 : -1); }
+      else if (mod && k === 'y') { e.preventDefault(); step(1); }
+      else if (mod && k === 's') { e.preventDefault(); f.requestSubmit ? f.requestSubmit() : f.onsubmit(new Event('submit')); }
+      else if (k === '/' && !e.target.closest('input, textarea, select')) { e.preventDefault(); $('#sq').focus(); }
+    };
+    document.addEventListener('keydown', onKey);
+    // Leaving the page (closing the tab) with changes not saved asks first.
+    const onLeave = (e) => { if (!f.isConnected) return removeEventListener('beforeunload', onLeave); if (changed().length) { e.preventDefault(); e.returnValue = ''; } };
+    addEventListener('beforeunload', onLeave);
+
+    /* ---- Save ---- */
+    f.onsubmit = async (e) => {
+      e.preventDefault();
+      commit();
+      const btn = $('#sSave'); btn.disabled = true;
+      try {
+        const o = read();
+        const body = { ...o, pay_methods: collect() };
+        const back = await api('PUT', '/api/admin/settings', body);
+        st.defaults = back.defaults || DEF;
+        methods = back.pay_methods; paintPm();
+        saved = fromServer(back);
+        write(saved); // the server may have fixed a number (kept in range)
+        const fixed = Object.keys(SET_FIELDS).filter((k) => o[k] !== saved[k] && SET_FIELDS[k][1] !== 'trim');
+        commit();
         await refreshMe().catch(() => {});
-        const old = before; before = snap(saved);
-        Undo.show({ msg: L('Na-save ang settings.', 'Settings saved.'), undo: async () => {
-          const back = await api('PUT', '/api/admin/settings', old);
-          before = snap(back);
-          await refreshMe().catch(() => {});
-          if (el.isConnected) await admSettings(el);
-        }, undone: L('Naibalik ang dating settings.', 'The earlier settings are back.') });
+        toast(fixed.length ? L('Na-save. May numerong inayos para nasa tamang saklaw.', 'Saved. Some numbers were put back in range.') : L('Na-save ang settings. ↶ Undo kung may mali.', 'Settings saved. ↶ Undo if something is wrong.'));
       } catch (err) { toast(err.message); }
       btn.disabled = false;
+      paintState();
     };
+    filter(); paintWarn(); paintState(); foldSync();
   }
   /* Admin → Audit log: who logged in (and from what device and IP), failed logins, and every admin change.
      Alerts: a login from a new place and a new device, many wrong passwords, and making someone admin. */

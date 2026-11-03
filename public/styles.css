@@ -435,6 +435,29 @@ body.touring { overflow: hidden; }
 /* Admin → Settings: each part opens and closes; the account type dropdown sits next to "+ Add an account". */
 .adm-settings .fold > summary h3 { font-size: 1rem; }
 .pm-add { flex-wrap: nowrap; align-items: stretch; margin-top: 10px; }
+/* Admin → Settings: groups, search, Undo / Redo / Reset / Save bar */
+.set-top { margin: 0 0 12px; }
+.set-top input[type=search] { margin: 0 0 8px; }
+.set-tabs { margin: 0; }
+.set-tabs button { flex: 0 0 auto; }
+@media (min-width: 721px) { .set-tabs { flex-wrap: wrap; overflow: visible; } }
+.set-tabs.searching button.active { background: var(--card); color: inherit; border-color: var(--line); }
+.set-tabs .dirty-dot { display: inline-grid; place-items: center; min-width: 18px; height: 18px; margin-left: 6px; padding: 0 5px; border-radius: 99px; background: var(--accent); color: #1b1b1b; font-size: 0.6875rem; font-weight: 800; }
+.set-tabs .dirty-dot[hidden] { display: none; }
+.sec-head { align-items: center; margin-bottom: 4px; }
+.sec-head h3 { margin: 0; font-size: 1.0625rem; }
+.sf-group { border-top: 1px solid var(--line); margin-top: 12px; padding-top: 10px; }
+.sf-group h4 { margin: 0 0 4px; }
+.sf[hidden], .sf-group[hidden] { display: none; }
+.sf.changed { box-shadow: inset 3px 0 0 var(--accent); padding-left: 8px; border-radius: 4px; }
+.set-bar { position: sticky; bottom: 12px; z-index: 15; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; padding: 10px 12px; border-radius: 14px; border: 1px solid var(--line); background: var(--card); box-shadow: 0 6px 24px rgba(16, 24, 40, .16); }
+.set-bar .set-state { flex: 1 1 140px; min-width: 0; }
+.adm-settings.dirty .set-bar { border-color: var(--accent); }
+.set-bar .btn[disabled] { opacity: .45; }
+.notice.warn { background: var(--warn-soft); }
+@media (max-width: 720px) { .set-bar { bottom: calc(72px + env(safe-area-inset-bottom)); padding: 8px 10px; } .set-bar .set-state { flex-basis: 100%; } .set-bar #sSave { margin-left: auto; } }
+body.has-undo .set-bar { margin-bottom: 64px; }
+.dd-list .dd-head { padding: 10px 12px 2px; font-size: 0.75rem; font-weight: 800; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
 .pm-add select { flex: 1; min-width: 0; }
 .pm-add .btn { flex: 0 0 auto; }
 

@@ -438,6 +438,14 @@ const lastCode = (to) => {
   r = await Boss('POST', '/api/promo/check', { code: 'GROUP10', plan: 'day' });
   assert.equal(r.data.days, 30, 'a plan that is off falls back to monthly');
   await A('PUT', '/api/admin/settings', { day_on: '1', price_week: '49', plan_week_days: '7' });
+  // 🏷️ A 70% code on the daily plan: ₱6 (manual), ₱20 online (PayMongo's smallest); ₱99 → ₱29.70
+  await A('POST', '/api/admin/promos', { code: '70OFF', kind: 'percent', value: 70 });
+  r = await Boss('POST', '/api/promo/check', { code: '70OFF', plan: 'day' });
+  assert.deepEqual([r.data.price, r.data.discount, r.data.amount, r.data.online], [20, 14, 6, 20], '70% off the daily plan');
+  await A('PUT', '/api/admin/settings', { price_day: '99' });
+  r = await Boss('POST', '/api/promo/check', { code: '70OFF', plan: 'day' });
+  assert.deepEqual([r.data.amount, r.data.online], [29.7, 29.7], '70% off a ₱99 daily plan');
+  await A('PUT', '/api/admin/settings', { price_day: '20' });
   // 🏷️📅 A promo code for some plans only (Admin → Promo codes → For which plans)
   r = await A('POST', '/api/admin/promos', { code: 'SHORT5', kind: 'fixed', value: 5, plans: ['day', 'week', 'nope'] });
   assert.equal(r.data.plans, 'day,week', 'only real plans kept');
@@ -616,6 +624,8 @@ const lastCode = (to) => {
   r = await U('GET', '/api/me');
   assert.equal(r.data.config.watermark, true, 'watermark on by default'); assert.equal(r.data.config.ads.on, true);
   r = await A('GET', '/api/admin/settings');
+  assert.equal(r.data.defaults.price_day, '20', 'the first values come with the settings (for Reset)');
+  assert.equal(r.data.defaults.ads_on, '1');
   // Number settings: a wrong value keeps the old one, and values are kept in range
   const price0 = r.data.price;
   r = await A('PUT', '/api/admin/settings', { price: 'abc', plan_days: '-5', free_practice_items: '2.6' });

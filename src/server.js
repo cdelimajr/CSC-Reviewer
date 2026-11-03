@@ -1384,7 +1384,7 @@ app.patch('/api/admin/users/:id', admin, wrap(async (req, res) => {
     if (req.body.disabled) { await db.run('DELETE FROM sessions WHERE user_id = ?', id); liveEnd(id, 'ended'); }
   }
   if (req.body.premium_days !== undefined) {
-    const days = Number(req.body.premium_days);
+    const days = Math.min(3650, Math.round(Number(req.body.premium_days) || 0)); // at most 10 years at a time
     const u = await db.get('SELECT premium_until FROM users WHERE id = ?', id);
     const until = days > 0 ? Math.max(Date.now(), u?.premium_until || 0) + days * 864e5 : 0;
     await db.run('UPDATE users SET premium_until = ? WHERE id = ?', until, id);
@@ -1420,7 +1420,7 @@ app.delete('/api/admin/users/:id', admin, wrap(async (req, res) => {
   if (id === req.user.id) return res.status(400).json({ error: 'Hindi mo mabubura ang sarili mong account.' });
   const gone = await db.get('SELECT email FROM users WHERE id = ?', id);
   await db.batch([['DELETE FROM payments WHERE user_id = ?', [id]], ['DELETE FROM attempts WHERE user_id = ?', [id]], ['DELETE FROM sessions WHERE user_id = ?', [id]], ['DELETE FROM devices WHERE user_id = ?', [id]],
-    ['DELETE FROM user_prefs WHERE user_id = ?', [id]], ['DELETE FROM users WHERE id = ?', [id]]]);
+    ['DELETE FROM user_prefs WHERE user_id = ?', [id]], ['DELETE FROM email_codes WHERE email = ?', [gone ? gone.email : '']], ['DELETE FROM users WHERE id = ?', [id]]]);
   liveEnd(id, 'ended');
   // The deleted person's own log entries go too (right to erasure); this entry keeps only the account number.
   await db.run('DELETE FROM audit_log WHERE user_id = ? AND actor_id = ?', id, id);
@@ -1459,7 +1459,8 @@ app.post('/api/admin/payments/:id', admin, wrap(async (req, res) => {
   let until = u?.premium_until || 0;
   const stmts = [['UPDATE payments SET status = ?, note = ?, decided_at = ? WHERE id = ?', [approve ? 'approved' : 'rejected', note, Date.now(), p.id]]];
   if (approve && u) {
-    const days = Number(req.body.days) || Number(p.days) || Number((await getSettings()).plan_days) || 30; // the plan the user chose (daily, weekly, monthly or yearly)
+    // The plan the user chose (daily, weekly, monthly or yearly); a number of days from the admin is kept to 1 to 3650.
+    const days = Math.min(3650, Math.max(1, Math.round(Number(req.body.days) || Number(p.days) || Number((await getSettings()).plan_days) || 30)));
     const from = Math.max(Date.now(), until);
     until = from + days * 864e5;
     stmts.push(['UPDATE users SET premium_until = ? WHERE id = ?', [until, u.id]]);
@@ -1472,7 +1473,8 @@ app.post('/api/admin/payments/:id', admin, wrap(async (req, res) => {
   res.json({ ok: true, until });
 }));
 
-const adminSettings = async () => { const st = await getSettings(); return { ...st, pay_methods: payMethods(st), online_ready: paymongo.enabled }; };
+// defaults: the first values of every setting, for "Reset" in Admin → Settings (the admin still taps Save).
+const adminSettings = async () => { const st = await getSettings(); return { ...st, pay_methods: payMethods(st), online_ready: paymongo.enabled, defaults: SETTING_DEFAULTS }; };
 app.get('/api/admin/settings', admin, wrap(async (req, res) => res.json(await adminSettings())));
 app.put('/api/admin/settings', admin, wrap(async (req, res) => {
   const body = { ...req.body };
