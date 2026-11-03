@@ -3,7 +3,7 @@
   'use strict';
   const $app = document.getElementById('app');
   const LETTERS = ['A', 'B', 'C', 'D'];
-  const APP_VERSION = '1.31.0'; // keep in step with package.json and docs/DOKUMENTASYON.md
+  const APP_VERSION = '1.32.0'; // keep in step with package.json and docs/DOKUMENTASYON.md
   const S = { user: null, meta: null, exam: null, timer: null, saveT: null };
 
   /* ---------------- helpers ---------------- */
@@ -138,6 +138,8 @@
     'Hindi tamang email.': 'Not a valid email.',
     'Walang account na may ganitong email. Pa-register muna ang bibili.': 'No account has this email. Ask the buyer to register first.',
     'Masyadong maraming email na naipadala. Maghintay muna.': 'Too many emails sent. Please wait.',
+    'Hindi pwede ang 100% na libreng promo code sa Group Premium. Gamitin ito sa sarili mong Premium.': 'A 100%-off promo code cannot be used for Group Premium. Use it for your own Premium.',
+    'Masyadong maraming request. Maghintay ng isang minuto.': 'Too many requests. Please wait a minute.',
   };
   const serverText = (m) => {
     if (lang !== 'en' || !m) return m;
@@ -290,7 +292,7 @@
      and no "Loading…". Free uses the same saved copies, just without fetching ahead. */
   const PREFETCH = {
     home: () => ['/api/attempts', '/api/stats'], history: () => ['/api/attempts', '/api/stats'],
-    sets: () => ['/api/sets?mode=' + myLevel()],
+    sets: () => ['/api/sets?mode=' + myLevel()], premium: () => ['/api/premium'],
   };
   const warmAt = {};
   function prefetch(names) {
@@ -802,6 +804,10 @@
   const ZMIN = 0.8, ZMAX = 1.6;
   const look = () => store.get('cse-look');
   const lookOn = () => !!S.user || !!look();
+  /* Free plan: a plain white screen (no Light / Sepia / Dark) and no zoom in or out. Colors, zoom and text size
+     are part of Premium's "Settings and more". A saved Premium look comes back when Premium is active again. */
+  const plainLook = () => !!S.user && isFree();
+  const zoomOn = () => lookOn() && !plainLook();
   const darkMQ = window.matchMedia ? matchMedia('(prefers-color-scheme: dark)') : null;
   let zoomNow = 1;
   function setZoom(z) {
@@ -815,19 +821,19 @@
     return z;
   }
   function applyLook() {
-    const on = lookOn();
+    const on = lookOn(), plain = plainLook();
     let L = look();
     if (on && S.user && !L) { L = { theme: 'auto', zoom: 1 }; store.set('cse-look', L); }
     const root = document.documentElement;
-    const theme = on ? (L.theme === 'auto' ? (darkMQ && darkMQ.matches ? 'dark' : 'comfort') : L.theme) : '';
+    const theme = plain ? 'plain' : on ? (L.theme === 'auto' ? (darkMQ && darkMQ.matches ? 'dark' : 'comfort') : L.theme) : '';
     if ((root.dataset.theme || '') !== theme) {
       if (theme) root.dataset.theme = theme; else delete root.dataset.theme;
       const meta = document.querySelector('meta[name=theme-color]');
       if (meta) meta.content = theme ? getComputedStyle(root).getPropertyValue('--bar').trim() || '#1e40af' : '#1e40af';
     }
-    setZoom(on ? Number(L.zoom) || 1 : 1);
+    setZoom(on && !plain ? Number(L.zoom) || 1 : 1);
     const ax = a11y();
-    root.style.setProperty('--fs', String(A11Y_SIZES.some(([v]) => v === Number(ax.fs)) ? Number(ax.fs) : 1));
+    root.style.setProperty('--fs', String(!plain && A11Y_SIZES.some(([v]) => v === Number(ax.fs)) ? Number(ax.fs) : 1));
     if (ax.contrast) root.dataset.contrast = 'more'; else delete root.dataset.contrast;
     if (ax.motion) root.dataset.motion = 'reduce'; else delete root.dataset.motion;
   }
@@ -836,18 +842,21 @@
     let start = null, want = 1, raf = 0;
     const dist = (t) => Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY);
     const paint = () => { raf = 0; setZoom(want); };
-    const save = () => { const L = look(); if (L && L.zoom !== zoomNow) { store.set('cse-look', { ...L, zoom: zoomNow }); Prefs.touched(); toast(`Zoom ${Math.round(zoomNow * 100)}%`); } };
+    const save = () => { const L = look(); if (zoomOn() && L && L.zoom !== zoomNow) { store.set('cse-look', { ...L, zoom: zoomNow }); Prefs.touched(); toast(`Zoom ${Math.round(zoomNow * 100)}%`); } };
     document.addEventListener('touchstart', (e) => {
       if (e.touches.length === 2 && lookOn()) start = { d: dist(e.touches) || 1, z: zoomNow };
     }, { passive: true });
     document.addEventListener('touchmove', (e) => {
       if (!start || e.touches.length !== 2) return;
       e.preventDefault(); // our zoom instead of the browser's
+      if (!zoomOn()) return; // Free plan: no zoom at all
       want = start.z * (dist(e.touches) / start.d);
       if (!raf) raf = requestAnimationFrame(paint);
     }, { passive: false });
     document.addEventListener('touchend', (e) => { if (start && e.touches.length < 2) { start = null; save(); } }, { passive: true });
     document.addEventListener('touchcancel', () => { if (start) { start = null; save(); } }, { passive: true });
+    // Free plan: the browser's own zoom keys (Ctrl/Cmd + plus, minus or 0) do nothing either.
+    document.addEventListener('keydown', (e) => { if ((e.ctrlKey || e.metaKey) && ['+', '-', '=', '0', '_'].includes(e.key) && plainLook()) e.preventDefault(); });
     // Safari's own pinch gesture
     document.addEventListener('gesturestart', (e) => { if (lookOn()) e.preventDefault(); });
     // Computer: Ctrl + mouse wheel, or pinching on the touchpad (sent as Ctrl + wheel).
@@ -855,6 +864,7 @@
     window.addEventListener('wheel', (e) => {
       if (!e.ctrlKey || !lookOn()) return;
       e.preventDefault();
+      if (!zoomOn()) return; // Free plan: no zoom
       want = zoomNow * Math.exp(-e.deltaY * (e.deltaMode ? 0.05 : 0.0025));
       if (!raf) raf = requestAnimationFrame(paint);
       clearTimeout(wheelT); wheelT = setTimeout(save, 400);
@@ -1408,9 +1418,9 @@
     go('#/');
     setTimeout(offerBio, 700);
   }
-  // After a password or code login: offer fingerprint/face login once (Premium, on devices that have it).
+  // After a password or code login: offer fingerprint/face login once (every user, Free or Premium, on devices that have it).
   async function offerBio() {
-    if (!S.user || !S.premium || S.exam || Tour.active() || Tour.due() || Bio.saved() || store.get('cse-bio-asked') || (S.config.verify && !S.user.email_verified)) return;
+    if (!S.user || S.exam || Tour.active() || Tour.due() || Bio.saved() || store.get('cse-bio-asked') || (S.config.verify && !S.user.email_verified)) return;
     const ms = await Bio.methods();
     if (!ms.length) return;
     store.set('cse-bio-asked', 1);
@@ -1590,14 +1600,21 @@
     await swr('/api/sets?mode=' + mode, paint, () => null);
   }
 
+  /* Premium page: opens at once with the copy saved on this device, then updates when the server answers
+     (and Premium users fetch it ahead of time, see PREFETCH). */
   async function viewPremium() {
-    shell('account', `<div class="empty">${L('Naglo-load…', 'Loading…')}</div>`);
-    const p = await api('GET', '/api/premium');
+    await swr('/api/premium', (p) => paintPremium(p));
+  }
+  const PLAN_NAME = (pl) => (pl.id === 'year' ? L('Taunan', 'Yearly') : L('Buwanan', 'Monthly'));
+  function paintPremium(p) {
     const until = p.until > Date.now() ? new Date(p.until).toLocaleDateString('en-PH', { year: 'numeric', month: 'long', day: 'numeric' }) : '';
     const pending = p.payments.find((x) => x.status === 'pending');
     const manual = p.manual && p.methods.length; // manual payment: on in Admin → Settings, with at least one account
     const statusPill = { pending: `<span class="pill warn">${L('Hinihintay', 'Waiting')}</span>`, checkout: `<span class="pill warn">${L('Hindi pa bayad', 'Not paid yet')}</span>`, approved: `<span class="pill ok">${L('Bayad na', 'Paid')}</span>`, rejected: `<span class="pill bad">${L('Hindi approved', 'Not approved')}</span>`, expired: '<span class="pill">Expired</span>' };
     if (S.user.role !== 'admin' && p.active && p.until !== S.user.premium_until) refreshMe().catch(() => {}); // Premium just started or was extended
+    // Monthly and yearly plans (the server works out the price again on every payment).
+    const plans = p.plans && p.plans.length ? p.plans : [{ id: 'month', price: Number(p.price), days: p.plan_days }];
+    let plan = plans.find((x) => x.id === store.get('cse-plan')) || plans[0];
     shell('account', `
       <h1>Premium</h1>
       ${premiumNotice()}
@@ -1613,13 +1630,16 @@
             <tr><td>Ads</td><td>${L('Mayroon', 'Yes')}</td><td>${L('Wala', 'None')}</td></tr>
             <tr><td>${L('Offline (walang internet)', 'Offline (no internet)')}</td><td>${L('Hindi', 'No')}</td><td>${L('Oo, buong app', 'Yes, the whole app')}</td></tr>
             <tr><td>${L('Bilis', 'Speed')}</td><td>${L('Hinihintay ang server', 'Waits for the server')}</td><td>${L('Agad-agad (naka-save sa device)', 'Instant (saved on the device)')}</td></tr>
-            <tr><td>Login</td><td>${L('Password o code sa email', 'Password or email code')}</td><td>${L('Pati fingerprint / face / Windows Hello', 'Also fingerprint / face / Windows Hello')}</td></tr></table>`}
+            <tr><td>${L('Itsura', 'Look')}</td><td>${L('Puting background, walang zoom', 'White background, no zoom')}</td><td>${L('Maliwanag, Sepia, Madilim, zoom at laki ng letra', 'Light, Sepia, Dark, zoom and text size')}</td></tr>
+            <tr><td>${L('Mabilis na login', 'Quick login')}</td><td>${L('Oo (fingerprint / face / Windows Hello)', 'Yes (fingerprint / face / Windows Hello)')}</td><td>${L('Oo, pati offline', 'Yes, also offline')}</td></tr></table>`}
       </div>
       ${p.paid ? `<div class="card" style="margin-top:12px" id="appDl"><h3>📲 ${L('I-download ang app', 'Download the app')}</h3>
         <p class="muted small" style="margin:0">${L('Naglo-load…', 'Loading…')}</p></div>` : ''}
       ${S.user.role === 'admin' ? '' : `<div class="card" style="margin-top:12px">
         <h3>${p.active && until ? L('I-extend ang Premium', 'Extend Premium') : L('Kumuha ng Premium', 'Get Premium')}</h3>
-        <p style="margin:6px 0" id="priceTag"><span class="pill warn" style="font-size:15px">${L(`₱${esc(p.price)} para sa ${p.plan_days} araw`, `₱${esc(p.price)} for ${p.plan_days} days`)}</span></p>
+        ${plans.length > 1 ? `<div class="seg plan-seg" id="planSel" role="group" aria-label="${L('Pumili ng plan', 'Choose a plan')}">${plans.map((x) => `<button type="button" data-plan="${x.id}" class="${x.id === plan.id ? 'active' : ''}" aria-pressed="${x.id === plan.id}">
+          <b>${PLAN_NAME(x)}</b><span class="small">${esc(pesos(x.price))} / ${x.days} ${L('araw', 'days')}</span>${x.save ? `<span class="pill ok">${L('Tipid', 'Save')} ${x.save}%</span>` : ''}</button>`).join('')}</div>` : ''}
+        <p style="margin:6px 0" id="priceTag"></p>
         ${p.promo || p.online || manual ? `<form id="promoF" class="promo-box" autocomplete="off"><label for="promoIn">${L('May promo o group code ka?', 'Have a promo or group code?')}</label>
           <div class="row" style="flex-wrap:nowrap"><input type="text" id="promoIn" maxlength="30" placeholder="${L('hal.', 'e.g.')} REVIEW20 / GRP-XXXX-XXXX" style="text-transform:uppercase;margin:0" autocapitalize="characters" spellcheck="false">
           <button class="btn secondary" type="submit" id="promoGo">${L('Gamitin', 'Apply')}</button></div>
@@ -1642,7 +1662,7 @@
           <div class="err" id="err"></div><button class="btn block ${p.online ? 'secondary' : ''}" type="submit" disabled>${L('Ipadala', 'Send')}</button></form>`}`, { card: false, stay: true, cls: 'pay-fold', open: !p.online }) : ''}
         ${!p.online && !manual ? `<div class="notice">${L('Wala pang bukas na paraan ng bayad. Makipag-ugnayan sa admin.', 'No payment method is open yet. Please contact the admin.')}</div>` : ''}
       </div>`}
-      ${S.user.role !== 'admin' && p.bulk ? groupBuyCard(p.bulk) : ''}
+      ${S.user.role !== 'admin' && p.bulk ? groupBuyCard(p.bulk, plans) : ''}
       ${p.groups ? fold('pay-groups', `<h2>👥 ${L('Mga binili mong Group Premium', 'Group Premium you bought')}</h2><span class="pill">${p.groups}</span>`, `<div id="grpList"><p class="muted small">${L('Naglo-load…', 'Loading…')}</p></div>`, { card: false, stay: true }) : ''}
       ${p.payments.length ? fold('pay-history', `<h2>${L('Mga bayad mo', 'Your payments')}</h2><span class="pill">${p.payments.length}</span>`, `<div class="list">${p.payments.map((x) => `<div class="list-item"><div class="grow"><b>₱${esc(x.amount)}</b> · ${esc(x.method)}${x.provider && x.provider !== 'manual' ? '' : ' · ref ' + esc(x.reference)}${x.promo_code ? ` · 🏷️ ${esc(x.promo_code)}` : ''}${x.bulk_id && x.provider !== 'bulk' ? ` · 👥 Group Premium` : ''}
         <div class="muted small">${fmtDate(x.created_at)}${x.note ? ' · ' + esc(x.note) : ''}</div></div>${statusPill[x.status] || ''}${x.status === 'approved' ? `<button type="button" class="btn ghost small" data-rc="${x.id}" aria-label="${L('Resibo', 'Receipt')} ₱${esc(x.amount)}">🧾 ${L('Resibo', 'Receipt')}</button>` : ''}</div>`).join('')}</div>`, { card: false }) : ''}`);
@@ -1652,23 +1672,24 @@
     const nr = $('#nrOk');
     const nrPaint = () => $$('#paynow, #payf button[type=submit]').forEach((b) => (b.disabled = !(nr && nr.checked)));
     if (nr) { nr.onchange = nrPaint; nrPaint(); }
-    if (p.bulk && $('#gQty')) groupBuyWire(p.bulk);
+    if (p.bulk && $('#gQty')) groupBuyWire(p.bulk, plans);
     if (p.groups) paintGroups($('#grpList'));
     // PayMongo's checkout page. In the phone and desktop apps it opens in the browser.
     // One button; the user picks GCash, Maya, card, QR Ph, etc. on PayMongo's page.
     /* Promo code: the server checks it and works out the new price (and again on payment, so the price here
        is only for showing). A 100%-off code turns on Premium right away with "Use the code". */
     let promo = null;
-    const peso = (n) => '₱' + (Number.isInteger(+n) ? String(+n) : (+n).toFixed(2));
-    const priceNow = () => (promo ? peso(promo.amount) : '₱' + p.price);
+    const peso = pesos;
+    const priceNow = () => (promo ? peso(promo.amount) : peso(plan.price));
     const paintPromo = () => {
       const tag = $('#priceTag');
+      const per = L(`para sa ${plan.days} araw`, `for ${plan.days} days`) + (plans.length > 1 ? ` (${PLAN_NAME(plan)})` : '');
       if (tag) tag.innerHTML = promo
-        ? `<span class="pill warn" style="font-size:15px"><s class="muted">₱${esc(p.price)}</s> ${esc(priceNow())} ${L(`para sa ${p.plan_days} araw`, `for ${p.plan_days} days`)}</span> <span class="pill ok">${esc(promo.code)} −${esc(promo.kind === 'percent' ? promo.value + '%' : peso(promo.value))}</span>`
-        : `<span class="pill warn" style="font-size:15px">${L(`₱${esc(p.price)} para sa ${p.plan_days} araw`, `₱${esc(p.price)} for ${p.plan_days} days`)}</span>`;
+        ? `<span class="pill warn" style="font-size:15px"><s class="muted">${esc(peso(plan.price))}</s> ${esc(priceNow())} ${per}</span> <span class="pill ok">${esc(promo.code)} −${esc(promo.kind === 'percent' ? promo.value + '%' : peso(promo.value))}</span>`
+        : `<span class="pill warn" style="font-size:15px">${esc(peso(plan.price))} ${per}</span>`;
       const info = $('#promoInfo');
       if (info) info.innerHTML = !promo ? '' : promo.free
-        ? `<div class="notice" style="margin:8px 0">🎉 ${L(`Libre ang Premium (${p.plan_days} araw) sa code na ito. Walang babayaran.`, `Premium (${p.plan_days} days) is free with this code. Nothing to pay.`)}</div>
+        ? `<div class="notice" style="margin:8px 0">🎉 ${L(`Libre ang Premium (${plan.days} araw) sa code na ito. Walang babayaran.`, `Premium (${plan.days} days) is free with this code. Nothing to pay.`)}</div>
           <button class="btn block" type="button" id="promoFree">🎁 ${L('Gamitin ang code', 'Use the code')}</button>`
         : `<p class="small" style="margin:6px 0">✅ ${L(`Bawas na ang <b>${esc(peso(promo.discount))}</b>. Babayaran: <b>${esc(priceNow())}</b>.`, `<b>${esc(peso(promo.discount))}</b> off. You pay: <b>${esc(priceNow())}</b>.`)}
           ${promo.online > promo.amount ? `<br><span class="muted">${L(`Sa online na bayad, ₱${promo.online} ang pinakamababa (patakaran ng PayMongo).`, `Online payment is at least ₱${promo.online} (PayMongo's rule).`)}</span>` : ''}
@@ -1679,7 +1700,7 @@
       if ($('#promoFree')) $('#promoFree').onclick = async (e) => {
         const b = e.currentTarget; b.disabled = true;
         try {
-          await api('POST', '/api/promo/redeem', { code: promo.code });
+          await api('POST', '/api/promo/redeem', { code: promo.code, plan: plan.id });
           toast(L('Aktibo na ang Premium mo! 🎉', 'Your Premium is active! 🎉'));
           await refreshMe().catch(() => {}); viewPremium();
         } catch (err) { $('#promoErr').textContent = err.message; b.disabled = false; }
@@ -1691,7 +1712,7 @@
       $('#promoErr').textContent = '';
       if (!code) return;
       $('#promoGo').disabled = true;
-      try { promo = await api('POST', '/api/promo/check', { code }); } catch (err) { promo = null; $('#promoErr').textContent = err.message; }
+      try { promo = await api('POST', '/api/promo/check', { code, plan: plan.id }); } catch (err) { promo = null; $('#promoErr').textContent = err.message; }
       $('#promoGo').disabled = false;
       if (promo && promo.group) { const g = promo.code; promo = null; paintPromo(); pmInfo(); return groupRedeem(g); }
       paintPromo(); pmInfo();
@@ -1714,7 +1735,7 @@
     if (linkCode) { store.del('cse-redeem'); if ($('#promoIn')) { $('#promoIn').value = linkCode; $('#promoF').requestSubmit ? $('#promoF').requestSubmit() : $('#promoF').onsubmit(new Event('submit')); } }
     $$('#paynow').forEach((b) => (b.onclick = async () => {
       b.disabled = true;
-      try { const r = await api('POST', '/api/payments/checkout', { agree_no_refund: true, ...(promo ? { code: promo.code } : {}) }); location.href = r.url; } catch (err) { $('#perr').textContent = err.message; b.disabled = false; }
+      try { const r = await api('POST', '/api/payments/checkout', { agree_no_refund: true, plan: plan.id, ...(promo ? { code: promo.code } : {}) }); location.href = r.url; } catch (err) { $('#perr').textContent = err.message; b.disabled = false; }
     }));
     // Manual payment: the chosen account's details and QR code.
     let pm = p.methods[0], proof = null;
@@ -1729,7 +1750,17 @@
         ${pm.note ? `<p class="muted small">${esc(pm.note)}</p>` : ''}`;
     };
     $$('#pmSel [data-pm]').forEach((b) => (b.onclick = () => { pm = p.methods.find((m) => m.id === b.dataset.pm); $$('#pmSel button').forEach((x) => x.classList.toggle('active', x === b)); pmInfo(); }));
-    pmInfo();
+    pmInfo(); paintPromo();
+    // Monthly or yearly: the price and days change; a promo code is checked again for the new price.
+    $$('#planSel [data-plan]').forEach((b) => (b.onclick = async () => {
+      plan = plans.find((x) => x.id === b.dataset.plan) || plans[0];
+      store.set('cse-plan', plan.id);
+      $$('#planSel button').forEach((x) => { x.classList.toggle('active', x === b); x.setAttribute('aria-pressed', String(x === b)); });
+      if (promo && !promo.group) {
+        try { promo = await api('POST', '/api/promo/check', { code: promo.code, plan: plan.id }); } catch (err) { promo = null; $('#promoErr').textContent = err.message; }
+      }
+      paintPromo(); pmInfo();
+    }));
     if ($('#proof')) $('#proof').onchange = async (e) => {
       const file = e.target.files[0]; proof = null; $('#proofPrev').hidden = true;
       if (!file) return;
@@ -1739,7 +1770,7 @@
     if (f) f.onsubmit = async (e) => {
       e.preventDefault();
       const btn = $('button[type=submit]', f); btn.disabled = true;
-      try { await api('POST', '/api/payments', { method_id: pm && pm.id, reference: $('#ref').value, proof, agree_no_refund: true, ...(promo ? { code: promo.code } : {}) }); toast(L('Naipadala! Hintayin ang email ng confirmation.', 'Sent! Wait for the confirmation email.')); viewPremium(); } catch (err) { $('#err').textContent = err.message; btn.disabled = false; }
+      try { await api('POST', '/api/payments', { method_id: pm && pm.id, reference: $('#ref').value, proof, agree_no_refund: true, plan: plan.id, ...(promo ? { code: promo.code } : {}) }); toast(L('Naipadala! Hintayin ang email ng confirmation.', 'Sent! Wait for the confirmation email.')); viewPremium(); } catch (err) { $('#err').textContent = err.message; btn.disabled = false; }
     };
   }
 
@@ -1762,19 +1793,24 @@
 
   /* Group Premium: buy Premium for several people (a boss, office, school or review group), pay once, and get one
      code per person. The price here is only for showing; the server works it out again (src/bulk.js quote()). */
-  function groupQuote(b, qty) {
+  function groupQuote(b, qty, price = b.price) {
     const pct = b.tiers.reduce((p, t) => (qty >= t.min ? t.pct : p), 0);
-    const list = Math.round(b.price * qty * 100) / 100, discount = Math.round(list * pct) / 100, total = Math.round((list - discount) * 100) / 100;
+    const list = Math.round(price * qty * 100) / 100, discount = Math.round(list * pct) / 100, total = Math.round((list - discount) * 100) / 100;
     return { qty, pct, list, discount, total, each: Math.round(total / qty * 100) / 100, online: Math.max(b.min_online, total) };
   }
-  function groupBuyCard(b) {
+  function groupBuyCard(b, plans = []) {
     const start = Math.max(b.min, Math.min(b.max, 10));
     return fold('pay-group', `<h3>👥 ${L('Group Premium: bayaran ang Premium ng ilang tao', 'Group Premium: pay for several people')}</h3>${b.tiers.length ? `<span class="pill ok">${L('hanggang', 'up to')} −${b.tiers[b.tiers.length - 1].pct}%</span>` : ''}`, `
-      <p class="small" style="margin:0 0 6px">${L(`Para sa boss, opisina, paaralan o review group: <b>isang bayad</b> para sa Premium (${b.days} araw) ng ilang tao. Makakatanggap ka ng <b>isang code para sa bawat tao</b>; isang beses lang magagamit ang bawat code. Hindi kasama sa bilang ang sarili mo, pero pwede mong gamitin ang isang code para sa sarili mo.`,
-        `For a boss, office, school or review group: <b>one payment</b> for Premium (${b.days} days) for several people. You get <b>one code per person</b>; each code works once. You are not counted, but you can use one code for yourself.`)}</p>
+      <p class="small" style="margin:0 0 6px">${L(`Para sa boss, opisina, paaralan o review group: <b>isang bayad</b> para sa Premium (${plans.length > 1 ? 'buwanan o taunan' : `${b.days} araw`}) ng ilang tao. Makakatanggap ka ng <b>isang code para sa bawat tao</b>; isang beses lang magagamit ang bawat code. Hindi kasama sa bilang ang sarili mo, pero pwede mong gamitin ang isang code para sa sarili mo.`,
+        `For a boss, office, school or review group: <b>one payment</b> for Premium (${plans.length > 1 ? 'monthly or yearly' : `${b.days} days`}) for several people. You get <b>one code per person</b>; each code works once. You are not counted, but you can use one code for yourself.`)}</p>
       ${b.tiers.length ? `<p class="muted small" style="margin:0 0 6px">${L('Group discount', 'Group discount')}: ${b.tiers.map((t) => `${t.min}+ ${L('tao', 'people')} −${t.pct}%`).join(' · ')}</p>` : ''}
       <label for="gQty">${L(`Ilang tao? (${b.min} hanggang ${b.max})`, `How many people? (${b.min} to ${b.max})`)}</label>
       <input type="number" id="gQty" min="${b.min}" max="${b.max}" step="1" value="${start}" inputmode="numeric" style="max-width:140px">
+      ${plans.length > 1 ? `<label>${L('Plan ng bawat tao', 'Plan for each person')}</label>
+      <div class="seg" id="gPlan" role="group">${plans.map((x, i) => `<button type="button" data-gplan="${x.id}" class="${i ? '' : 'active'}" aria-pressed="${!i}">${PLAN_NAME(x)} · ${x.days} ${L('araw', 'days')}</button>`).join('')}</div>` : ''}
+      <label for="gCode">${L('Promo code (opsyonal)', 'Promo code (optional)')}</label>
+      <div class="row" style="flex-wrap:nowrap"><input type="text" id="gCode" maxlength="30" placeholder="${L('hal.', 'e.g.')} REVIEW20" style="text-transform:uppercase;margin:0" autocapitalize="characters" spellcheck="false" autocomplete="off">
+        <button class="btn secondary" type="button" id="gCodeGo">${L('Gamitin', 'Apply')}</button></div>
       <div id="gPrice" role="status" style="margin:8px 0"></div>
       <label for="gOrg">${L('Pangalan ng opisina o grupo (opsyonal, makikita ng tatanggap)', 'Office or group name (optional, shown to the people you give codes to)')}</label>
       <input type="text" id="gOrg" maxlength="80" placeholder="${L('hal.', 'e.g.')} DepEd Division Office, HR Team">
@@ -1786,23 +1822,51 @@
       <button class="btn block" type="button" id="gPay" disabled>💳 ${L('Ituloy ang pagbayad (grupo)', 'Continue payment (group)')}</button>
       <p class="muted small" style="margin:4px 0 0">${L('Online lang (PayMongo: GCash, Maya, card, QR Ph at iba pa). Para sa bank transfer o ibang paraan, makipag-ugnayan sa admin.', 'Online only (PayMongo: GCash, Maya, card, QR Ph and more). For bank transfer or other ways, contact the admin.')}</p>`, { stay: true });
   }
-  function groupBuyWire(b) {
+  function groupBuyWire(b, plans = []) {
     const qty = () => Math.round(Number($('#gQty').value));
     const ok = () => Number.isInteger(qty()) && qty() >= b.min && qty() <= b.max;
+    let plan = plans[0] || { id: 'month', price: b.price, days: b.days };
+    /* Promo code on a group: the server takes the code's % or pesos off the group total (after the group
+       discount) and gives the final price (GET /api/bulk/quote). It is asked again when the number of people
+       or the plan changes. A 100%-off code is not for groups. */
+    let code = '', sq = null, seq = 0;
+    const serverQuote = async () => {
+      if (!code || !ok()) { sq = null; return paint(); }
+      const my = ++seq;
+      try {
+        const r = await api('GET', `/api/bulk/quote?qty=${qty()}&plan=${plan.id}&code=${encodeURIComponent(code)}`);
+        if (my !== seq) return;
+        sq = r; $('#gErr').textContent = '';
+      } catch (err) { if (my !== seq) return; sq = null; code = ''; $('#gErr').textContent = err.message; }
+      paint();
+    };
+    let qt = 0;
     const paint = () => {
       const pay = $('#gPay');
       pay.disabled = !ok() || !$('#gNr').checked;
       if (!ok()) { $('#gPrice').innerHTML = `<span class="err">${L(`Pumili ng ${b.min} hanggang ${b.max} na tao.`, `Choose ${b.min} to ${b.max} people.`)}</span>`; return; }
-      const q = groupQuote(b, qty());
-      $('#gPrice').innerHTML = `<span class="small">${q.qty} × ${pesos(b.price)} = ${q.pct ? `<s class="muted">${pesos(q.list)}</s> −${q.pct}% ` : ''}</span>
-        <span class="pill warn" style="font-size:15px">${pesos(q.total)}</span> <span class="muted small">(${pesos(q.each)} ${L('bawat tao', 'per person')}${q.pct ? `, ${L('tipid', 'you save')} ${pesos(q.discount)}` : ''})</span>`;
+      const q = sq && sq.qty === qty() && sq.plan === plan.id ? { ...groupQuote(b, qty(), plan.price), ...sq } : groupQuote(b, qty(), plan.price);
+      const pr = q.promo;
+      $('#gPrice').innerHTML = `<span class="small">${q.qty} × ${pesos(plan.price)} (${plan.days} ${L('araw', 'days')}) = ${q.pct || pr ? `<s class="muted">${pesos(q.list)}</s> ` : ''}${q.pct ? `−${q.pct}% ` : ''}${pr ? `<span class="pill ok">${esc(pr.code)} −${esc(pesos(pr.discount))}</span> ` : ''}</span>
+        <span class="pill warn" style="font-size:15px">${pesos(q.total)}</span> <span class="muted small">(${pesos(q.each)} ${L('bawat tao', 'per person')}${q.list > q.total ? `, ${L('tipid', 'you save')} ${pesos(q.list - q.total)}` : ''})</span>
+        ${pr ? ` <a href="#" id="gCodeX" class="small">${L('Alisin ang code', 'Remove the code')}</a>` : ''}`;
+      if ($('#gCodeX')) $('#gCodeX').onclick = (e) => { e.preventDefault(); code = ''; sq = null; $('#gCode').value = ''; paint(); };
       pay.textContent = `💳 ${L('Ituloy ang pagbayad', 'Continue payment')} · ${pesos(q.online)}`;
     };
-    $('#gQty').oninput = paint; $('#gNr').onchange = paint; paint();
+    $('#gQty').oninput = () => { paint(); if (code) { clearTimeout(qt); qt = setTimeout(serverQuote, 400); } };
+    $('#gNr').onchange = paint;
+    $$('#gPlan [data-gplan]').forEach((x) => (x.onclick = () => {
+      plan = plans.find((y) => y.id === x.dataset.gplan) || plans[0];
+      $$('#gPlan button').forEach((y) => { y.classList.toggle('active', y === x); y.setAttribute('aria-pressed', String(y === x)); });
+      paint(); if (code) serverQuote();
+    }));
+    $('#gCodeGo').onclick = () => { code = $('#gCode').value.trim(); $('#gErr').textContent = ''; serverQuote(); };
+    $('#gCode').onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); $('#gCodeGo').click(); } };
+    paint();
     $('#gPay').onclick = async (e) => {
       const btn = e.currentTarget; btn.disabled = true; $('#gErr').textContent = '';
       try {
-        const r = await api('POST', '/api/bulk/checkout', { qty: qty(), org: $('#gOrg').value.trim(), emails: $('#gEmails').value, agree_no_refund: true });
+        const r = await api('POST', '/api/bulk/checkout', { qty: qty(), plan: plan.id, ...(code ? { code } : {}), org: $('#gOrg').value.trim(), emails: $('#gEmails').value, agree_no_refund: true });
         location.href = r.url;
       } catch (err) { $('#gErr').textContent = err.message; btn.disabled = false; }
     };
@@ -2786,6 +2850,16 @@
 
   /* ---------------- account ----------------
      Log out (red) is on the right of the "Account" title, and also at the top right of every screen. The language choice is always visible (not in a drop down). */
+  /* Account folds that every user has, Free or Premium: Help and guide, Quick login, About the exam. */
+  const helpFold = () => fold('acc-help', `<h3>${L('Tulong at gabay', 'Help and guide')}</h3>`, `
+        <p class="muted small" style="margin:0 0 10px">${L('Paano gamitin ang app, mga madalas itanong, at ulitin ang gabay.', 'How to use the app, common questions, and replay the guide.')}</p>
+        <div class="row"><a class="btn secondary" href="#/help">${L('Buksan ang Tulong', 'Open Help')} ›</a><button type="button" class="btn ghost" id="accTour">▶ ${L('Ipakita ulit ang gabay', 'Show the guide again')}</button></div>`);
+  const bioFold = () => fold('acc-bio', `<h3>${L('Mabilis na login', 'Quick login')}</h3><span class="pill ok" id="bioPill" style="display:none"></span>`,
+    `<div id="bioCard"><p class="muted small" style="margin:0">${L('Tinitingnan…', 'Checking…')}</p></div>`);
+  const aboutFold = () => fold('acc-about', `<h3>${L('Tungkol sa exam', 'About the exam')}</h3>`, `
+        <p class="muted small" style="margin:0">${L('Sinusunod ng mock exam ang format ng Career Service Exam (pen and paper test) ng Civil Service Commission: Professional na 170 tanong sa loob ng 3 oras at 10 minuto, at Subprofessional na 165 tanong sa loob ng 2 oras at 40 minuto, lahat ay may 4 na pagpipilian at 80% ang passing rate. Hindi inilalabas ng CSC ang eksaktong bilang kada subject, kaya tantiya ang hati ng mga tanong. Ang app na ito ay hindi opisyal na produkto ng CSC.',
+          'The mock exam follows the format of the Civil Service Commission\'s Career Service Exam (pen and paper test): Professional has 170 questions in 3 hours and 10 minutes, and Subprofessional has 165 questions in 2 hours and 40 minutes, all with 4 choices and an 80% passing rate. The CSC does not publish the exact count per subject, so the split of questions is an estimate. This app is not an official CSC product.')}</p>
+        <p class="muted small" style="margin:10px 0 0">${L('Bersyon', 'Version')} ${APP_VERSION}</p>`);
   function viewAccount() {
     const premOn = S.user.role !== 'admin' && S.premium && S.user.premium_until > Date.now();
     const premNote = S.user.role === 'admin' ? L('Admin: bukas lahat', 'Admin: everything open')
@@ -2805,9 +2879,7 @@
       ${fold('acc-premium', `<h3>Premium</h3><span class="pill${premOn ? ' ok' : ''}">${premOn ? L('Aktibo', 'Active') : S.user.role === 'admin' ? 'Admin' : S.config.premium_required ? L('Hindi aktibo', 'Not active') : L('Libre', 'Free')}</span>`, `
         <p class="muted small" style="margin:0 0 10px">${premNote}</p>
         <a class="btn${premOn ? ' secondary' : ''}" href="#/premium">${premOn ? L('Tingnan o i-extend ang Premium', 'See or extend Premium') : L('Kumuha ng Premium', 'Get Premium')} ›</a>`)}
-      ${fold('acc-help', `<h3>${L('Tulong at gabay', 'Help and guide')}</h3>`, `
-        <p class="muted small" style="margin:0 0 10px">${L('Paano gamitin ang app, mga madalas itanong, at ulitin ang gabay.', 'How to use the app, common questions, and replay the guide.')}</p>
-        <div class="row"><a class="btn secondary" href="#/help">${L('Buksan ang Tulong', 'Open Help')} ›</a><button type="button" class="btn ghost" id="accTour">▶ ${L('Ipakita ulit ang gabay', 'Show the guide again')}</button></div>`)}
+      ${helpFold()}
       ${fold('acc-look', `<h3>${L('Itsura at madaling basahin', 'Look and easy reading')}</h3>`, `
         <p class="muted small" style="margin:0 0 10px">${L('Malambot na kulay na hindi masakit sa mata. Ang <b>Auto</b> ay kusang dumidilim kapag naka-dark mode ang phone o computer mo', 'Soft colors that are easy on the eyes. <b>Auto</b> turns dark by itself when your phone or computer is in dark mode')}${darkMQ ? ` (${L('ngayon', 'now')}: <b>${darkMQ.matches ? L('madilim', 'dark') : L('maliwanag', 'light')}</b>)` : ''}. ${L('Para mag-zoom, i-pinch ang screen gamit ang dalawang daliri', 'To zoom, pinch the screen with two fingers')}${IS_APP && !capNative ? L(' (o Ctrl + scroll / touchpad pinch)', ' (or Ctrl + scroll / touchpad pinch)') : ''}.</p>
         <div class="seg" id="themes" role="group" aria-label="${L('Kulay ng screen', 'Screen colors')}">${THEMES().map(([k, l]) => `<button type="button" data-theme="${k}" class="${(look() || {}).theme === k ? 'active' : ''}" aria-pressed="${(look() || {}).theme === k}">${l}</button>`).join('')}</div>
@@ -2827,9 +2899,7 @@
         <button type="button" class="btn ghost small" id="rmTest" style="margin-top:10px">▶ ${L('Subukan ang paalala', 'Test the reminder')}</button>`)}
       ${fold('acc-backup', `<h3>${L('Backup at restore', 'Backup and restore')}</h3><span class="pill ok">${L('Naka-on', 'On')}</span>`, `<div id="bkCard"></div>`)}
       ${fold('acc-sec', `<h3>${L('Seguridad: mga huling login', 'Security: recent logins')}</h3>`, `<div id="secCard"><p class="muted small" style="margin:0">${L('Buksan para makita…', 'Open to see…')}</p></div>`)}
-      ${fold('acc-bio', `<h3>${L('Mabilis na login', 'Quick login')}</h3><span class="pill ok" id="bioPill" style="display:none"></span>${S.premium ? '' : '<span class="pill">🔒 Premium</span>'}`, S.premium
-        ? `<div id="bioCard"><p class="muted small" style="margin:0">${L('Tinitingnan…', 'Checking…')}</p></div>`
-        : `<p class="muted small" style="margin:0 0 10px">${L('Mag-login gamit ang face, fingerprint o Windows Hello, walang password. Para sa Premium ito. Pwede ka pa ring mag-login gamit ang <b>code sa email</b>.', 'Log in with your face, fingerprint or Windows Hello, no password. This is for Premium. You can still log in with an <b>email code</b>.')}</p><a class="btn secondary" href="#/premium">⭐ ${L('Kumuha ng Premium', 'Get Premium')}</a>`)}
+      ${bioFold()}
       ${fold('acc-sound', `<h3>${L('Tunog', 'Sounds')}</h3><span class="pill" id="sndPill">${Sound.get().on ? L('Naka-on', 'On') : L('Naka-off', 'Off')}</span>`, `
         <p class="muted small" style="margin:0 0 10px">${L('Maiikling tunog kapag pumindot, pag-flip ng pahina sa exam, tama o mali sa practice, natapos ang exam, at 5 minutong natitira. Gumagana offline.', 'Short sounds when you tap, a page turn in the exam, right or wrong in practice, when an exam ends, and at 5 minutes left. Works offline.')}</p>
         <label class="check"><input type="checkbox" id="sndOn" ${Sound.get().on ? 'checked' : ''}> ${L('Naka-on ang tunog', 'Sounds on')}</label>
@@ -2848,12 +2918,13 @@
         <button class="btn secondary" id="install" hidden>${L('I-install ang app', 'Install the app')}</button>`)}
       ${fold('acc-fix', `<h3>Auto Fix</h3><span class="pill ok" id="fixPill">${L('Naka-on', 'On')}</span>`, `<div id="fixCard"></div>`)}
       ${legalFolds()}
-      ${fold('acc-about', `<h3>${L('Tungkol sa exam', 'About the exam')}</h3>`, `
-        <p class="muted small" style="margin:0">${L('Sinusunod ng mock exam ang format ng Career Service Exam (pen and paper test) ng Civil Service Commission: Professional na 170 tanong sa loob ng 3 oras at 10 minuto, at Subprofessional na 165 tanong sa loob ng 2 oras at 40 minuto, lahat ay may 4 na pagpipilian at 80% ang passing rate. Hindi inilalabas ng CSC ang eksaktong bilang kada subject, kaya tantiya ang hati ng mga tanong. Ang app na ito ay hindi opisyal na produkto ng CSC.',
-          'The mock exam follows the format of the Civil Service Commission\'s Career Service Exam (pen and paper test): Professional has 170 questions in 3 hours and 10 minutes, and Subprofessional has 165 questions in 2 hours and 40 minutes, all with 4 choices and an 80% passing rate. The CSC does not publish the exact count per subject, so the split of questions is an estimate. This app is not an official CSC product.')}</p>
-        <p class="muted small" style="margin:10px 0 0">${L('Bersyon', 'Version')} ${APP_VERSION}</p>`)}
-      </div>`, { cls: 'acc-menu', stay: true, open: !!F.key && F.key.startsWith('acc-') && F.key !== 'acc-menu' }) : freeAccount() + `<div class="stack" style="margin-top:12px">${legalFolds()}</div>`}`);
-    if (!S.premium) return; // Free: no "Settings and more" (Premium only), so none of its buttons are on the screen
+      ${aboutFold()}
+      </div>`, { cls: 'acc-menu', stay: true, open: !!F.key && F.key.startsWith('acc-') && F.key !== 'acc-menu' })
+        // Free: Help and guide, Quick login and About the exam are open to everyone; the rest of "Settings and more" is Premium.
+        : freeAccount() + `<div class="stack" style="margin-top:12px">${helpFold()}${bioFold()}${aboutFold()}${legalFolds()}</div>`}`);
+    if ($('#accTour')) $('#accTour').onclick = () => Tour.replay();
+    if ($('#bioCard')) paintBioCard();
+    if (!S.premium) return; // Free: none of the Premium settings' buttons are on the screen
     const pick = (sel, b) => $$(sel).forEach((x) => { x.classList.toggle('active', x === b); x.setAttribute('aria-pressed', String(x === b)); });
     $$('#themes [data-theme]').forEach((b) => (b.onclick = () => {
       store.set('cse-look', { ...(look() || { zoom: 1 }), theme: b.dataset.theme });
@@ -2891,7 +2962,6 @@
       store.set('cse-look', { ...look(), zoom: 1 }); applyLook(); e.target.parentNode.remove();
       Undo.show({ msg: L('Ibinalik sa 100% ang zoom.', 'Zoom is back to 100%.'), revert: () => { store.set('cse-look', { ...look(), zoom: was }); applyLook(); if (location.hash === '#/account') route(); } });
     };
-    if ($('#bioCard')) paintBioCard();
     $('#pwf').onsubmit = async (e) => {
       e.preventDefault();
       const npw = $('#npw').value;
@@ -2901,12 +2971,11 @@
         toast(L('Napalitan na ang password.', 'Password changed.')); e.target.reset(); $('#err').textContent = '';
       } catch (err) { $('#err').textContent = err.message; }
     };
-    if ($('#accTour')) $('#accTour').onclick = () => Tour.replay();
     paintFixCard();
     if (window._installPrompt) { const b = $('#install'); b.hidden = false; b.onclick = () => window._installPrompt.prompt(); }
   }
 
-  /* Account → Terms and Conditions, and Pros and Cons of the app. For everyone (Free and Premium).
+  /* Account → Terms and Conditions. For everyone (Free and Premium).
      Plain words, in Tagalog and English. Keep in step with docs/DOKUMENTASYON.md (Section 1) when a rule changes. */
   const TERMS_DATE = 'Nobyembre 2, 2026';
   function legalFolds() {
@@ -2952,34 +3021,14 @@
       ${sec(L('8. Pagbabago at contact', '8. Changes and contact'), [
         L('Maaaring baguhin ang mga ito; nakasulat dito ang petsa ng huling update. Para sa tanong, reklamo o refund ng maling singil, mag-reply sa email ng resibo o makipag-ugnayan sa contact na nasa resibo.', 'These may change; the date of the last update is shown here. For questions, complaints, or a refund of a wrong charge, reply to the receipt email or use the contact on the receipt.'),
       ])}`;
-    const pc = (good, items) => `<ul class="small pc-list ${good ? 'pc-good' : 'pc-bad'}" style="padding-left:0;margin:4px 0 10px;list-style:none">${items.map((x) => `<li>${good ? '✅' : '⚠️'} ${x}</li>`).join('')}</ul>`;
-    const pros = `<h4 style="margin:0 0 4px">${L('Mga kalamangan', 'Pros')}</h4>${pc(true, [
-        L('Sinusunod ang format ng CSE: Professional (170 tanong, 3 oras 10 minuto) at Subprofessional (165 tanong, 2 oras 40 minuto), may timer.', 'Follows the CSE format: Professional (170 questions, 3 hours 10 minutes) and Subprofessional (165 questions, 2 hours 40 minutes), timed.'),
-        L('May paliwanag ang bawat sagot, score kada topic, "Balikan ang mga mali", at streak para tuloy-tuloy ang pag-aaral.', 'Every answer has an explanation, score by topic, "Go over your mistakes", and a streak to keep you studying.'),
-        L('May libreng plan, para masubukan muna bago magbayad.', 'There is a free plan, so you can try it before paying.'),
-        L('Sa Premium: lahat ng exam set, walang limit, walang ads, at gumagana kahit offline.', 'With Premium: every exam set, no limits, no ads, and it works offline.'),
-        L('Gumagana sa phone, tablet at computer (website, Android at Windows app); Tagalog at English.', 'Works on phone, tablet and computer (website, Android and Windows app); Tagalog and English.'),
-        L('Mura at walang auto-renew; may Group Premium na may discount para sa opisina o grupo.', 'Low price and no auto-renew; Group Premium with a discount for an office or group.'),
-        L('Madaling basahin: dark mode, laki ng letra, high contrast at screen reader, para sa lahat.', 'Easy to read: dark mode, text size, high contrast and screen readers, for everyone.'),
-      ])}
-      <h4 style="margin:0 0 4px">${L('Mga kahinaan (para alam mo bago magbayad)', 'Cons (so you know before paying)')}</h4>${pc(false, [
-        L('Hindi opisyal ng CSC at hindi totoong tanong ng exam; tantiya lang ang hati ng tanong kada subject.', 'Not official from the CSC and not real exam questions; the split of questions per subject is an estimate.'),
-        L('Maaaring may paminsan-minsang mali sa tanong o paliwanag. Ipaalam ito para maitama.', 'There may be an occasional mistake in a question or explanation. Report it so it can be fixed.'),
-        L('Sa libreng plan: may limit kada araw, maikling mock exam (5 tanong kada subject), may ads, at kailangan ng internet.', 'On the free plan: daily limits, a short mock exam (5 questions per subject), ads, and internet is needed.'),
-        L('Walang refund kapag nabayaran na (maliban sa mali sa singil).', 'No refunds once paid (except for charging mistakes).'),
-        L('Kailangang mag-online kahit isang beses bawat 30 araw ang Premium na offline.', 'Offline Premium needs to go online at least once every 30 days.'),
-        L('Walang app sa App Store o Play Store pa; sa iPhone, gamitin ang website ("Add to Home Screen").', 'No App Store or Play Store app yet; on iPhone, use the website ("Add to Home Screen").'),
-        L('Pen and paper ang totoong exam; iba pa rin ang pakiramdam ng pagsagot sa screen.', 'The real exam is pen and paper; answering on a screen still feels different.'),
-      ])}`;
-    return fold('acc-terms', `<h3>${L('Terms and Conditions', 'Terms and Conditions')}</h3>`, terms)
-      + fold('acc-proscons', `<h3>${L('Mga kalamangan at kahinaan ng app', 'Pros and cons of the app')}</h3>`, pros);
+    return fold('acc-terms', `<h3>${L('Terms and Conditions', 'Terms and Conditions')}</h3>`, terms);
   }
 
   // Account for a Free user: "Settings and more" is Premium only. Free users see what Premium adds, and Help.
   function freeAccount() {
     return `<div class="card free-acc">
       <div class="row between"><h3 style="margin:0">Premium</h3><span class="pill">${L('Libre', 'Free')}</span></div>
-      <p class="muted small" style="margin:8px 0 12px">${L('Sa Premium, mabubuksan ang <b>Mga setting at iba pa</b>: itsura at laki ng letra, tunog, paalala sa pag-aaral, backup, seguridad, mabilis na login, password, Auto Fix, at iba pa. Kasama rin ang lahat ng exam set, walang limit, at gumagana offline.', 'With Premium you get <b>Settings and more</b>: look and text size, sounds, study reminder, backup, security, quick login, password, Auto Fix, and more. It also opens all exam sets, no limits, and works offline.')}</p>
+      <p class="muted small" style="margin:8px 0 12px">${L('Sa Premium, mabubuksan ang <b>Mga setting at iba pa</b>: itsura (kulay ng screen at zoom) at laki ng letra, tunog, paalala sa pag-aaral, backup, seguridad, password, Auto Fix, at iba pa. Kasama rin ang lahat ng exam set, walang limit, at gumagana offline. Libre para sa lahat ang Tulong at gabay, Mabilis na login, at Tungkol sa exam sa ibaba.', 'With Premium you get <b>Settings and more</b>: look (screen colors and zoom) and text size, sounds, study reminder, backup, security, password, Auto Fix, and more. It also opens all exam sets, no limits, and works offline. Help and guide, Quick login, and About the exam below are free for everyone.')}</p>
       <div class="row"><a class="btn" href="#/premium">⭐ ${L('Kumuha ng Premium', 'Get Premium')} ›</a><a class="btn ghost" href="#/help">${L('Tulong', 'Help')} ›</a></div></div>`;
   }
 
@@ -3130,7 +3179,8 @@
   async function admOverview(el) {
     const o = await api('GET', '/api/admin/overview');
     el.innerHTML = `
-      <div class="grid stats">
+      <div class="card" id="monCard"><h3 style="margin:0">📡 ${L('Monitoring ng server', 'Server monitoring')}</h3><p class="muted small" style="margin:6px 0 0">${L('Naglo-load…', 'Loading…')}</p></div>
+      <div class="grid stats" style="margin-top:12px">
         <div class="card stat"><div class="v">${o.users}</div><div class="l">${L('Kabuuang users', 'Total users')}</div></div>
         <div class="card stat"><div class="v">${o.newUsers7d}</div><div class="l">${L('Bagong users (7 araw)', 'New users (7 days)')}</div></div>
         <div class="card stat"><div class="v">${o.attempts}</div><div class="l">${L('Natapos na exam/practice', 'Exams/practice finished')}</div></div>
@@ -3142,6 +3192,41 @@
       ${o.pendingPayments ? `<a class="notice" href="#/admin/payments" style="display:block;margin-top:12px">💳 ${L(`May <b>${o.pendingPayments}</b> bayad na hinihintay ma-check →`, `<b>${o.pendingPayments}</b> payment(s) waiting to be checked →`)}</a>` : ''}
       ${!o.mail.enabled ? `<div class="notice" style="margin-top:12px;background:var(--warn-soft)">${L('⚠️ Hindi pa naka-set up ang email. Hindi pa nagpapadala ng verification code, resulta at resibo. Tingnan ang README (Email setup).', '⚠️ Email is not set up yet. Verification codes, results and receipts are not being sent. See the README (Email setup).')}</div>` : ''}
       <div class="grid stats" style="margin-top:12px"><div class="card stat"><div class="v">${o.premiumUsers}</div><div class="l">Premium users</div></div></div>`;
+    paintMonitor($('#monCard'));
+  }
+
+  /* Admin → Overview → Server monitoring: how busy the server is (% of what it can handle), how many people are
+     using the app now against the capacity in Settings, and whether access is still OK. Updates every 15 seconds
+     while it is on the screen (GET /api/admin/health, src/monitor.js). */
+  async function paintMonitor(box) {
+    if (!box || !box.isConnected) return;
+    let h;
+    try { h = await api('GET', '/api/admin/health'); } catch (e) {
+      if (box.isConnected) box.innerHTML = `<h3 style="margin:0">📡 ${L('Monitoring ng server', 'Server monitoring')}</h3><p class="err small">${esc(e.message)}</p>`;
+      return;
+    }
+    if (!box.isConnected) return;
+    const LV = { ok: ['ok', '✅', L('OK ang access', 'Access is OK')], warn: ['warn', '⚠️', L('Medyo bumabagal / may babala', 'Slowing down / warning')], bad: ['bad', '⛔', L('May problema sa access', 'Access problem')] };
+    const [cls, icon, text] = LV[h.level] || LV.ok;
+    const CK = { database: L('Database', 'Database'), speed: L('Bilis ng server', 'Server speed'), errors: L('Mga error', 'Errors'), load: L('Load', 'Load') };
+    const ck = (v) => (v === 'ok' ? '✅' : v === 'warn' ? '⚠️' : '⛔');
+    const up = h.uptime_sec > 3600 ? `${Math.floor(h.uptime_sec / 3600)} ${L('oras', 'h')}` : `${Math.floor(h.uptime_sec / 60)} min`;
+    box.innerHTML = `<div class="row between"><h3 style="margin:0">📡 ${L('Monitoring ng server', 'Server monitoring')}</h3><span class="pill ${cls === 'ok' ? 'ok' : cls === 'warn' ? 'warn' : 'bad'}">${icon} ${text}</span></div>
+      <div class="row between" style="margin-top:10px"><b>${L('Load ng server', 'Server load')}: ${h.percent}%</b><span class="muted small">${L('Aktibong users (5 min)', 'Active users (5 min)')}: <b>${h.active_users}</b> / ${h.capacity}</span></div>
+      <div class="mon-bar ${h.percent >= 90 ? 'bad' : h.percent >= 70 ? 'warn' : ''}" role="progressbar" aria-valuenow="${Math.min(100, h.percent)}" aria-valuemin="0" aria-valuemax="100"><div style="width:${Math.min(100, h.percent)}%"></div></div>
+      <p class="muted small" style="margin:0">${L(`Users ${h.load.users}% · Memory ${h.load.memory}% · CPU ${h.load.cpu}%. Ang pinakamataas ang load. Sa 70% pataas, maghanda nang mag-upgrade; sa 90% pataas, bumabagal na para sa lahat.`, `Users ${h.load.users}% · Memory ${h.load.memory}% · CPU ${h.load.cpu}%. The load is the highest of these. From 70%, get ready to upgrade; from 90%, it slows down for everyone.`)}</p>
+      <div class="mon-grid small">
+        ${Object.entries(h.checks).map(([k, v]) => `<div>${ck(v)} ${CK[k] || k}<b>${k === 'database' ? `${h.db_ms} ms` : k === 'speed' ? `${h.event_loop_ms} ms` : k === 'errors' ? `${h.errors_5min} / 5 min` : `${h.percent}%`}</b></div>`).join('')}
+        <div>${L('Request kada minuto', 'Requests per minute')}<b>${h.req_per_min}</b></div>
+        <div>${L('Bukas na screen ngayon', 'Open screens now')}<b>${h.live_screens}</b></div>
+        <div>${L('Pinakamaraming sabay (mula restart)', 'Most at once (since restart)')}<b>${h.peak_users}</b></div>
+        <div>Memory<b>${h.memory_mb} / ${h.memory_limit_mb} MB</b></div>
+        <div>${L('Mabagal na sagot (5 min)', 'Slow answers (5 min)')}<b>${h.slow_5min}</b></div>
+        <div>${L('Tumatakbo na', 'Running for')}<b>${up}</b></div>
+      </div>
+      <p class="muted small" style="margin:8px 0 0">${L('Ang kapasidad (ilang tao ang kaya nang sabay) ay nasa Admin → Settings → Premium. Nagsisimula ulit sa zero ang bilang kapag nag-restart o nag-deploy ang server.', 'The capacity (how many people at once) is in Admin → Settings → Premium. The counts start from zero when the server restarts or deploys.')}</p>`;
+    clearTimeout(S.monT);
+    S.monT = setTimeout(() => { if (box.isConnected && !document.hidden) paintMonitor(box); else if (box.isConnected) S.monT = setTimeout(() => paintMonitor(box), 15e3); }, 15e3);
   }
   async function admUsers(el) {
     let seq = 0;
@@ -3306,7 +3391,7 @@
       <p class="muted small">${L('I-check sa app ng GCash, Maya, PayPal o bangko mo kung pumasok ang bayad (gamit ang reference number at resibo) bago i-approve.', 'Check in your GCash, Maya, PayPal or bank app that the payment came in (using the reference number and receipt) before approving.')}</p>
       <div class="list">${rows.map((p) => `<div class="review-item">
         <div class="row between"><div><b>${esc(p.name)}</b> <span class="muted small">${esc(p.email)}</span></div><span class="muted small">${fmtDate(p.created_at)}</span></div>
-        <div style="margin:6px 0">₱${esc(p.amount)} · ${esc(p.method)} · Ref: <b>${esc(p.reference)}</b>${p.promo_code ? ` · 🏷️ ${esc(p.promo_code)} (−₱${esc(p.discount)} ${L('mula', 'from')} ₱${esc(p.list_price)})` : ''}${p.note ? ` · ${esc(p.note)}` : ''}</div>
+        <div style="margin:6px 0">₱${esc(p.amount)}${p.days ? ` · ${p.days >= 300 ? L('Taunan', 'Yearly') : L('Buwanan', 'Monthly')} (${p.days} ${L('araw', 'days')})` : ''} · ${esc(p.method)} · Ref: <b>${esc(p.reference)}</b>${p.promo_code ? ` · 🏷️ ${esc(p.promo_code)} (−₱${esc(p.discount)} ${L('mula', 'from')} ₱${esc(p.list_price)})` : ''}${p.note ? ` · ${esc(p.note)}` : ''}</div>
         ${p.has_proof ? `<button class="btn ghost small" data-proof="${p.id}" style="margin-bottom:8px">🧾 ${L('Tingnan ang resibo', 'See the receipt')}</button>` : ''}
         ${status === 'pending' ? `<div class="row"><button class="btn small" data-ok="${p.id}">✓ ${L('I-approve', 'Approve')}</button><button class="btn ghost small" data-no="${p.id}">✕ ${L('I-reject', 'Reject')}</button></div>` : ''}
       </div>`).join('') || `<div class="card empty">${L('Walang bayad dito.', 'No payments here.')}</div>`}</div>`;
@@ -3496,8 +3581,16 @@
       ${sec('premium', `⭐ ${L('Premium (bayad para sa mock exams)', 'Premium (paid mock exams)')}`, `
       ${check('preq', st.premium_required === '1', L('Kailangan ng Premium para sa mock exams', 'Mock exams need Premium'))}
       <p class="muted small" style="margin:4px 0 0">${L('Kapag naka-off, libre ang lahat at gumagana offline para sa lahat. Kapag naka-on, online lang ang libreng plan at may limit (Libreng plan sa ibaba).', 'When off, everything is free and works offline for everyone. When on, the free plan is online only and has limits (Free plan below).')}</p>
+      <h4 style="margin:10px 0 0">${L('Buwanan', 'Monthly')}</h4>
       <div class="row"><div style="flex:1;min-width:120px"><label>${L('Presyo (₱)', 'Price (₱)')}</label><input type="number" id="price" value="${esc(st.price)}"></div>
       <div style="flex:1;min-width:120px"><label>${L('Ilang araw', 'Number of days')}</label><input type="number" id="days" value="${esc(st.plan_days)}"></div></div>
+      <h4 style="margin:10px 0 0">${L('Taunan', 'Yearly')}</h4>
+      ${check('yearon', st.year_on !== '0', L('Ipakita ang taunang plan (mas mura kada buwan)', 'Show the yearly plan (cheaper per month)'))}
+      <div class="row"><div style="flex:1;min-width:120px"><label>${L('Presyo (₱)', 'Price (₱)')}</label><input type="number" id="priceYear" value="${esc(st.price_year)}"></div>
+      <div style="flex:1;min-width:120px"><label>${L('Ilang araw', 'Number of days')}</label><input type="number" id="daysYear" value="${esc(st.plan_year_days)}"></div></div>
+      <p class="muted small" style="margin:4px 0 0">${L('Gumagana ang promo code, PayMongo, manual na bayad at Group Premium sa parehong plan. Walang refund sa dalawa.', 'Promo codes, PayMongo, manual payment and Group Premium work with both plans. No refunds on either.')}</p>
+      <label>${L('Kapasidad ng server (ilang tao ang kaya nang sabay)', 'Server capacity (people at the same time)')}</label><input type="number" id="capUsers" value="${esc(st.capacity_users)}" style="max-width:160px">
+      <p class="muted small" style="margin:4px 0 0">${L('Para sa % load sa Overview → Monitoring. Render Free: mga 150. Starter: mga 600. Standard: mga 1,500.', 'For the % load in Overview → Monitoring. Render Free: about 150. Starter: about 600. Standard: about 1,500.')}</p>
       <label>${L('Pangalan ng negosyo sa resibo (opsyonal)', 'Business name on receipts (optional)')}</label><input type="text" id="bizName" value="${esc(st.biz_name)}" placeholder="${L('hal.', 'e.g.')} CSE Reviewer ni Juan Dela Cruz">
       <label>${L('Contact sa resibo (email, phone o address)', 'Contact on receipts (email, phone or address)')}</label><input type="text" id="bizContact" value="${esc(st.biz_contact)}">
       <p class="muted small" style="margin:4px 0 0">${L('Lalabas sa resibo ng bawat na-approve na bayad (RA 11967: dapat kilala ang nagbebenta). Hindi ito BIR invoice.', 'Shown on the receipt of every approved payment (RA 11967: the seller must be known). It is not a BIR invoice.')}</p>`,
@@ -3590,7 +3683,7 @@
       try {
         const v = (id) => $('#' + id).value, on = (id) => ($('#' + id).checked ? '1' : '0');
         const saved = await api('PUT', '/api/admin/settings', {
-          premium_required: on('preq'), price: v('price'), plan_days: v('days'), pay_note: v('pnote'), biz_name: v('bizName').trim(), biz_contact: v('bizContact').trim(),
+          premium_required: on('preq'), price: v('price'), plan_days: v('days'), year_on: on('yearon'), price_year: v('priceYear'), plan_year_days: v('daysYear'), capacity_users: v('capUsers'), pay_note: v('pnote'), biz_name: v('bizName').trim(), biz_contact: v('bizContact').trim(),
           pay_online_on: on('payon'), pay_manual_on: on('payman'), pay_methods: collect(),
           free_practice_daily: v('fdaily'), free_practice_items: v('fitems'), free_mock_daily: v('fmock'), free_sets: v('fsets'),
           ads_on: on('adson'), adsense_client: v('asc').trim(), adsense_slot: v('ass').trim(), admob_banner: v('amb').trim(),
@@ -3759,7 +3852,7 @@
       ${Q('practice', L('Paano mag-practice kada subject?', 'How do I practice by subject?'), L('Pumunta sa <a href="#/practice">Practice</a>, pumili ng level, subject, ilang tanong at timer, tapos <b>Simulan ang practice</b>. Agad makikita kung tama o mali, kasama ang paliwanag.', 'Go to <a href="#/practice">Practice</a>, pick the level, subject, number of questions and timer, then <b>Start practice</b>. You see right away if you are right or wrong, with an explanation.'))}
       ${Q('results', L('Saan ang resulta, PDF, email at print?', 'Where are results, PDF, email and print?'), L('Sa <a href="#/history">Resulta</a> ang lahat ng exam mo at ang score kada subject. Buksan ang isang exam para sa review. Sa Premium, may <b>I-save bilang PDF</b>, <b>Ipadala sa email</b> at <b>Print</b> sa itaas ng resulta (gumagana offline ang PDF at Print).', '<a href="#/history">Results</a> has all your exams and your score by subject. Open an exam for the review. With Premium, <b>Save as PDF</b>, <b>Send to email</b> and <b>Print</b> are at the top of the result (PDF and Print work offline).'))}
       ${Q('look', L('Paano palitan ang level, wika, itsura at tunog?', 'How do I change the level, language, look and sounds?'), L('<b>Level:</b> pindutin ang PRO / SUBPRO sa Home, Practice o Account.<br><b>Wika:</b> pindutin ang flag sa kanang itaas.<br><b>Itsura at Tunog:</b> sa <a href="#/account">Account</a>. Para mag-zoom, i-pinch ang screen gamit ang dalawang daliri.', '<b>Level:</b> tap PRO / SUBPRO on Home, Practice or Account.<br><b>Language:</b> tap the flag at the top right.<br><b>Look and Sounds:</b> in <a href="#/account">Account</a>. To zoom, pinch the screen with two fingers.'))}
-      ${Q('bio', L('Paano mag-login gamit ang face o fingerprint?', 'How do I log in with face or fingerprint?'), L('Sa <a href="#/account">Account</a> → <b>Mabilis na login</b>, piliin ang Face o Fingerprint (Premium). Sa susunod, pindutin lang ito sa login screen. Pwede ka ring mag-login gamit ang <b>code sa email</b>, walang password.', 'In <a href="#/account">Account</a> → <b>Quick login</b>, choose Face or Fingerprint (Premium). Next time, just tap it on the login screen. You can also log in with an <b>email code</b>, no password.'))}
+      ${Q('bio', L('Paano mag-login gamit ang face o fingerprint?', 'How do I log in with face or fingerprint?'), L('Sa <a href="#/account">Account</a> → <b>Mabilis na login</b>, piliin ang Face o Fingerprint (libre at Premium). Sa susunod, pindutin lang ito sa login screen. Pwede ka ring mag-login gamit ang <b>code sa email</b>, walang password.', 'In <a href="#/account">Account</a> → <b>Quick login</b>, choose Face or Fingerprint (Free and Premium). Next time, just tap it on the login screen. You can also log in with an <b>email code</b>, no password.'))}
       ${Q('offline', L('Gumagana ba kahit walang internet?', 'Does it work without internet?'), L('Oo, sa Premium: lahat ng practice, mock exam at naka-save na exam set. Pwede ka ring <b>mag-login offline</b> gamit ang password o face/fingerprint, sa device na nag-login ka na online dati. Ise-save online ang mga resulta kapag may internet na. Kailangang mag-online kahit isang beses bawat 30 araw. Kailangan ng internet sa libreng plan.', 'Yes, with Premium: all practice, mock exams and saved exam sets. You can also <b>log in offline</b> with your password or face/fingerprint, on a device where you logged in online before. Results are saved online when the internet is back. Go online at least once every 30 days. The free plan needs internet.'))}
       ${Q('logout', L('Bakit ako na-logout?', 'Why was I logged out?'), L('<b>Isang device lang ang pwedeng naka-login</b> sa isang account. Kapag nag-login ka sa ibang phone o computer, malo-logout agad ang nauna (sa loob ng ilang segundo). Kung hindi ikaw ang nag-login, mag-login ulit at palitan agad ang password sa <a href="#/account">Account</a>.', '<b>Only one device can be logged in</b> to an account. When you log in on another phone or computer, the first one is logged out within seconds. If it was not you, log in again and change your password right away in <a href="#/account">Account</a>.'))}
       ${Q('pay', L('Paano magbayad o i-extend ang Premium?', 'How do I pay or extend Premium?'), L('Sa <a href="#/premium">Account → Premium</a>. Magbayad online (bukas agad ang Premium), o manual: magpadala sa account na nakalista, tapos ilagay ang reference number at screenshot ng resibo. May email kapag na-approve na.', 'In <a href="#/premium">Account → Premium</a>. Pay online (Premium opens right away), or manually: send to a listed account, then enter the reference number and a screenshot of the receipt. You get an email once it is approved.'))}
