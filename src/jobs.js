@@ -26,12 +26,17 @@ async function studyReminders(now = Date.now()) {
 // Premium ends in 3 days, in 1 day, or just ended: one email each (only when Premium is required).
 async function expiryReminders(st, now = Date.now()) {
   if (st.premium_required !== '1') return 0;
-  const rows = await db.all(`SELECT id, name, email, premium_until, expiry_notice FROM users
-    WHERE role != 'admin' AND disabled = 0 AND premium_until > ? AND premium_until < ?`, now - 2 * 864e5, now + 3 * 864e5);
+  // plan_days: the days of the payment that set this end date (null when the admin set it by hand).
+  const rows = await db.all(`SELECT u.id, u.name, u.email, u.premium_until, u.expiry_notice,
+      (SELECT p.days FROM payments p WHERE p.user_id = u.id AND p.status = 'approved' AND p.period_to = u.premium_until ORDER BY p.id DESC LIMIT 1) AS plan_days
+    FROM users u WHERE u.role != 'admin' AND u.disabled = 0 AND u.premium_until > ? AND u.premium_until < ?`, now - 2 * 864e5, now + 3 * 864e5);
   let n = 0;
   for (const u of rows) {
     const left = u.premium_until - now;
     const stage = left <= 0 ? 0 : left <= 864e5 ? 1 : 3;
+    // A short plan (daily or a few days) gets no "ends in 3 days / 1 day" email right after paying: only the
+    // reminders that fall inside the plan are sent (a 1-day plan gets only the "Premium ended" email).
+    if (stage && u.plan_days && Number(u.plan_days) <= stage) continue;
     const tag = `${u.premium_until}:${stage}`;
     // Already sent this stage (or a later one) for this end date.
     const [doneUntil, doneStage] = String(u.expiry_notice || '').split(':');
