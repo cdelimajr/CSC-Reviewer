@@ -96,7 +96,7 @@ jobs:
         working-directory: apps/mobile/android
         run: ./gradlew assembleDebug --no-daemon
       - run: cp android/app/build/outputs/apk/debug/app-debug.apk CSE-Reviewer.apk
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with: { name: CSE-Reviewer-Android, path: apps/mobile/CSE-Reviewer.apk }
 
   windows:
@@ -110,7 +110,7 @@ jobs:
       - run: npm pkg set version=$env:APP_VERSION
       - run: npm run dist:win
       # latest.yml and .blockmap let the installed app find and download updates (only the changed parts).
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: CSE-Reviewer-Windows
           path: |
@@ -140,7 +140,7 @@ jobs:
             -derivedDataPath build CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" build
           mkdir -p Payload && cp -R build/Build/Products/Release-iphoneos/App.app Payload/
           zip -qr CSE-Reviewer-unsigned.ipa Payload
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with: { name: CSE-Reviewer-iPhone-unsigned, path: apps/mobile/CSE-Reviewer-unsigned.ipa }
 
   release:
