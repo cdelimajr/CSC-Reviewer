@@ -438,6 +438,21 @@ const lastCode = (to) => {
   r = await Boss('POST', '/api/promo/check', { code: 'GROUP10', plan: 'day' });
   assert.equal(r.data.days, 30, 'a plan that is off falls back to monthly');
   await A('PUT', '/api/admin/settings', { day_on: '1', price_week: '49', plan_week_days: '7' });
+  // 🏷️📅 A promo code for some plans only (Admin → Promo codes → For which plans)
+  r = await A('POST', '/api/admin/promos', { code: 'SHORT5', kind: 'fixed', value: 5, plans: ['day', 'week', 'nope'] });
+  assert.equal(r.data.plans, 'day,week', 'only real plans kept');
+  assert.equal((await A('POST', '/api/admin/promos', { code: 'ALLFOUR', kind: 'fixed', value: 5, plans: ['day', 'week', 'month', 'year'] })).data.plans, '', 'all four = every plan');
+  r = await Boss('POST', '/api/promo/check', { code: 'SHORT5', plan: 'week' });
+  assert.deepEqual([r.data.price, r.data.amount], [49, 44], 'code works on its plan');
+  r = await Boss('POST', '/api/promo/check', { code: 'SHORT5', plan: 'year' });
+  assert.equal(r.status, 400); assert.match(r.data.error, /Isang araw at Lingguhan/, 'says which plans');
+  assert.deepEqual(r.data.plans, ['day', 'week'], 'lists the plans to switch to');
+  assert.equal((await Boss('POST', '/api/payments/checkout', { agree_no_refund: true, plan: 'month', code: 'SHORT5' })).data.code, 'promo', 'checkout refuses it on another plan');
+  assert.match((await Boss('GET', '/api/bulk/quote?qty=2&code=SHORT5')).data.error, /Para lang sa/, 'not on a monthly group');
+  const short = (await A('GET', '/api/admin/promos')).data.rows.find((x) => x.code === 'SHORT5');
+  assert.deepEqual(short.prices.map((x) => [x.id, x.amount]), [['day', 15], ['week', 44]], 'admin sees the price on each of its plans');
+  await A('PATCH', '/api/admin/promos/' + short.id, { plans: [] });
+  assert.equal((await Boss('POST', '/api/promo/check', { code: 'SHORT5', plan: 'year' })).data.amount, 985, 'no plans ticked = every plan');
   // 🏷️👥 Promo code on Group Premium: taken off the group total after the group discount
   r = await Boss('GET', '/api/bulk/quote?qty=10&code=group10');
   assert.equal(r.data.total, 757.35, '10 × ₱99 − 15% − 10%'); assert.equal(r.data.promo.code, 'GROUP10');
@@ -681,7 +696,7 @@ const lastCode = (to) => {
 
   // Admin
   assert.equal((await U('GET', '/api/admin/users')).status, 403, 'user blocked from admin');
-  r = await A('GET', '/api/admin/overview'); assert.equal(r.data.users, 8); assert.equal(r.data.premiumUsers, 6); // Ana got Premium with a promo code; Boss, Gina, Gabo and Gelo with Group Premium
+  r = await A('GET', '/api/admin/overview'); assert.ok(r.data.sales30d > 0 && r.data.sales7d === r.data.sales30d && r.data.paid30d > 0, 'sales on the overview'); assert.equal(typeof r.data.expiring7d, 'number'); assert.equal(r.data.users, 8); assert.equal(r.data.premiumUsers, 6); // Ana got Premium with a promo code; Boss, Gina, Gabo and Gelo with Group Premium
   r = await A('POST', '/api/admin/sets', { mode: 'subpro' }); assert.equal(r.data.number, 4);
   r = await A('POST', '/api/admin/questions', { subject: 'general', topic: 'Test', question: 'Q?', choices: ['a', 'b', 'c', 'd'], answer: 2 });
   assert.ok(r.data.id);

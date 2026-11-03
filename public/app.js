@@ -3,7 +3,7 @@
   'use strict';
   const $app = document.getElementById('app');
   const LETTERS = ['A', 'B', 'C', 'D'];
-  const APP_VERSION = '1.33.0'; // keep in step with package.json and docs/DOKUMENTASYON.md
+  const APP_VERSION = '1.34.0'; // keep in step with package.json and docs/DOKUMENTASYON.md
   const S = { user: null, meta: null, exam: null, timer: null, saveT: null };
 
   /* ---------------- helpers ---------------- */
@@ -148,6 +148,11 @@
     if (d) return `You have used your ${d[1]} free practice sessions for today. Come back tomorrow, or get Premium for no limit.`;
     const g = /^Pumili ng (\d+) hanggang (\d+) na tao\.$/.exec(m);
     if (g) return `Choose ${g[1]} to ${g[2]} people.`;
+    const pl = /^Para lang sa (.+) na plan ang promo code na ito\. Pumili ng ganoong plan\.$/.exec(m);
+    if (pl) {
+      const EN = { 'Isang araw': 'Daily', Lingguhan: 'Weekly', Buwanan: 'Monthly', Taunan: 'Yearly' };
+      return `This promo code is only for the ${pl[1].replace(/ at /g, ' and ').replace(/Isang araw|Lingguhan|Buwanan|Taunan/g, (x) => EN[x])} plan. Choose one of those plans.`;
+    }
     return m;
   };
 
@@ -175,7 +180,7 @@
     try { data = await res.json(); } catch { /* empty */ }
     if (data && data.token) store.set('cse-token', data.token);
     if (!res.ok) {
-      const e = new Error(serverText(data && data.error) || L('May problema sa koneksyon.', 'There is a connection problem.')); e.status = res.status; e.code = data && data.code;
+      const e = new Error(serverText(data && data.error) || L('May problema sa koneksyon.', 'There is a connection problem.')); e.status = res.status; e.code = data && data.code; e.data = data;
       if (e.code === 'replaced') endedElsewhere();
       throw e;
     }
@@ -583,6 +588,86 @@
     // A very short buzz on Android phones when something is tapped (Account → Sounds → Vibrate).
     const buzz = (ms = 8) => { if (get().buzz !== false && navigator.vibrate) try { navigator.vibrate(ms); } catch { /* not allowed */ } };
     return { playSoon, get, set: (v) => { store.set(KEY, { ...get(), ...v }); Prefs.touched(); }, play, flip, buzz, TONES };
+  })();
+  /* ---------------- celebration: a passed mock exam ----------------
+     A recorded, natural-sounding voice says "Congratulations! Let's celebrate!" (sounds/congrats.mp3, about
+     2.5 seconds, 20 KB, kept on the device so it works offline), with confetti and a vibration (Android).
+     - It plays as media (an <audio> element), not as a tap sound (Web Audio), so the iPhone silent switch and
+       Android silent or vibrate mode do not mute it. On iPhone (Safari 16.4 and up) the audio session is also set
+       to "playback" for the clip. It cannot be louder than the phone's media volume: at 0, only the confetti,
+       the vibration and the 🎉 on the screen show.
+     - Phones and browsers play sound only after a tap. The clip is unlocked (played muted for a moment) at the
+       first tap in a mock exam, so it can play by itself when the result opens. If it is still blocked, it plays
+       at the next tap, and the result has a 🔊 button to hear it again.
+     - Account → Sounds → "Voice when you pass" turns it off. It has its own switch, apart from the tap sounds. */
+  const Cheer = (() => {
+    let el = null, unlocked = false;
+    const on = () => Sound.get().cheer !== false;
+    const audio = () => {
+      if (!el) { el = new Audio('sounds/congrats.mp3'); el.preload = 'auto'; el.setAttribute('playsinline', ''); }
+      return el;
+    };
+    const session = (type) => { try { if (navigator.audioSession) navigator.audioSession.type = type; } catch { /* not on this device */ } };
+    function unlock() {
+      if (unlocked || !on()) return;
+      try {
+        const a = audio(); a.muted = true;
+        const p = a.play();
+        const done = () => { a.pause(); a.currentTime = 0; a.muted = false; unlocked = true; };
+        if (p && p.then) p.then(done, () => { a.muted = false; }); else done();
+      } catch { /* no audio on this device */ }
+    }
+    async function say() {
+      const a = audio();
+      session('playback');
+      a.onended = a.onpause = () => session('auto');
+      a.muted = false; a.volume = 1; a.currentTime = 0;
+      await a.play();
+    }
+    function voice() {
+      if (!on()) return;
+      say().catch(() => {
+        // Blocked until the user touches the app: play at the next tap (within a minute).
+        const EV = ['pointerdown', 'keydown'];
+        const off = () => EV.forEach((e) => document.removeEventListener(e, now, true));
+        const now = () => { off(); say().catch(() => {}); };
+        EV.forEach((e) => document.addEventListener(e, now, true));
+        setTimeout(off, 60e3);
+      });
+    }
+    // Confetti for about 3 seconds (none with "Less motion").
+    function confetti() {
+      if (reduceMotion()) return;
+      const c = document.createElement('canvas'); c.className = 'confetti'; c.setAttribute('aria-hidden', 'true');
+      document.body.appendChild(c);
+      const dpr = Math.min(2, window.devicePixelRatio || 1), W = innerWidth, H = innerHeight;
+      c.width = W * dpr; c.height = H * dpr;
+      const g = c.getContext('2d'); g.scale(dpr, dpr);
+      const COLORS = ['#1e40af', '#0f8a5f', '#f5c542', '#e8505b', '#6b8cff', '#ff9f43'];
+      const bits = Array.from({ length: Math.min(160, Math.round(W / 4)) }, (_, i) => ({
+        x: W / 2 + (Math.random() - 0.5) * W * 0.3, y: H * 0.35, vx: (Math.random() - 0.5) * 14, vy: -6 - Math.random() * 10,
+        r: Math.random() * Math.PI, vr: (Math.random() - 0.5) * 0.4, w: 6 + Math.random() * 6, h: 4 + Math.random() * 6, c: COLORS[i % COLORS.length],
+      }));
+      const t0 = performance.now();
+      const step = (t) => {
+        const age = t - t0;
+        g.clearRect(0, 0, W, H);
+        g.globalAlpha = age > 2400 ? Math.max(0, 1 - (age - 2400) / 800) : 1;
+        for (const b of bits) {
+          b.vy += 0.32; b.vx *= 0.99; b.x += b.vx; b.y += b.vy; b.r += b.vr;
+          g.save(); g.translate(b.x, b.y); g.rotate(b.r); g.fillStyle = b.c; g.fillRect(-b.w / 2, -b.h / 2, b.w, b.h); g.restore();
+        }
+        if (age < 3200 && c.isConnected) requestAnimationFrame(step); else c.remove();
+      };
+      requestAnimationFrame(step);
+    }
+    const buzz = () => { if (navigator.vibrate) try { navigator.vibrate([90, 60, 90, 60, 220]); } catch { /* not allowed */ } };
+    function celebrate() { voice(); confetti(); buzz(); }
+    // Unlock at the first tap in a mock exam (not in practice).
+    const early = () => { if (S.exam && S.exam.a && S.exam.a.mode !== 'practice') unlock(); };
+    document.addEventListener('pointerdown', early, true);
+    document.addEventListener('keydown', early, true);
+    return { celebrate, voice, unlock, on };
   })();
   // A soft tap for buttons and menus. Exam choices have their own sounds (see choose()).
   const PRESS = '.btn, .seg button, .tabs button, .bottomnav a, .topbar a, .topbar button, .subject-btn, details.fold > summary, .navgrid button, .lvl-opt, .lang-flag, .choice, .list-item, .exam-card, .logout-btn';
@@ -1643,7 +1728,7 @@
       ${S.user.role === 'admin' ? '' : `<div class="card" style="margin-top:12px">
         <h3>${p.active && until ? L('I-extend ang Premium', 'Extend Premium') : L('Kumuha ng Premium', 'Get Premium')}</h3>
         ${plans.length > 1 ? `<div class="seg plan-seg" id="planSel" role="group" aria-label="${L('Pumili ng plan', 'Choose a plan')}">${plans.map((x) => `<button type="button" data-plan="${x.id}" class="${x.id === plan.id ? 'active' : ''}" aria-pressed="${x.id === plan.id}">
-          <b>${PLAN_NAME(x)}</b><span class="small">${esc(pesos(x.price))} / ${x.days} ${x.days === 1 ? L('araw', 'day') : L('araw', 'days')}</span>${x.save ? `<span class="pill ok">${L('Tipid', 'Save')} ${x.save}%</span>` : ''}</button>`).join('')}</div>` : ''}
+          <span class="plan-name">${PLAN_NAME(x)}</span><span class="plan-price" data-pp="${x.id}">${esc(pesos(x.price))}</span>${x.save ? `<span class="pill ok">${L('Tipid', 'Save')} ${x.save}%</span>` : ''}</button>`).join('')}</div>` : ''}
         <p style="margin:6px 0" id="priceTag"></p>
         ${p.promo || p.online || manual ? `<form id="promoF" class="promo-box" autocomplete="off"><label for="promoIn">${L('May promo o group code ka?', 'Have a promo or group code?')}</label>
           <div class="row" style="flex-wrap:nowrap"><input type="text" id="promoIn" maxlength="30" placeholder="${L('hal.', 'e.g.')} REVIEW20 / GRP-XXXX-XXXX" style="text-transform:uppercase;margin:0" autocapitalize="characters" spellcheck="false">
@@ -1683,15 +1768,22 @@
     // One button; the user picks GCash, Maya, card, QR Ph, etc. on PayMongo's page.
     /* Promo code: the server checks it and works out the new price (and again on payment, so the price here
        is only for showing). A 100%-off code turns on Premium right away with "Use the code". */
-    let promo = null;
+    let promo = null, promoCode = ''; // promoCode: the code the user applied, kept when a plan it does not work on is picked
     const peso = pesos;
     const priceNow = () => (promo ? peso(promo.amount) : peso(plan.price));
     const paintPromo = () => {
+      // The plan buttons show the price big, with no days. The chosen plan shows the price after the code.
+      $$('#planSel [data-pp]').forEach((el) => {
+        const x = plans.find((y) => y.id === el.dataset.pp);
+        el.innerHTML = promo && x === plan ? `<s>${esc(peso(x.price))}</s> ${esc(priceNow())}` : esc(peso(x.price));
+      });
+      // The days are still written once below the plans, so the user knows what the price buys (RA 11967).
       const tag = $('#priceTag');
-      const per = L(`para sa ${plan.days} araw`, `for ${plan.days} ${plan.days === 1 ? 'day' : 'days'}`) + (plans.length > 1 ? ` (${PLAN_NAME(plan)})` : '');
-      if (tag) tag.innerHTML = promo
-        ? `<span class="pill warn" style="font-size:15px"><s class="muted">${esc(peso(plan.price))}</s> ${esc(priceNow())} ${per}</span> <span class="pill ok">${esc(promo.code)} −${esc(promo.kind === 'percent' ? promo.value + '%' : peso(promo.value))}</span>`
-        : `<span class="pill warn" style="font-size:15px">${esc(peso(plan.price))} ${per}</span>`;
+      const per = L(`Premium sa loob ng <b>${plan.days} araw</b>`, `Premium for <b>${plan.days} ${plan.days === 1 ? 'day' : 'days'}</b>`) + (plans.length > 1 ? ` · ${PLAN_NAME(plan)}` : '');
+      const tagPromo = promo ? ` <span class="pill ok">${esc(promo.code)} −${esc(promo.kind === 'percent' ? promo.value + '%' : peso(promo.value))}</span>` : '';
+      if (tag) tag.innerHTML = plans.length > 1
+        ? `<span class="small">${L('Babayaran', 'You pay')}: <b>${esc(priceNow())}</b> · ${per}</span>${tagPromo}`
+        : `<span class="price-big">${promo ? `<s class="muted">${esc(peso(plan.price))}</s> ` : ''}${esc(priceNow())}</span> <span class="small">${per}</span>${tagPromo}`;
       const info = $('#promoInfo');
       if (info) info.innerHTML = !promo ? '' : promo.free
         ? `<div class="notice" style="margin:8px 0">🎉 ${L(`Libre ang Premium (${plan.days} araw) sa code na ito. Walang babayaran.`, `Premium (${plan.days} days) is free with this code. Nothing to pay.`)}</div>
@@ -1701,7 +1793,7 @@
           <a href="#" id="promoX">${L('Alisin ang code', 'Remove the code')}</a></p>`;
       // With a free code there is nothing to pay, so the pay buttons are hidden.
       $$('#paynow, .pay-fold').forEach((x) => x.classList.toggle('promo-hide', !!(promo && promo.free)));
-      if ($('#promoX')) $('#promoX').onclick = (e) => { e.preventDefault(); promo = null; $('#promoIn').value = ''; paintPromo(); pmInfo(); };
+      if ($('#promoX')) $('#promoX').onclick = (e) => { e.preventDefault(); promo = null; promoCode = ''; $('#promoIn').value = ''; paintPromo(); pmInfo(); };
       if ($('#promoFree')) $('#promoFree').onclick = async (e) => {
         const b = e.currentTarget; b.disabled = true;
         try {
@@ -1717,10 +1809,26 @@
       $('#promoErr').textContent = '';
       if (!code) return;
       $('#promoGo').disabled = true;
-      try { promo = await api('POST', '/api/promo/check', { code, plan: plan.id }); } catch (err) { promo = null; $('#promoErr').textContent = err.message; }
+      promoCode = code;
+      await promoCheck();
       $('#promoGo').disabled = false;
-      if (promo && promo.group) { const g = promo.code; promo = null; paintPromo(); pmInfo(); return groupRedeem(g); }
+      if (promo && promo.group) { const g = promo.code; promo = null; promoCode = ''; paintPromo(); pmInfo(); return groupRedeem(g); }
       paintPromo(); pmInfo();
+    };
+    /* Check the applied code for the chosen plan. A code made for some plans only (Admin → Promo codes) says
+       which plans it works on, with a button to switch to each of them. */
+    const promoCheck = async () => {
+      $('#promoErr').textContent = '';
+      if (!promoCode) { promo = null; return; }
+      try { promo = await api('POST', '/api/promo/check', { code: promoCode, plan: plan.id }); } catch (err) {
+        promo = null;
+        $('#promoErr').textContent = err.message;
+        const ok = err.data && err.data.plans;
+        const to = (ok || []).filter((id) => id !== plan.id && plans.some((x) => x.id === id));
+        if (to.length) $('#promoErr').insertAdjacentHTML('beforeend', `<div class="row" style="margin-top:6px">${to.map((id) => `<button type="button" class="btn secondary small" data-to-plan="${id}">${L('Lumipat sa', 'Switch to')} ${PLAN_NAME({ id })}</button>`).join('')}</div>`);
+        $$('#promoErr [data-to-plan]').forEach((b) => (b.onclick = () => { const t = $(`#planSel [data-plan="${b.dataset.toPlan}"]`); if (t) t.click(); }));
+        if (!ok) promoCode = ''; // a wrong or used-up code is not tried again on the next plan
+      }
     };
     // A Group Premium code: a seat someone bought for this user. Using it turns on Premium right away.
     const groupRedeem = (code) => {
@@ -1761,9 +1869,7 @@
       plan = plans.find((x) => x.id === b.dataset.plan) || plans[0];
       store.set('cse-plan', plan.id);
       $$('#planSel button').forEach((x) => { x.classList.toggle('active', x === b); x.setAttribute('aria-pressed', String(x === b)); });
-      if (promo && !promo.group) {
-        try { promo = await api('POST', '/api/promo/check', { code: promo.code, plan: plan.id }); } catch (err) { promo = null; $('#promoErr').textContent = err.message; }
-      }
+      if (promoCode) await promoCheck();
       paintPromo(); pmInfo();
     }));
     if ($('#proof')) $('#proof').onchange = async (e) => {
@@ -2667,10 +2773,12 @@
       a = { ...a, passing: S.meta.exams[a.mode]?.passing || 80 };
     } else a = await cachedGet('/api/attempts/' + id);
     if (!a.finished_at) return go('#/exam/' + id);
-    if (S.justDone === String(id)) { S.justDone = null; setTimeout(() => Sound.play('finish'), 150); }
     const p = pct(a.score, a.total);
     const pass = p >= a.passing;
     const practice = a.mode === 'practice';
+    // Just finished: a passed mock exam gets the celebration (voice, confetti, vibration); anything else the "finish" tune.
+    const cheer = S.justDone === String(id) && pass && !practice;
+    if (S.justDone === String(id)) { S.justDone = null; if (!cheer) setTimeout(() => Sound.play('finish'), 150); }
     const lite = !!a.lite; // free plan: review of the first few questions of each subject only
     const liteMock = lite && !practice;
     const mins = Math.round((a.finished_at - a.started_at) / 60000);
@@ -2679,13 +2787,22 @@
     const blankCount = a.items.filter((_, i) => a.answers[i] === undefined).length;
     const lv = levelOf(a);
     const tools = !lite && S.premium; // Premium: PDF, email, print
+    // Not passed yet: how many more correct answers were needed.
+    const short = !practice && !pass ? Math.max(1, Math.ceil(a.passing * a.total / 100) - a.score) : 0;
+    // Against the last mock exam of the same kind before this one (from the results saved on the device, so no waiting).
+    const prev = practice ? null : withLocal(store.get(uk('cse-c') + '/api/attempts'), null).list
+      .filter((x) => x.mode === a.mode && x.finished_at && x.finished_at < a.finished_at && String(x.id) !== String(id) && x.total)
+      .sort((x, y) => y.finished_at - x.finished_at)[0];
+    const diff = prev ? p - pct(prev.score, prev.total) : null;
     shell('history', `
       <div class="card" style="text-align:center">
         <div class="result-head">${showLevel() ? levelChip(lv, 'big') : ''}${setChip(a)}</div>
         <div class="muted small">${esc(a.title)}</div>
         <div class="score-ring" role="img" aria-label="Score ${p}% (${a.score}/${a.total})" style="background:conic-gradient(${color} ${p * 3.6}deg, var(--line) 0)"><div class="in" aria-hidden="true"><div><div class="pct">${p}%</div><div class="muted small">${a.score}/${a.total}</div></div></div></div>
-        ${practice ? `<h2 style="margin:6px 0">${L('Tapos na ang practice!', 'Practice done!')}</h2>` : pass ? `<h2 style="margin:6px 0;color:var(--ok)">🎉 ${L('PASADO!', 'PASSED!')}</h2>` : `<h2 style="margin:6px 0;color:var(--bad)">${L('Hindi pa pasado', 'Not passed yet')}</h2>`}
+        ${practice ? `<h2 style="margin:6px 0">${L('Tapos na ang practice!', 'Practice done!')}</h2>` : pass ? `<div class="pass-head"><h2 class="${cheer ? 'pass-pop' : ''}" style="margin:6px 0;color:var(--ok)">🎉 ${L('PASADO!', 'PASSED!')}</h2><button type="button" class="btn ghost small" id="cheerAgain" aria-label="${L('Pakinggan ulit ang pagbati', 'Hear the congratulations again')}">🔊</button></div>` : `<h2 style="margin:6px 0;color:var(--bad)">${L('Hindi pa pasado', 'Not passed yet')}</h2>`}
         <p class="muted" style="margin:0">${practice ? L('Ituloy lang ang pag-practice!', 'Keep practicing!') : pass ? L(`Lampas sa ${a.passing}% na passing rate. Galing!`, `Above the ${a.passing}% passing rate. Great job!`) : L(`Kailangan ng ${a.passing}% para pumasa. Kaya mo 'yan, review pa!`, `You need ${a.passing}% to pass. You can do it, keep reviewing!`)}</p>
+        ${short ? `<p class="small" style="margin:8px 0 0">🎯 ${L(`Kulang na lang ng <b>${short}</b> tamang sagot para pumasa.`, `Just <b>${short}</b> more correct answer${short === 1 ? '' : 's'} to pass.`)}</p>` : ''}
+        ${diff !== null ? `<p class="small" style="margin:6px 0 0">${diff > 0 ? `📈 <b style="color:var(--ok)">+${diff}%</b>` : diff < 0 ? `📉 <b style="color:var(--bad)">${diff}%</b>` : '➖ <b>0%</b>'} ${L(`kumpara sa huling mock exam mo (${pct(prev.score, prev.total)}%)`, `compared with your last mock exam (${pct(prev.score, prev.total)}%)`)}</p>` : ''}
         <p class="muted small">${L(`Tagal: ${mins} minuto · ${wrongCount} mali · ${blankCount} walang sagot`, `Time: ${mins} min · ${wrongCount} wrong · ${blankCount} unanswered`)}</p>
         ${isLocal(id) ? `<p class="muted small">${L('⏳ Ginawa offline. Ise-save ito online kapag may internet na.', '⏳ Made offline. It will be saved online when the internet is back.')}</p>` : ''}
         <div class="row" style="justify-content:center">${liteMock ? `<a class="btn" href="#/premium">⭐ ${L('Buong review sa Premium', 'Full review with Premium')}</a>` : `<button class="btn" id="again">${L('Ulitin (bagong set)', 'Retake (new set)')}</button>`}</div>
@@ -2704,6 +2821,8 @@
       <div class="tabs" id="rf"><button data-f="wrong" class="active">${L('Mali at walang sagot', 'Wrong and unanswered')}</button><button data-f="all">${L('Lahat', 'All')}</button></div>
       <div class="list" id="rlist"></div>`);
     if (!tools && $('#rPdf')) ['#rPdf', '#rMail', '#rPrint'].forEach((k) => ($(k).onclick = () => go('#/premium')));
+    if ($('#cheerAgain')) $('#cheerAgain').onclick = () => { if (!Cheer.on()) toast(L('Naka-off ang boses sa Account → Tunog.', 'The voice is off in Account → Sounds.')); Cheer.celebrate(); };
+    if (cheer) setTimeout(() => Cheer.celebrate(), 250);
     const paint = (f) => {
       $$('#rf button').forEach((b) => b.classList.toggle('active', b.dataset.f === f));
       const rows = a.items.map((it, i) => ({ it, i, ch: a.answers[i] })).filter((x) => !x.it.locked && (f === 'all' || x.ch !== x.it.answer));
@@ -2867,6 +2986,7 @@
         <p class="muted small" style="margin:10px 0 0">${L('Bersyon', 'Version')} ${APP_VERSION}</p>`);
   function viewAccount() {
     const premOn = S.user.role !== 'admin' && S.premium && S.user.premium_until > Date.now();
+    const daysLeft = premOn ? Math.max(1, Math.ceil((S.user.premium_until - Date.now()) / 864e5)) : 0;
     const premNote = S.user.role === 'admin' ? L('Admin: bukas lahat', 'Admin: everything open')
       : premOn ? L('Aktibo hanggang ', 'Active until ') + new Date(S.user.premium_until).toLocaleDateString('en-PH')
       : S.config.premium_required ? L('Hindi pa aktibo. Sa Premium: lahat ng exam set, walang limit, gumagana offline, PDF/email/print ng resulta.', 'Not active yet. With Premium: all exam sets, no limits, works offline, result PDF/email/print.')
@@ -2877,6 +2997,7 @@
       <div class="card">
         <div class="row between"><div><b>${esc(S.user.name)}</b><div class="muted small">${esc(S.user.email)}</div></div>
         <span class="pill">${S.user.role === 'admin' ? 'Admin' : 'Reviewer'}</span></div>
+        ${premOn ? `<a class="prem-left" href="#/premium">⭐ <b>Premium</b> · ${L(`${daysLeft} araw pa`, `${daysLeft} ${daysLeft === 1 ? 'day' : 'days'} left`)} <span class="muted small">(${L('hanggang', 'until')} ${esc(new Date(S.user.premium_until).toLocaleDateString('en-PH', { month: 'short', day: 'numeric', year: 'numeric' }))})</span><span class="grow"></span><span class="small">${L('I-extend', 'Extend')} ›</span></a>` : ''}
         <div class="row between lang-row"><span class="small"><b>${L('Wika', 'Language')}</b> <span class="muted">· ${L('pindutin ang flag para magpalit', 'tap the flag to switch')}</span></span>${flagBtn('big')}</div>
         ${showLevel() ? `<div class="row between lang-row"><span class="small"><b>Level</b></span><div class="seg lvl-seg">${Object.entries(LEVELS).map(([k, [c, n]]) => `<button type="button" class="lvl-opt ${k} ${myLevel() === k ? 'active' : ''}" data-level="${k}" title="${n}">${c}</button>`).join('')}</div></div>` : ''}
       </div>
@@ -2908,15 +3029,14 @@
       ${fold('acc-sound', `<h3>${L('Tunog', 'Sounds')}</h3><span class="pill" id="sndPill">${Sound.get().on ? L('Naka-on', 'On') : L('Naka-off', 'Off')}</span>`, `
         <p class="muted small" style="margin:0 0 10px">${L('Maiikling tunog kapag pumindot, pag-flip ng pahina sa exam, tama o mali sa practice, natapos ang exam, at 5 minutong natitira. Gumagana offline.', 'Short sounds when you tap, a page turn in the exam, right or wrong in practice, when an exam ends, and at 5 minutes left. Works offline.')}</p>
         <label class="check"><input type="checkbox" id="sndOn" ${Sound.get().on ? 'checked' : ''}> ${L('Naka-on ang tunog', 'Sounds on')}</label>
+        <label class="check"><input type="checkbox" id="sndCheer" ${Cheer.on() ? 'checked' : ''}> ${L('Boses na "Congratulations!" kapag pumasa sa mock exam', 'A "Congratulations!" voice when you pass a mock exam')}</label>
+        <p class="muted small" style="margin:4px 0 0 30px">${L('Tumutunog kahit naka-silent ang phone (sa lakas ng media volume), may kasamang confetti. Hiwalay ito sa ibang tunog.', 'Plays even when the phone is on silent (at the media volume), with confetti. It is separate from the other sounds.')} <a href="#" id="cheerTest">▶ ${L('Pakinggan', 'Listen')}</a></p>
         ${navigator.vibrate ? `<label class="check"><input type="checkbox" id="sndBuzz" ${Sound.get().buzz !== false ? 'checked' : ''}> ${L('Bahagyang vibrate kapag pumindot', 'Light vibration when you tap')}</label>` : ''}
         <label for="sndVol">${L('Lakas', 'Volume')}</label><input type="range" id="sndVol" min="0" max="100" step="5" value="${Math.round(Sound.get().vol * 100)}">
         <label>${L('Tono', 'Tone')}</label>
         <div class="seg" id="sndTone">${[['soft', L('Malambing', 'Soft')], ['marimba', 'Marimba'], ['retro', 'Retro']].map(([k, n]) => `<button type="button" data-tone="${k}" class="${Sound.get().theme === k ? 'active' : ''}">${n}</button>`).join('')}</div>
         <button type="button" class="btn ghost small" id="sndTest" style="margin-top:10px">▶ ${L('Subukan', 'Try it')}</button>`)}
-      ${fold('acc-pw', `<h3>${L('Palitan ang password', 'Change password')}</h3>`, `
-        <form id="pwf"><label>${L('Kasalukuyang password', 'Current password')}</label><input type="password" id="cur" autocomplete="current-password">
-        <label>${L('Bagong password', 'New password')}</label><input type="password" id="npw" autocomplete="new-password" placeholder="${L('8 characters o higit pa', '8 characters or more')}">
-        <div class="err" id="err"></div><button class="btn" type="submit">${L('I-save', 'Save')}</button></form>`)}
+      ${pwFold()}
       ${fold('acc-install', `<h3>${L('I-install sa phone', 'Install on your phone')}</h3>`, `
         <p class="muted small" style="margin:0 0 10px">${L('<b>Android (Chrome):</b> pindutin ang ⋮ menu → "Add to Home screen" o "Install app".<br><b>iPhone (Safari):</b> pindutin ang Share (□↑) → "Add to Home Screen".<br>Sa Premium, gumagana ito kahit offline. Kailangan ng internet para mag-login, magbayad, at makatanggap ng email.',
           '<b>Android (Chrome):</b> tap the ⋮ menu → "Add to Home screen" or "Install app".<br><b>iPhone (Safari):</b> tap Share (□↑) → "Add to Home Screen".<br>With Premium, it works even offline. You need internet to log in, pay, and get emails.')}</p>
@@ -2926,9 +3046,19 @@
       ${aboutFold()}
       </div>`, { cls: 'acc-menu', stay: true, open: !!F.key && F.key.startsWith('acc-') && F.key !== 'acc-menu' })
         // Free: Help and guide, Quick login and About the exam are open to everyone; the rest of "Settings and more" is Premium.
-        : freeAccount() + `<div class="stack" style="margin-top:12px">${helpFold()}${bioFold()}${aboutFold()}${legalFolds()}</div>`}`);
+        : freeAccount() + `<div class="stack" style="margin-top:12px">${helpFold()}${bioFold()}${pwFold()}${aboutFold()}${legalFolds()}</div>`}`);
     if ($('#accTour')) $('#accTour').onclick = () => Tour.replay();
     if ($('#bioCard')) paintBioCard();
+    // Change password: for every user (Free too), since it keeps the account safe.
+    $('#pwf').onsubmit = async (e) => {
+      e.preventDefault();
+      const npw = $('#npw').value;
+      try {
+        await api('POST', '/api/me/password', { current: $('#cur').value, password: npw });
+        OffAuth.remember(npw).catch(() => {}); // offline login on this device takes the new password, not the old one
+        toast(L('Napalitan na ang password.', 'Password changed.')); e.target.reset(); $('#err').textContent = '';
+      } catch (err) { $('#err').textContent = err.message; }
+    };
     if (!S.premium) return; // Free: none of the Premium settings' buttons are on the screen
     const pick = (sel, b) => $$(sel).forEach((x) => { x.classList.toggle('active', x === b); x.setAttribute('aria-pressed', String(x === b)); });
     $$('#themes [data-theme]').forEach((b) => (b.onclick = () => {
@@ -2955,6 +3085,8 @@
     const sec = $('[data-fold="acc-sec"]');
     if (sec) sec.addEventListener('toggle', () => { if (sec.open) paintSecurity(); });
     $$('[data-level]').forEach((b) => (b.onclick = () => { setLevel(b.dataset.level); route(); }));
+    $('#sndCheer').onchange = (e) => { Sound.set({ cheer: e.target.checked }); if (e.target.checked) Cheer.voice(); };
+    $('#cheerTest').onclick = (e) => { e.preventDefault(); Cheer.celebrate(); };
     $('#sndOn').onchange = (e) => { Sound.set({ on: e.target.checked }); $('#sndPill').textContent = e.target.checked ? L('Naka-on', 'On') : L('Naka-off', 'Off'); Sound.play('notify'); };
     if ($('#sndBuzz')) $('#sndBuzz').onchange = (e) => { Sound.set({ buzz: e.target.checked }); if (e.target.checked) Sound.buzz(20); };
     $('#sndVol').oninput = (e) => Sound.set({ vol: Number(e.target.value) / 100 });
@@ -2967,18 +3099,14 @@
       store.set('cse-look', { ...look(), zoom: 1 }); applyLook(); e.target.parentNode.remove();
       Undo.show({ msg: L('Ibinalik sa 100% ang zoom.', 'Zoom is back to 100%.'), revert: () => { store.set('cse-look', { ...look(), zoom: was }); applyLook(); if (location.hash === '#/account') route(); } });
     };
-    $('#pwf').onsubmit = async (e) => {
-      e.preventDefault();
-      const npw = $('#npw').value;
-      try {
-        await api('POST', '/api/me/password', { current: $('#cur').value, password: npw });
-        OffAuth.remember(npw).catch(() => {}); // offline login on this device takes the new password, not the old one
-        toast(L('Napalitan na ang password.', 'Password changed.')); e.target.reset(); $('#err').textContent = '';
-      } catch (err) { $('#err').textContent = err.message; }
-    };
     paintFixCard();
     if (window._installPrompt) { const b = $('#install'); b.hidden = false; b.onclick = () => window._installPrompt.prompt(); }
   }
+
+  const pwFold = () => fold('acc-pw', `<h3>${L('Palitan ang password', 'Change password')}</h3>`, `
+        <form id="pwf"><label>${L('Kasalukuyang password', 'Current password')}</label><input type="password" id="cur" autocomplete="current-password">
+        <label>${L('Bagong password', 'New password')}</label><input type="password" id="npw" autocomplete="new-password" placeholder="${L('8 characters o higit pa', '8 characters or more')}">
+        <div class="err" id="err"></div><button class="btn" type="submit">${L('I-save', 'Save')}</button></form>`);
 
   /* Account → Terms and Conditions. For everyone (Free and Premium).
      Plain words, in Tagalog and English. Keep in step with docs/DOKUMENTASYON.md (Section 1) when a rule changes. */
@@ -3033,7 +3161,7 @@
   function freeAccount() {
     return `<div class="card free-acc">
       <div class="row between"><h3 style="margin:0">Premium</h3><span class="pill">${L('Libre', 'Free')}</span></div>
-      <p class="muted small" style="margin:8px 0 12px">${L('Sa Premium, mabubuksan ang <b>Mga setting at iba pa</b>: itsura (kulay ng screen at zoom) at laki ng letra, tunog, paalala sa pag-aaral, backup, seguridad, password, Auto Fix, at iba pa. Kasama rin ang lahat ng exam set, walang limit, at gumagana offline. Libre para sa lahat ang Tulong at gabay, Mabilis na login, at Tungkol sa exam sa ibaba.', 'With Premium you get <b>Settings and more</b>: look (screen colors and zoom) and text size, sounds, study reminder, backup, security, password, Auto Fix, and more. It also opens all exam sets, no limits, and works offline. Help and guide, Quick login, and About the exam below are free for everyone.')}</p>
+      <p class="muted small" style="margin:8px 0 12px">${L('Sa Premium, mabubuksan ang <b>Mga setting at iba pa</b>: itsura (kulay ng screen at zoom) at laki ng letra, tunog, paalala sa pag-aaral, backup, seguridad, Auto Fix, at iba pa. Kasama rin ang lahat ng exam set, walang limit, at gumagana offline. Libre para sa lahat ang Tulong at gabay, Mabilis na login, Palitan ang password, at Tungkol sa exam sa ibaba.', 'With Premium you get <b>Settings and more</b>: look (screen colors and zoom) and text size, sounds, study reminder, backup, security, Auto Fix, and more. It also opens all exam sets, no limits, and works offline. Help and guide, Quick login, Change password, and About the exam below are free for everyone.')}</p>
       <div class="row"><a class="btn" href="#/premium">⭐ ${L('Kumuha ng Premium', 'Get Premium')} ›</a><a class="btn ghost" href="#/help">${L('Tulong', 'Help')} ›</a></div></div>`;
   }
 
@@ -3196,7 +3324,14 @@
       ${o.alerts7d ? `<a class="notice alert-notice" href="#/admin/audit" style="display:block;margin-top:12px">🛡️ ${L(`<b>${o.alerts7d}</b> alerto sa seguridad sa nakaraang 7 araw (kahina-hinalang login o maraming maling password) →`, `<b>${o.alerts7d}</b> security alert(s) in the last 7 days (suspicious login or many wrong passwords) →`)}</a>` : ''}
       ${o.pendingPayments ? `<a class="notice" href="#/admin/payments" style="display:block;margin-top:12px">💳 ${L(`May <b>${o.pendingPayments}</b> bayad na hinihintay ma-check →`, `<b>${o.pendingPayments}</b> payment(s) waiting to be checked →`)}</a>` : ''}
       ${!o.mail.enabled ? `<div class="notice" style="margin-top:12px;background:var(--warn-soft)">${L('⚠️ Hindi pa naka-set up ang email. Hindi pa nagpapadala ng verification code, resulta at resibo. Tingnan ang README (Email setup).', '⚠️ Email is not set up yet. Verification codes, results and receipts are not being sent. See the README (Email setup).')}</div>` : ''}
-      <div class="grid stats" style="margin-top:12px"><div class="card stat"><div class="v">${o.premiumUsers}</div><div class="l">Premium users</div></div></div>`;
+      <h3 style="margin:16px 0 0">💰 ${L('Premium at benta', 'Premium and sales')}</h3>
+      <div class="grid stats" style="margin-top:8px">
+        <div class="card stat"><div class="v">${o.premiumUsers}</div><div class="l">${L('Aktibong Premium users', 'Active Premium users')}</div></div>
+        <div class="card stat"><div class="v">${esc(pesos(o.sales7d || 0))}</div><div class="l">${L('Benta (7 araw)', 'Sales (7 days)')}</div></div>
+        <div class="card stat"><div class="v">${esc(pesos(o.sales30d || 0))}</div><div class="l">${L(`Benta (30 araw) · ${o.paid30d || 0} bayad`, `Sales (30 days) · ${o.paid30d || 0} payment(s)`)}</div></div>
+        <div class="card stat"><div class="v">${o.expiring7d || 0}</div><div class="l">${L('Matatapos ang Premium sa loob ng 7 araw', 'Premium ending within 7 days')}</div></div>
+      </div>
+      <p class="muted small" style="margin:6px 0 0">${L('Benta = na-approve na bayad (online at manual), kasama ang Group Premium. Hindi kasama ang libreng promo code at group code na ginamit.', 'Sales = approved payments (online and manual), Group Premium included. Free promo codes and used group codes are not counted.')}</p>`;
     paintMonitor($('#monCard'));
   }
 
@@ -3462,6 +3597,15 @@
 
   async function admPromos(el) {
     const r = await api('GET', '/api/admin/promos');
+    /* Which plans a code works on: Daily, Weekly, Monthly, Yearly. None ticked = every plan. Group Premium follows
+       its plan (monthly or yearly). Plans turned off in Settings are still listed, for when they are turned on. */
+    const plansAll = r.plans && r.plans.length ? r.plans : [{ id: 'month', price: Number(r.price) }];
+    const allPrices = plansAll.map((pl) => `${PLAN_NAME(pl)} ${pesos(pl.price)}`).join(' · ');
+    const planBoxes = (id, on = []) => `<fieldset class="plan-boxes" id="${id}"><legend>${L('Para sa anong plan', 'For which plans')}</legend>
+      ${['day', 'week', 'month', 'year'].map((k) => `<label class="check"><input type="checkbox" value="${k}" ${on.includes(k) ? 'checked' : ''}> ${PLAN_NAME({ id: k })}</label>`).join('')}
+      <p class="muted small" style="margin:2px 0 0">${L('Walang naka-check = para sa lahat ng plan (pati Group Premium).', 'None ticked = every plan (and Group Premium).')}</p></fieldset>`;
+    const pickedPlans = (sel) => $$(sel + ' input:checked').map((c) => c.value);
+    const planTag = (x) => (x.plans ? x.plan_ids.map((k) => PLAN_NAME({ id: k })).join(', ') : L('Lahat ng plan', 'Every plan'));
     const day = (ms) => new Date(ms).toLocaleDateString('en-PH', { year: 'numeric', month: 'short', day: 'numeric' });
     const off = (x) => (x.kind === 'percent' ? `${x.value}%` : `₱${x.value}`);
     const state = (x) => (!x.active ? `<span class="pill">${L('Naka-off', 'Off')}</span>`
@@ -3475,12 +3619,14 @@
           <input type="number" id="pcVal" min="1" step="any" placeholder="20" style="margin:0"></div>
         <label for="pcExp">${L('Hanggang kailan (opsyonal)', 'Ends on (optional)')}</label><input type="date" id="pcExp">
         <label for="pcMax">${L('Ilang tao ang pwedeng gumamit (0 = walang limit)', 'How many people can use it (0 = no limit)')}</label><input type="number" id="pcMax" min="0" step="1" value="0">
+        ${planBoxes('pcPlans')}
         <label for="pcNote">${L('Tala (para sa admin lang, opsyonal)', 'Note (for admins only, optional)')}</label><input type="text" id="pcNote" maxlength="200">
         <p class="muted small" id="pcPrev"></p>
         <div class="err" id="pcErr" role="alert"></div><button class="btn" type="submit">${L('Gumawa ng code', 'Create code')}</button></form>
-      <p class="muted small" style="margin:10px 0 0">${L(`Presyo ngayon: ₱${esc(r.price)}. Isang beses lang magagamit ng bawat account ang isang code. Sa online na bayad, ₱${r.min_online} ang pinakamababa (PayMongo). Ang 100% na code ay nagbubukas agad ng Premium nang walang bayad (hindi ito kasama sa download ng app, na para sa may bayad lang).`, `Price now: ₱${esc(r.price)}. Each account can use a code once. Online payments are at least ₱${r.min_online} (PayMongo). A 100% code turns on Premium right away with no payment (it does not include the app download, which is for paid users only).`)}</p></div>
+      <p class="muted small" style="margin:10px 0 0">${L(`Presyo ngayon: ${allPrices}. Isang beses lang magagamit ng bawat account ang isang code. Sa online na bayad, ₱${r.min_online} ang pinakamababa (PayMongo). Ang 100% na code ay nagbubukas agad ng Premium nang walang bayad (hindi ito kasama sa download ng app, na para sa may bayad lang).`, `Price now: ${allPrices}. Each account can use a code once. Online payments are at least ₱${r.min_online} (PayMongo). A 100% code turns on Premium right away with no payment (it does not include the app download, which is for paid users only).`)}</p></div>
       <div class="list" style="margin-top:12px">${r.rows.map((x) => `<div class="review-item">
-        <div class="row between"><div><b style="font-family:monospace;font-size:15px">${esc(x.code)}</b> · −${esc(off(x))} ${state(x)}</div><span class="muted small">₱${esc(r.price)} → <b>₱${esc(Number(x.amount).toFixed(Number.isInteger(+x.amount) ? 0 : 2))}</b>${x.free ? ` (${L('libre', 'free')})` : ''}</span></div>
+        <div class="row between"><div><b style="font-family:monospace;font-size:15px">${esc(x.code)}</b> · −${esc(off(x))} ${state(x)}</div><span class="pill">${planTag(x)}</span></div>
+        <div class="small" style="margin:4px 0">${(x.prices || []).map((pr) => `${PLAN_NAME(pr)}: <s class="muted">${esc(pesos(pr.price))}</s> <b>${esc(pesos(pr.amount))}</b>${pr.free ? ` (${L('libre', 'free')})` : ''}`).join(' · ') || `<span class="muted">${L('Wala sa mga bukas na plan ngayon.', 'Not on any plan that is on now.')}</span>`}</div>
         <div class="muted small" style="margin:4px 0">${L('Nagamit', 'Used')}: <b>${x.used}</b>${x.max_uses ? ` / ${x.max_uses}` : ''} · ${x.expires_at ? L(`Hanggang ${day(x.expires_at)}`, `Until ${day(x.expires_at)}`) : L('Walang katapusan', 'No end date')} · ${L('Ginawa', 'Made')} ${fmtDate(x.created_at)}${x.note ? ` · ${esc(x.note)}` : ''}</div>
         <div class="row"><button class="btn small ${x.active ? 'ghost' : ''}" data-tog="${x.id}" data-on="${x.active ? 0 : 1}">${x.active ? L('I-off', 'Turn off') : L('I-on', 'Turn on')}</button>
           <button class="btn ghost small" data-edit="${x.id}">✏️ ${L('Baguhin', 'Edit')}</button>
@@ -3488,17 +3634,19 @@
     const dateMs = (v) => (v ? new Date(v + 'T23:59:59+08:00').getTime() : 0); // end of that day, Philippine time
     const dateIn = (ms) => (ms ? new Date(ms + 8 * 3600e3).toISOString().slice(0, 10) : '');
     const prev = () => {
-      const v = Number($('#pcVal').value) || 0, price = Number(r.price) || 0;
-      const disc = Math.min(price, $('#pcKind').value === 'percent' ? price * v / 100 : v);
-      const left = Math.max(0, Math.round((price - disc) * 100) / 100);
-      $('#pcPrev').textContent = v > 0 ? L(`Presyo sa code: ₱${left}${left === 0 ? ' (libre ang Premium)' : ''}`, `Price with the code: ₱${left}${left === 0 ? ' (Premium is free)' : ''}`) : '';
+      const v = Number($('#pcVal').value) || 0;
+      const after = (price) => Math.max(0, Math.round((price - Math.min(price, $('#pcKind').value === 'percent' ? price * v / 100 : v)) * 100) / 100);
+      const on = pickedPlans('#pcPlans');
+      const list = plansAll.filter((pl) => !on.length || on.includes(pl.id));
+      $('#pcPrev').textContent = v > 0 ? L('Presyo sa code: ', 'Price with the code: ') + list.map((pl) => `${PLAN_NAME(pl)} ${pesos(after(pl.price))}${after(pl.price) === 0 ? L(' (libre)', ' (free)') : ''}`).join(' · ') : '';
     };
     ['#pcVal', '#pcKind'].forEach((k) => ($(k).oninput = prev));
+    $$('#pcPlans input').forEach((c) => (c.onchange = prev));
     $('#pcF').onsubmit = async (e) => {
       e.preventDefault();
       const btn = $('button[type=submit]', e.target); btn.disabled = true;
       try {
-        await api('POST', '/api/admin/promos', { code: $('#pcCode').value, kind: $('#pcKind').value, value: $('#pcVal').value, expires_at: dateMs($('#pcExp').value), max_uses: $('#pcMax').value, note: $('#pcNote').value });
+        await api('POST', '/api/admin/promos', { code: $('#pcCode').value, kind: $('#pcKind').value, value: $('#pcVal').value, expires_at: dateMs($('#pcExp').value), max_uses: $('#pcMax').value, note: $('#pcNote').value, plans: pickedPlans('#pcPlans') });
         toast(L('Nagawa ang promo code.', 'Promo code created.')); admPromos(el);
       } catch (err) { $('#pcErr').textContent = err.message; btn.disabled = false; }
     };
@@ -3515,12 +3663,13 @@
       modal(`<h2 style="margin-top:0">${esc(x.code)} · −${esc(off(x))}</h2>
         <label for="peExp">${L('Hanggang kailan (blangko = walang katapusan)', 'Ends on (blank = no end date)')}</label><input type="date" id="peExp" value="${dateIn(x.expires_at)}">
         <label for="peMax">${L('Ilang tao ang pwedeng gumamit (0 = walang limit)', 'How many people can use it (0 = no limit)')}</label><input type="number" id="peMax" min="0" step="1" value="${x.max_uses}">
+        ${planBoxes('pePlans', x.plans ? x.plan_ids : [])}
         <label for="peNote">${L('Tala', 'Note')}</label><input type="text" id="peNote" maxlength="200" value="${esc(x.note)}">
         <div class="err" id="peErr"></div>
         <div class="row" style="justify-content:flex-end;margin-top:12px"><button class="btn ghost" data-x>${L('Bumalik', 'Back')}</button><button class="btn" data-go>${L('I-save', 'Save')}</button></div>`, (bg, close) => {
         $('[data-x]', bg).onclick = close;
         $('[data-go]', bg).onclick = async () => {
-          try { await api('PATCH', '/api/admin/promos/' + x.id, { expires_at: dateMs($('#peExp', bg).value), max_uses: $('#peMax', bg).value, note: $('#peNote', bg).value }); close(); toast(L('Na-save.', 'Saved.')); admPromos(el); } catch (e) { $('#peErr', bg).textContent = e.message; }
+          try { await api('PATCH', '/api/admin/promos/' + x.id, { expires_at: dateMs($('#peExp', bg).value), max_uses: $('#peMax', bg).value, note: $('#peNote', bg).value, plans: pickedPlans('#pePlans') }); close(); toast(L('Na-save.', 'Saved.')); admPromos(el); } catch (e) { $('#peErr', bg).textContent = e.message; }
         };
       });
     }));
