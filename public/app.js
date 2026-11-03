@@ -3,7 +3,7 @@
   'use strict';
   const $app = document.getElementById('app');
   const LETTERS = ['A', 'B', 'C', 'D'];
-  const APP_VERSION = '1.32.0'; // keep in step with package.json and docs/DOKUMENTASYON.md
+  const APP_VERSION = '1.33.0'; // keep in step with package.json and docs/DOKUMENTASYON.md
   const S = { user: null, meta: null, exam: null, timer: null, saveT: null };
 
   /* ---------------- helpers ---------------- */
@@ -1605,16 +1605,21 @@
   async function viewPremium() {
     await swr('/api/premium', (p) => paintPremium(p));
   }
-  const PLAN_NAME = (pl) => (pl.id === 'year' ? L('Taunan', 'Yearly') : L('Buwanan', 'Monthly'));
+  const PLAN_NAMES = { day: ['Isang araw', 'Daily'], week: ['Lingguhan', 'Weekly'], month: ['Buwanan', 'Monthly'], year: ['Taunan', 'Yearly'] };
+  const PLAN_NAME = (pl) => L(...(PLAN_NAMES[pl.id] || PLAN_NAMES.month));
+  // The plan of a payment, from its days (payments keep the days, not the plan).
+  const DAYS_PLAN = (d) => PLAN_NAME({ id: d >= 300 ? 'year' : d >= 28 ? 'month' : d >= 2 ? 'week' : 'day' });
   function paintPremium(p) {
     const until = p.until > Date.now() ? new Date(p.until).toLocaleDateString('en-PH', { year: 'numeric', month: 'long', day: 'numeric' }) : '';
     const pending = p.payments.find((x) => x.status === 'pending');
     const manual = p.manual && p.methods.length; // manual payment: on in Admin → Settings, with at least one account
     const statusPill = { pending: `<span class="pill warn">${L('Hinihintay', 'Waiting')}</span>`, checkout: `<span class="pill warn">${L('Hindi pa bayad', 'Not paid yet')}</span>`, approved: `<span class="pill ok">${L('Bayad na', 'Paid')}</span>`, rejected: `<span class="pill bad">${L('Hindi approved', 'Not approved')}</span>`, expired: '<span class="pill">Expired</span>' };
     if (S.user.role !== 'admin' && p.active && p.until !== S.user.premium_until) refreshMe().catch(() => {}); // Premium just started or was extended
-    // Monthly and yearly plans (the server works out the price again on every payment).
+    // Daily, weekly, monthly and yearly plans (the server works out the price again on every payment).
+    // The monthly plan is picked first, unless the user picked another one before.
     const plans = p.plans && p.plans.length ? p.plans : [{ id: 'month', price: Number(p.price), days: p.plan_days }];
-    let plan = plans.find((x) => x.id === store.get('cse-plan')) || plans[0];
+    let plan = plans.find((x) => x.id === store.get('cse-plan')) || plans.find((x) => x.id === 'month') || plans[0];
+    const gPlans = plans.filter((x) => x.id === 'month' || x.id === 'year'); // Group Premium: monthly or yearly only
     shell('account', `
       <h1>Premium</h1>
       ${premiumNotice()}
@@ -1638,7 +1643,7 @@
       ${S.user.role === 'admin' ? '' : `<div class="card" style="margin-top:12px">
         <h3>${p.active && until ? L('I-extend ang Premium', 'Extend Premium') : L('Kumuha ng Premium', 'Get Premium')}</h3>
         ${plans.length > 1 ? `<div class="seg plan-seg" id="planSel" role="group" aria-label="${L('Pumili ng plan', 'Choose a plan')}">${plans.map((x) => `<button type="button" data-plan="${x.id}" class="${x.id === plan.id ? 'active' : ''}" aria-pressed="${x.id === plan.id}">
-          <b>${PLAN_NAME(x)}</b><span class="small">${esc(pesos(x.price))} / ${x.days} ${L('araw', 'days')}</span>${x.save ? `<span class="pill ok">${L('Tipid', 'Save')} ${x.save}%</span>` : ''}</button>`).join('')}</div>` : ''}
+          <b>${PLAN_NAME(x)}</b><span class="small">${esc(pesos(x.price))} / ${x.days} ${x.days === 1 ? L('araw', 'day') : L('araw', 'days')}</span>${x.save ? `<span class="pill ok">${L('Tipid', 'Save')} ${x.save}%</span>` : ''}</button>`).join('')}</div>` : ''}
         <p style="margin:6px 0" id="priceTag"></p>
         ${p.promo || p.online || manual ? `<form id="promoF" class="promo-box" autocomplete="off"><label for="promoIn">${L('May promo o group code ka?', 'Have a promo or group code?')}</label>
           <div class="row" style="flex-wrap:nowrap"><input type="text" id="promoIn" maxlength="30" placeholder="${L('hal.', 'e.g.')} REVIEW20 / GRP-XXXX-XXXX" style="text-transform:uppercase;margin:0" autocapitalize="characters" spellcheck="false">
@@ -1662,7 +1667,7 @@
           <div class="err" id="err"></div><button class="btn block ${p.online ? 'secondary' : ''}" type="submit" disabled>${L('Ipadala', 'Send')}</button></form>`}`, { card: false, stay: true, cls: 'pay-fold', open: !p.online }) : ''}
         ${!p.online && !manual ? `<div class="notice">${L('Wala pang bukas na paraan ng bayad. Makipag-ugnayan sa admin.', 'No payment method is open yet. Please contact the admin.')}</div>` : ''}
       </div>`}
-      ${S.user.role !== 'admin' && p.bulk ? groupBuyCard(p.bulk, plans) : ''}
+      ${S.user.role !== 'admin' && p.bulk ? groupBuyCard(p.bulk, gPlans) : ''}
       ${p.groups ? fold('pay-groups', `<h2>👥 ${L('Mga binili mong Group Premium', 'Group Premium you bought')}</h2><span class="pill">${p.groups}</span>`, `<div id="grpList"><p class="muted small">${L('Naglo-load…', 'Loading…')}</p></div>`, { card: false, stay: true }) : ''}
       ${p.payments.length ? fold('pay-history', `<h2>${L('Mga bayad mo', 'Your payments')}</h2><span class="pill">${p.payments.length}</span>`, `<div class="list">${p.payments.map((x) => `<div class="list-item"><div class="grow"><b>₱${esc(x.amount)}</b> · ${esc(x.method)}${x.provider && x.provider !== 'manual' ? '' : ' · ref ' + esc(x.reference)}${x.promo_code ? ` · 🏷️ ${esc(x.promo_code)}` : ''}${x.bulk_id && x.provider !== 'bulk' ? ` · 👥 Group Premium` : ''}
         <div class="muted small">${fmtDate(x.created_at)}${x.note ? ' · ' + esc(x.note) : ''}</div></div>${statusPill[x.status] || ''}${x.status === 'approved' ? `<button type="button" class="btn ghost small" data-rc="${x.id}" aria-label="${L('Resibo', 'Receipt')} ₱${esc(x.amount)}">🧾 ${L('Resibo', 'Receipt')}</button>` : ''}</div>`).join('')}</div>`, { card: false }) : ''}`);
@@ -1672,7 +1677,7 @@
     const nr = $('#nrOk');
     const nrPaint = () => $$('#paynow, #payf button[type=submit]').forEach((b) => (b.disabled = !(nr && nr.checked)));
     if (nr) { nr.onchange = nrPaint; nrPaint(); }
-    if (p.bulk && $('#gQty')) groupBuyWire(p.bulk, plans);
+    if (p.bulk && $('#gQty')) groupBuyWire(p.bulk, gPlans);
     if (p.groups) paintGroups($('#grpList'));
     // PayMongo's checkout page. In the phone and desktop apps it opens in the browser.
     // One button; the user picks GCash, Maya, card, QR Ph, etc. on PayMongo's page.
@@ -1683,7 +1688,7 @@
     const priceNow = () => (promo ? peso(promo.amount) : peso(plan.price));
     const paintPromo = () => {
       const tag = $('#priceTag');
-      const per = L(`para sa ${plan.days} araw`, `for ${plan.days} days`) + (plans.length > 1 ? ` (${PLAN_NAME(plan)})` : '');
+      const per = L(`para sa ${plan.days} araw`, `for ${plan.days} ${plan.days === 1 ? 'day' : 'days'}`) + (plans.length > 1 ? ` (${PLAN_NAME(plan)})` : '');
       if (tag) tag.innerHTML = promo
         ? `<span class="pill warn" style="font-size:15px"><s class="muted">${esc(peso(plan.price))}</s> ${esc(priceNow())} ${per}</span> <span class="pill ok">${esc(promo.code)} −${esc(promo.kind === 'percent' ? promo.value + '%' : peso(promo.value))}</span>`
         : `<span class="pill warn" style="font-size:15px">${esc(peso(plan.price))} ${per}</span>`;
@@ -1751,7 +1756,7 @@
     };
     $$('#pmSel [data-pm]').forEach((b) => (b.onclick = () => { pm = p.methods.find((m) => m.id === b.dataset.pm); $$('#pmSel button').forEach((x) => x.classList.toggle('active', x === b)); pmInfo(); }));
     pmInfo(); paintPromo();
-    // Monthly or yearly: the price and days change; a promo code is checked again for the new price.
+    // Another plan (daily, weekly, monthly or yearly): the price and days change; a promo code is checked again for the new price.
     $$('#planSel [data-plan]').forEach((b) => (b.onclick = async () => {
       plan = plans.find((x) => x.id === b.dataset.plan) || plans[0];
       store.set('cse-plan', plan.id);
@@ -3391,7 +3396,7 @@
       <p class="muted small">${L('I-check sa app ng GCash, Maya, PayPal o bangko mo kung pumasok ang bayad (gamit ang reference number at resibo) bago i-approve.', 'Check in your GCash, Maya, PayPal or bank app that the payment came in (using the reference number and receipt) before approving.')}</p>
       <div class="list">${rows.map((p) => `<div class="review-item">
         <div class="row between"><div><b>${esc(p.name)}</b> <span class="muted small">${esc(p.email)}</span></div><span class="muted small">${fmtDate(p.created_at)}</span></div>
-        <div style="margin:6px 0">₱${esc(p.amount)}${p.days ? ` · ${p.days >= 300 ? L('Taunan', 'Yearly') : L('Buwanan', 'Monthly')} (${p.days} ${L('araw', 'days')})` : ''} · ${esc(p.method)} · Ref: <b>${esc(p.reference)}</b>${p.promo_code ? ` · 🏷️ ${esc(p.promo_code)} (−₱${esc(p.discount)} ${L('mula', 'from')} ₱${esc(p.list_price)})` : ''}${p.note ? ` · ${esc(p.note)}` : ''}</div>
+        <div style="margin:6px 0">₱${esc(p.amount)}${p.days ? ` · ${DAYS_PLAN(p.days)} (${p.days} ${L('araw', 'days')})` : ''} · ${esc(p.method)} · Ref: <b>${esc(p.reference)}</b>${p.promo_code ? ` · 🏷️ ${esc(p.promo_code)} (−₱${esc(p.discount)} ${L('mula', 'from')} ₱${esc(p.list_price)})` : ''}${p.note ? ` · ${esc(p.note)}` : ''}</div>
         ${p.has_proof ? `<button class="btn ghost small" data-proof="${p.id}" style="margin-bottom:8px">🧾 ${L('Tingnan ang resibo', 'See the receipt')}</button>` : ''}
         ${status === 'pending' ? `<div class="row"><button class="btn small" data-ok="${p.id}">✓ ${L('I-approve', 'Approve')}</button><button class="btn ghost small" data-no="${p.id}">✕ ${L('I-reject', 'Reject')}</button></div>` : ''}
       </div>`).join('') || `<div class="card empty">${L('Walang bayad dito.', 'No payments here.')}</div>`}</div>`;
@@ -3551,7 +3556,7 @@
     const st = await api('GET', '/api/admin/settings');
     let methods = st.pay_methods;
     // The saved values, so "Undo" after Save can put them all back.
-    const KEYS = ['premium_required', 'price', 'plan_days', 'pay_note', 'pay_online_on', 'pay_manual_on', 'pay_methods', 'free_practice_daily', 'free_practice_items',
+    const KEYS = ['premium_required', 'price', 'plan_days', 'year_on', 'price_year', 'plan_year_days', 'day_on', 'price_day', 'plan_day_days', 'week_on', 'price_week', 'plan_week_days', 'pay_note', 'pay_online_on', 'pay_manual_on', 'pay_methods', 'free_practice_daily', 'free_practice_items',
       'free_mock_daily', 'free_sets', 'ads_on', 'adsense_client', 'adsense_slot', 'admob_banner', 'exam_watermark', 'exam_privacy_strip',
       'bulk_on', 'bulk_min', 'bulk_max', 'bulk_tiers', 'bulk_seat_days'];
     const snap = (o) => Object.fromEntries(KEYS.filter((k) => o[k] !== undefined).map((k) => [k, o[k]]));
@@ -3581,6 +3586,15 @@
       ${sec('premium', `⭐ ${L('Premium (bayad para sa mock exams)', 'Premium (paid mock exams)')}`, `
       ${check('preq', st.premium_required === '1', L('Kailangan ng Premium para sa mock exams', 'Mock exams need Premium'))}
       <p class="muted small" style="margin:4px 0 0">${L('Kapag naka-off, libre ang lahat at gumagana offline para sa lahat. Kapag naka-on, online lang ang libreng plan at may limit (Libreng plan sa ibaba).', 'When off, everything is free and works offline for everyone. When on, the free plan is online only and has limits (Free plan below).')}</p>
+      <h4 style="margin:10px 0 0">${L('Isang araw', 'Daily')}</h4>
+      ${check('dayon', st.day_on !== '0', L('Ipakita ang 1-araw na plan (para sa mabilisang review bago ang exam)', 'Show the 1-day plan (for a quick review before the exam)'))}
+      <div class="row"><div style="flex:1;min-width:120px"><label>${L('Presyo (₱)', 'Price (₱)')}</label><input type="number" id="priceDay" value="${esc(st.price_day)}"></div>
+      <div style="flex:1;min-width:120px"><label>${L('Ilang araw (1 hanggang 6)', 'Number of days (1 to 6)')}</label><input type="number" id="daysDay" value="${esc(st.plan_day_days)}"></div></div>
+      <h4 style="margin:10px 0 0">${L('Lingguhan', 'Weekly')}</h4>
+      ${check('weekon', st.week_on !== '0', L('Ipakita ang lingguhang plan', 'Show the weekly plan'))}
+      <div class="row"><div style="flex:1;min-width:120px"><label>${L('Presyo (₱)', 'Price (₱)')}</label><input type="number" id="priceWeek" value="${esc(st.price_week)}"></div>
+      <div style="flex:1;min-width:120px"><label>${L('Ilang araw (2 hanggang 29)', 'Number of days (2 to 29)')}</label><input type="number" id="daysWeek" value="${esc(st.plan_week_days)}"></div></div>
+      <p class="muted small" style="margin:4px 0 0">${L('₱20 ang pinakamababang online na bayad sa PayMongo, kaya huwag ibaba sa ₱20 ang presyo kung online ang bayad. Hindi kasama ang 1-araw at lingguhang plan sa Group Premium.', 'PayMongo\'s smallest online payment is ₱20, so keep the price at ₱20 or more if people pay online. The daily and weekly plans are not part of Group Premium.')}</p>
       <h4 style="margin:10px 0 0">${L('Buwanan', 'Monthly')}</h4>
       <div class="row"><div style="flex:1;min-width:120px"><label>${L('Presyo (₱)', 'Price (₱)')}</label><input type="number" id="price" value="${esc(st.price)}"></div>
       <div style="flex:1;min-width:120px"><label>${L('Ilang araw', 'Number of days')}</label><input type="number" id="days" value="${esc(st.plan_days)}"></div></div>
@@ -3588,7 +3602,7 @@
       ${check('yearon', st.year_on !== '0', L('Ipakita ang taunang plan (mas mura kada buwan)', 'Show the yearly plan (cheaper per month)'))}
       <div class="row"><div style="flex:1;min-width:120px"><label>${L('Presyo (₱)', 'Price (₱)')}</label><input type="number" id="priceYear" value="${esc(st.price_year)}"></div>
       <div style="flex:1;min-width:120px"><label>${L('Ilang araw', 'Number of days')}</label><input type="number" id="daysYear" value="${esc(st.plan_year_days)}"></div></div>
-      <p class="muted small" style="margin:4px 0 0">${L('Gumagana ang promo code, PayMongo, manual na bayad at Group Premium sa parehong plan. Walang refund sa dalawa.', 'Promo codes, PayMongo, manual payment and Group Premium work with both plans. No refunds on either.')}</p>
+      <p class="muted small" style="margin:4px 0 0">${L('Gumagana ang promo code, PayMongo at manual na bayad sa lahat ng plan; ang Group Premium ay sa buwanan at taunan lang. Walang refund sa lahat ng plan.', 'Promo codes, PayMongo and manual payment work with every plan; Group Premium is for monthly and yearly only. No refunds on any plan.')}</p>
       <label>${L('Kapasidad ng server (ilang tao ang kaya nang sabay)', 'Server capacity (people at the same time)')}</label><input type="number" id="capUsers" value="${esc(st.capacity_users)}" style="max-width:160px">
       <p class="muted small" style="margin:4px 0 0">${L('Para sa % load sa Overview → Monitoring. Render Free: mga 150. Starter: mga 600. Standard: mga 1,500.', 'For the % load in Overview → Monitoring. Render Free: about 150. Starter: about 600. Standard: about 1,500.')}</p>
       <label>${L('Pangalan ng negosyo sa resibo (opsyonal)', 'Business name on receipts (optional)')}</label><input type="text" id="bizName" value="${esc(st.biz_name)}" placeholder="${L('hal.', 'e.g.')} CSE Reviewer ni Juan Dela Cruz">
@@ -3683,7 +3697,8 @@
       try {
         const v = (id) => $('#' + id).value, on = (id) => ($('#' + id).checked ? '1' : '0');
         const saved = await api('PUT', '/api/admin/settings', {
-          premium_required: on('preq'), price: v('price'), plan_days: v('days'), year_on: on('yearon'), price_year: v('priceYear'), plan_year_days: v('daysYear'), capacity_users: v('capUsers'), pay_note: v('pnote'), biz_name: v('bizName').trim(), biz_contact: v('bizContact').trim(),
+          premium_required: on('preq'), price: v('price'), plan_days: v('days'), year_on: on('yearon'), price_year: v('priceYear'), plan_year_days: v('daysYear'),
+          day_on: on('dayon'), price_day: v('priceDay'), plan_day_days: v('daysDay'), week_on: on('weekon'), price_week: v('priceWeek'), plan_week_days: v('daysWeek'), capacity_users: v('capUsers'), pay_note: v('pnote'), biz_name: v('bizName').trim(), biz_contact: v('bizContact').trim(),
           pay_online_on: on('payon'), pay_manual_on: on('payman'), pay_methods: collect(),
           free_practice_daily: v('fdaily'), free_practice_items: v('fitems'), free_mock_daily: v('fmock'), free_sets: v('fsets'),
           ads_on: on('adson'), adsense_client: v('asc').trim(), adsense_slot: v('ass').trim(), admob_banner: v('amb').trim(),

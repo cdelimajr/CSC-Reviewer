@@ -714,7 +714,8 @@ html[data-theme] #undo .u-time { background: var(--primary); }
 .no-refund { margin: 10px 0 4px; background: var(--warn-soft); }
 
 /* Premium page: monthly or yearly plan */
-.plan-seg { margin: 8px 0 4px; }
+/* Up to 4 plans (daily, weekly, monthly, yearly): 2 by 2 on a phone, one row on a wide screen. */
+.plan-seg { margin: 8px 0 4px; display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); }
 .plan-seg button { display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 10px 8px; }
 .plan-seg button .small { font-weight: 500; }
 .plan-seg button .pill { margin-top: 2px; }

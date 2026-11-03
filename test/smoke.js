@@ -398,8 +398,8 @@ const lastCode = (to) => {
   // 📅 Monthly and yearly plans: the server sets the price and days of each
   await A('PUT', '/api/admin/settings', { price_year: '990', plan_year_days: '365' });
   r = await Boss('GET', '/api/premium');
-  assert.deepEqual(r.data.plans.map((x) => [x.id, x.price, x.days]), [['month', 99, 30], ['year', 990, 365]], 'monthly and yearly plans');
-  assert.ok(r.data.plans[1].save > 0, 'yearly shows how much is saved');
+  assert.deepEqual(r.data.plans.map((x) => [x.id, x.price, x.days]), [['day', 20, 1], ['week', 49, 7], ['month', 99, 30], ['year', 990, 365]], 'daily, weekly, monthly and yearly plans');
+  assert.ok(r.data.plans.find((x) => x.id === 'year').save > 0, 'yearly shows how much is saved');
   await A('POST', '/api/admin/promos', { code: 'GROUP10', kind: 'percent', value: 10 });
   await A('POST', '/api/admin/promos', { code: 'ALLFREE', kind: 'percent', value: 100 });
   r = await Boss('POST', '/api/promo/check', { code: 'GROUP10', plan: 'year' });
@@ -412,6 +412,32 @@ const lastCode = (to) => {
   r = await G1('GET', '/api/premium');
   assert.ok(Math.abs(r.data.until - (Math.max(Date.now(), yBefore) + 365 * 864e5)) < 5000, 'yearly plan adds 365 days');
   assert.equal(r.data.payments.find((x) => x.provider === 'paymongo').days, 365);
+  // 📅 Daily and weekly plans: promo codes (online is still at least ₱20), PayMongo, manual payment, settings
+  r = await Boss('POST', '/api/promo/check', { code: 'GROUP10', plan: 'day' });
+  assert.deepEqual([r.data.price, r.data.amount, r.data.online, r.data.days], [20, 18, 20, 1], 'promo on the daily plan, PayMongo minimum kept');
+  assert.equal((await G1('POST', '/api/payments/checkout', { plan: 'week' })).status, 400, 'no-refund box needed on the weekly plan too');
+  const wBefore = (await G1('GET', '/api/premium')).data.until;
+  await G1('POST', '/api/payments/checkout', { agree_no_refund: true, plan: 'week' });
+  const wcs = Object.values(sessions).at(-1);
+  assert.equal(wcs.attributes.line_items[0].amount, 4900, 'PayMongo charges the weekly price');
+  payIt(wcs, 'gcash'); await hook(wcs.id);
+  r = await G1('GET', '/api/premium');
+  assert.ok(Math.abs(r.data.until - (wBefore + 7 * 864e5)) < 5000, 'weekly plan adds 7 days to the Premium left');
+  r = await G2('POST', '/api/payments', { reference: 'GC-DAY-1', agree_no_refund: true, plan: 'day' });
+  assert.equal(r.status, 200, 'manual payment on the daily plan');
+  const dPay = (await A('GET', '/api/admin/payments?status=pending')).data.find((x) => x.reference === 'GC-DAY-1');
+  assert.deepEqual([dPay.amount, dPay.days], ['20', 1], 'manual daily: ₱20 for 1 day');
+  const dBefore = (await G2('GET', '/api/premium')).data.until;
+  r = await A('POST', '/api/admin/payments/' + dPay.id, { action: 'approve' });
+  assert.ok(Math.abs(r.data.until - (Math.max(Date.now(), dBefore) + 864e5)) < 5000, 'approved daily plan adds 1 day');
+  r = await Boss('GET', '/api/bulk/quote?qty=2&plan=day');
+  assert.equal(r.data.days, 30, 'Group Premium stays monthly or yearly');
+  await A('PUT', '/api/admin/settings', { day_on: '0', price_week: '59', plan_week_days: '99' });
+  r = await Boss('GET', '/api/premium');
+  assert.deepEqual(r.data.plans.map((x) => [x.id, x.price, x.days]), [['week', 59, 29], ['month', 99, 30], ['year', 990, 365]], 'daily off; weekly price and days from Settings (days kept in range)');
+  r = await Boss('POST', '/api/promo/check', { code: 'GROUP10', plan: 'day' });
+  assert.equal(r.data.days, 30, 'a plan that is off falls back to monthly');
+  await A('PUT', '/api/admin/settings', { day_on: '1', price_week: '49', plan_week_days: '7' });
   // 🏷️👥 Promo code on Group Premium: taken off the group total after the group discount
   r = await Boss('GET', '/api/bulk/quote?qty=10&code=group10');
   assert.equal(r.data.total, 757.35, '10 × ₱99 − 15% − 10%'); assert.equal(r.data.promo.code, 'GROUP10');
@@ -562,6 +588,12 @@ const lastCode = (to) => {
   assert.ok(mail.outbox.some((m) => m.to === 'juan@test.ph' && m.subject === 'Mag-e-expire ang Premium mo sa 2 araw'));
   await dbm.run('UPDATE users SET premium_until = ? WHERE id = ?', Date.now() - 3600e3, juanId);
   assert.equal(await jobs.expiryReminders(st), 1, 'ended: one more email');
+  // A 1-day plan: no "ends in 1 day" email right after paying, only the "ended" one
+  const dayEnd = Date.now() + 20 * 3600e3;
+  await dbm.run('UPDATE users SET premium_until = ?, expiry_notice = \'\' WHERE id = ?', dayEnd, juanId);
+  await dbm.run(`INSERT INTO payments (user_id, amount, method, reference, status, created_at, days, period_from, period_to) VALUES (?, '20', 'GCash', 'DAY1', 'approved', ?, 1, ?, ?)`,
+    juanId, Date.now(), dayEnd - 864e5, dayEnd);
+  assert.equal(await jobs.expiryReminders(st), 0, 'daily plan: no "ends soon" email');
   await dbm.run('UPDATE users SET premium_until = ? WHERE id = ?', keepUntil, juanId);
   await U('PUT', '/api/me/prefs', { remind_email: false });
 

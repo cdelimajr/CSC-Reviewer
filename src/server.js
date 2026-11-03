@@ -62,6 +62,11 @@ const SETTING_DEFAULTS = {
   // Yearly plan (Premium page: "Buwanan" or "Taunan"). The monthly plan is price + plan_days above.
   // ₱1,490 for 365 days is about 10 months' price: 2 months free.
   year_on: '1', price_year: '1490', plan_year_days: '365',
+  // Daily and weekly plans (Premium page: "Isang araw" or "Lingguhan"), for someone who reviews only a few days
+  // before the exam. ₱20 is PayMongo's smallest online payment. Both cost more per day than the monthly plan,
+  // so the monthly and yearly plans stay the better deal.
+  day_on: '1', price_day: '20', plan_day_days: '1',
+  week_on: '1', price_week: '49', plan_week_days: '7',
   // Admin → Overview → Server monitoring: how many people the server can serve at the same time
   // (Render free plan: about 150). Used for the % load. Raise it after moving to a bigger plan.
   capacity_users: '150',
@@ -70,7 +75,8 @@ const LONG_SETTINGS = { pay_methods: 20000 };
 // [key, smallest, largest] for the settings that are numbers (Admin → Settings).
 const NUM_SETTINGS = [['price', 0, 100000], ['plan_days', 1, 3650], ['free_practice_daily', 0, 100], ['free_practice_items', 5, 100],
   ['free_sets', 1, 1000], ['free_mock_daily', 0, 100], ['bulk_min', 2, 100], ['bulk_max', 2, 500], ['bulk_seat_days', 7, 730],
-  ['price_year', 0, 1000000], ['plan_year_days', 30, 3650], ['capacity_users', 10, 1000000]];
+  ['price_year', 0, 1000000], ['plan_year_days', 30, 3650], ['capacity_users', 10, 1000000],
+  ['price_day', 0, 100000], ['plan_day_days', 1, 6], ['price_week', 0, 100000], ['plan_week_days', 2, 29]];
 // Settings are read on almost every request, so they are kept in memory for a few seconds (one database
 // call less per request: faster answers, most of all for Premium). Saving the settings clears it right away.
 const SETTINGS_TTL = 15e3;
@@ -84,21 +90,26 @@ async function getSettings() {
   return { ...out };
 }
 const settingsChanged = () => { stCache = null; };
-/* Premium plans: monthly (price, plan_days) and yearly (price_year, plan_year_days), picked on the Premium page.
+/* Premium plans, picked on the Premium page: daily (price_day, plan_day_days), weekly (price_week, plan_week_days),
+   monthly (price, plan_days) and yearly (price_year, plan_year_days). Daily, weekly and yearly can be turned off.
    The server always works out the price from the plan the app names; the app never sends a price.
    save: how much cheaper the yearly plan is than paying monthly for the same days (%). */
 function plans(st) {
   const month = { id: 'month', price: Number(st.price) || 0, days: Number(st.plan_days) || 30 };
-  const out = [month];
-  const yp = Number(st.price_year) || 0, yd = Number(st.plan_year_days) || 365;
-  if (st.year_on !== '0' && yp > 0) {
-    const same = month.price * yd / month.days;
-    out.push({ id: 'year', price: yp, days: yd, save: same > yp ? Math.round((1 - yp / same) * 100) : 0 });
-  }
-  return out;
+  const extra = (id, on, price, days, def) => {
+    const pr = Number(price) || 0, d = Number(days) || def;
+    return on !== '0' && pr > 0 ? { id, price: pr, days: d } : null;
+  };
+  const year = extra('year', st.year_on, st.price_year, st.plan_year_days, 365);
+  if (year) { const same = month.price * year.days / month.days; year.save = same > year.price ? Math.round((1 - year.price / same) * 100) : 0; }
+  return [extra('day', st.day_on, st.price_day, st.plan_day_days, 1), extra('week', st.week_on, st.price_week, st.plan_week_days, 7), month, year].filter(Boolean);
 }
-const planOf = (st, id) => plans(st).find((p) => p.id === id) || plans(st)[0];
-const planName = (pl) => (pl.id === 'year' ? 'Taunan' : 'Buwanan');
+// The plan the app named; the monthly plan when none (or an unknown one) is named.
+const planOf = (st, id, list = plans(st)) => list.find((p) => p.id === id) || list.find((p) => p.id === 'month');
+// Group Premium is for the monthly and yearly plans only (a group of 1-day passes makes little sense).
+const groupPlans = (st) => plans(st).filter((p) => p.id === 'month' || p.id === 'year');
+const PLAN_NAMES = { day: 'Isang araw', week: 'Lingguhan', month: 'Buwanan', year: 'Taunan' };
+const planName = (pl) => PLAN_NAMES[pl.id] || 'Buwanan';
 // The settings with the price and days of one plan (for the promo and group price, which read price and plan_days).
 const withPlan = (st, pl) => ({ ...st, price: String(pl.price), plan_days: String(pl.days) });
 const PAY_TYPES = { gcash: 'GCash', maya: 'Maya', paypal: 'PayPal', bank: 'Bank transfer', gotyme: 'GoTyme', shopeepay: 'ShopeePay', other: 'Iba pa' };
@@ -915,7 +926,7 @@ app.get('/api/premium', auth, wrap(async (req, res) => {
     card: onlinePayOn(st) && paymongo.methods.includes('card'),
     manual: manualPayOn(st), methods: manualPayOn(st) ? payMethods(st).filter((m) => m.on) : [],
     price: st.price, plan_days: Number(st.plan_days) || 30, note: st.pay_note, payments,
-    plans: plans(st), // monthly and (when on) yearly
+    plans: plans(st), // daily, weekly, monthly and yearly (the ones turned on)
     paid, // can download the app installers (GET /api/app/installers)
     promo: !!promoOn, // show the promo code box
     bulk: bulkOn(st) ? bulkInfo(st) : null, // Group Premium: buy for several people
@@ -1102,7 +1113,7 @@ app.post('/api/payments', auth, verified, wrap(async (req, res) => {
 /* Promo codes (src/promo.js). The user types a code on the Premium page and sees the new price;
    the server works out the price again on every payment. */
 // The code in the request, checked for this user, or null when there is none.
-// price: the price the code takes off from; by default the chosen plan's price (body.plan: month or year).
+// price: the price the code takes off from; by default the chosen plan's price (body.plan: day, week, month or year).
 async function promoFor(req, st, price) {
   const code = req.body && req.body.code ? String(req.body.code) : '';
   if (!code.trim()) return null;
@@ -1194,12 +1205,12 @@ async function newGroup({ buyer, q, emails, org, base, createdBy = null }) {
   return r.lastInsertRowid;
 }
 
-/* The group price: the chosen plan's price (monthly or yearly) × people, less the group discount, then less a
+/* The group price: the chosen plan's price (monthly or yearly only) × people, less the group discount, then less a
    promo code when one is given (the code takes its % or pesos off the group total). A 100%-off code is for one's
    own Premium only, not for a group. */
 const PROMO_GROUP_FREE = 'Hindi pwede ang 100% na libreng promo code sa Group Premium. Gamitin ito sa sarili mong Premium.';
 async function groupPrice(req, st, src) {
-  const plan = planOf(st, src.plan);
+  const plan = planOf(st, src.plan, groupPlans(st));
   const q = bulk.quote(withPlan(st, plan), Number(src.qty));
   if (q.error) return { error: q.error };
   q.plan = plan.id;
@@ -1258,7 +1269,7 @@ app.post('/api/bulk/checkout', auth, verified, wrap(async (req, res) => {
     pc ? String(q.before_promo) : q.pct ? String(q.list) : null, pc ? String(pc.discount) : q.pct ? String(q.discount) : null, orderId, Date.now(),
     pc ? pc.promo.id : null, pc ? pc.promo.code : null);
   await db.run('UPDATE bulk_orders SET payment_id = ? WHERE id = ?', pay.lastInsertRowid, orderId);
-  await audit.log(req, 'bulk_checkout', { userId: req.user.id, detail: `Group #${orderId} · ${q.qty} tao · ${q.plan === 'year' ? 'Taunan' : 'Buwanan'} · ₱${q.online}${q.pct ? ` (−${q.pct}%)` : ''}${pc ? ` · promo ${pc.promo.code} (−₱${pc.discount})` : ''}` });
+  await audit.log(req, 'bulk_checkout', { userId: req.user.id, detail: `Group #${orderId} · ${q.qty} tao · ${planName({ id: q.plan })} · ₱${q.online}${q.pct ? ` (−${q.pct}%)` : ''}${pc ? ` · promo ${pc.promo.code} (−₱${pc.discount})` : ''}` });
   res.json({ url: cs.attributes.checkout_url, id: orderId });
 }));
 
@@ -1437,7 +1448,7 @@ app.post('/api/admin/payments/:id', admin, wrap(async (req, res) => {
   let until = u?.premium_until || 0;
   const stmts = [['UPDATE payments SET status = ?, note = ?, decided_at = ? WHERE id = ?', [approve ? 'approved' : 'rejected', note, Date.now(), p.id]]];
   if (approve && u) {
-    const days = Number(req.body.days) || Number(p.days) || Number((await getSettings()).plan_days) || 30; // the plan the user chose (monthly or yearly)
+    const days = Number(req.body.days) || Number(p.days) || Number((await getSettings()).plan_days) || 30; // the plan the user chose (daily, weekly, monthly or yearly)
     const from = Math.max(Date.now(), until);
     until = from + days * 864e5;
     stmts.push(['UPDATE users SET premium_until = ? WHERE id = ?', [until, u.id]]);
