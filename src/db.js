@@ -227,6 +227,8 @@ const db = {
       'ALTER TABLE payments ADD COLUMN bulk_id INTEGER',
       // When the user ticked "I understand there are no refunds" before paying.
       'ALTER TABLE payments ADD COLUMN no_refund_at INTEGER',
+      // Promo code: the plans it works on ("day,week,year"); empty = every plan.
+      `ALTER TABLE promo_codes ADD COLUMN plans TEXT NOT NULL DEFAULT ''`,
     ]) {
       try { await client.execute(sql); } catch (e) { if (!/duplicate column/i.test(e.message)) throw e; }
     }

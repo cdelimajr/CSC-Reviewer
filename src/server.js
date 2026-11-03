@@ -1117,7 +1117,8 @@ app.post('/api/payments', auth, verified, wrap(async (req, res) => {
 async function promoFor(req, st, price) {
   const code = req.body && req.body.code ? String(req.body.code) : '';
   if (!code.trim()) return null;
-  return promo.check(req.user.id, code, price ?? planOf(st, req.body.plan).price);
+  const plan = planOf(st, req.body.plan);
+  return promo.check(req.user.id, code, price ?? plan.price, plan.id);
 }
 const promoOut = (pc, plan) => ({ code: pc.promo.code, kind: pc.promo.kind, value: pc.promo.value, price: pc.price, discount: pc.discount, amount: pc.amount, online: pc.online, free: pc.free, ...(plan ? { plan: plan.id, days: plan.days } : {}) });
 app.post('/api/promo/check', auth, verified, wrap(async (req, res) => {
@@ -1128,7 +1129,7 @@ app.post('/api/promo/check', auth, verified, wrap(async (req, res) => {
   const plan = planOf(st, req.body && req.body.plan);
   const pc = await promoFor(req, st);
   if (!pc) return res.status(400).json({ error: promo.ERR.bad, code: 'promo' });
-  if (!pc.ok) return res.status(400).json({ error: pc.error, code: 'promo' });
+  if (!pc.ok) return res.status(400).json({ error: pc.error, code: 'promo', ...(pc.plans ? { plans: pc.plans } : {}) });
   res.json(promoOut(pc, plan));
 }));
 // A 100%-off code: Premium starts now, with no payment. Kept as a ₱0 "payment" (provider 'promo') so it is in
@@ -1216,7 +1217,7 @@ async function groupPrice(req, st, src) {
   q.plan = plan.id;
   const code = src.code ? String(src.code).trim() : '';
   if (!code) return { q };
-  const pc = await promo.check(req.user.id, code, q.total);
+  const pc = await promo.check(req.user.id, code, q.total, plan.id);
   if (!pc.ok) return { error: pc.error, code: 'promo' };
   if (pc.free) return { error: PROMO_GROUP_FREE, code: 'promo' };
   q.promo = { code: pc.promo.code, kind: pc.promo.kind, value: pc.promo.value, discount: pc.discount };
@@ -1335,6 +1336,16 @@ app.get('/api/admin/overview', admin, wrap(async (req, res) => {
     avgMock: await one(`SELECT ROUND(AVG(score * 100.0 / total), 1) FROM attempts WHERE finished_at IS NOT NULL AND mode != 'practice'`),
     questions: await db.all('SELECT subject, COUNT(*) AS n FROM questions WHERE active = 1 GROUP BY subject'),
     premiumUsers: await one(`SELECT COUNT(*) FROM users WHERE premium_until > ${Date.now()}`),
+    // Sales: approved payments (online and manual) by the day they were paid or approved. A free promo code (₱0) and
+    // a Group Premium seat (paid by the buyer, already counted) are not sales.
+    ...await (async () => {
+      const now = Date.now(), sum = (ms) => one(`SELECT COALESCE(ROUND(SUM(CAST(amount AS REAL)), 2), 0) FROM payments WHERE status = 'approved' AND provider NOT IN ('promo', 'bulk') AND decided_at > ${now - ms}`);
+      return {
+        sales7d: await sum(7 * 864e5), sales30d: await sum(30 * 864e5),
+        paid30d: await one(`SELECT COUNT(*) FROM payments WHERE status = 'approved' AND provider NOT IN ('promo', 'bulk') AND decided_at > ${now - 30 * 864e5}`),
+        expiring7d: await one(`SELECT COUNT(*) FROM users WHERE premium_until > ${now} AND premium_until <= ${now + 7 * 864e5}`),
+      };
+    })(),
     pendingPayments: await one(`SELECT COUNT(*) FROM payments WHERE status = 'pending'`),
     alerts7d: await one(`SELECT COUNT(*) FROM audit_log WHERE alert = 1 AND at > ${Date.now() - 7 * 864e5}`),
     mail: { enabled: mail.enabled, provider: mail.provider, verify: REQUIRE_VERIFY },
@@ -1598,15 +1609,18 @@ app.get('/api/admin/attempts', admin, wrap(async (req, res) => {
 app.get('/api/admin/promos', admin, wrap(async (req, res) => {
   const st = await getSettings();
   const rows = await db.all('SELECT * FROM promo_codes ORDER BY id DESC LIMIT 500');
-  res.json({ price: st.price, min_online: promo.MIN_ONLINE, rows: rows.map((p) => ({ ...p, ...promo.priceAfter(p, st.price) })) });
+  const all = plans(st);
+  // prices: the price of every plan the code works on (and is turned on), before and after the code.
+  res.json({ price: st.price, min_online: promo.MIN_ONLINE, plans: all, rows: rows.map((p) => ({ ...p, ...promo.priceAfter(p, st.price),
+    plan_ids: promo.plansOf(p), prices: all.filter((pl) => promo.forPlan(p, pl.id)).map((pl) => ({ id: pl.id, ...promo.priceAfter(p, pl.price) })) })) });
 }));
 app.post('/api/admin/promos', admin, wrap(async (req, res) => {
   const c = promo.clean(req.body || {}, { creating: true });
   if (c.error) return res.status(400).json({ error: c.error });
   if (await db.get('SELECT 1 FROM promo_codes WHERE code = ?', c.code)) return res.status(409).json({ error: 'May promo code na ganito. Pumili ng iba.' });
-  const r = await db.run(`INSERT INTO promo_codes (code, kind, value, expires_at, max_uses, active, note, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    c.code, c.kind, c.value, c.expires_at || 0, c.max_uses || 0, c.active ?? 1, c.note || '', req.user.id, Date.now());
-  await audit.log(req, 'promo_create', { detail: `${c.code} · ${promo.label(c)}${c.max_uses ? ` · ${c.max_uses} gamit` : ''}${c.expires_at ? ` · hanggang ${new Date(c.expires_at).toISOString().slice(0, 10)}` : ''}` });
+  const r = await db.run(`INSERT INTO promo_codes (code, kind, value, expires_at, max_uses, active, note, created_by, created_at, plans) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    c.code, c.kind, c.value, c.expires_at || 0, c.max_uses || 0, c.active ?? 1, c.note || '', req.user.id, Date.now(), c.plans || '');
+  await audit.log(req, 'promo_create', { detail: `${c.code} · ${promo.label(c)}${c.plans ? ` · ${promo.planList(promo.plansOf(c))} lang` : ''}${c.max_uses ? ` · ${c.max_uses} gamit` : ''}${c.expires_at ? ` · hanggang ${new Date(c.expires_at).toISOString().slice(0, 10)}` : ''}` });
   res.json(await db.get('SELECT * FROM promo_codes WHERE id = ?', r.lastInsertRowid));
 }));
 app.patch('/api/admin/promos/:id', admin, wrap(async (req, res) => {
