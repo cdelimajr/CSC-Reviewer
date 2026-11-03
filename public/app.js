@@ -3,7 +3,7 @@
   'use strict';
   const $app = document.getElementById('app');
   const LETTERS = ['A', 'B', 'C', 'D'];
-  const APP_VERSION = '1.36.0'; // keep in step with package.json and docs/DOKUMENTASYON.md
+  const APP_VERSION = '1.37.0'; // keep in step with package.json and docs/DOKUMENTASYON.md
   const S = { user: null, meta: null, exam: null, timer: null, saveT: null };
 
   /* ---------------- helpers ---------------- */
@@ -2803,7 +2803,7 @@
     const prev = practice ? null : withLocal(store.get(uk('cse-c') + '/api/attempts'), null).list
       .filter((x) => x.mode === a.mode && x.finished_at && x.finished_at < a.finished_at && String(x.id) !== String(id) && x.total)
       .sort((x, y) => y.finished_at - x.finished_at)[0];
-    const diff = prev ? p - pct(prev.score, prev.total) : null;
+    const diff = prev ? Math.round((p - pct(prev.score, prev.total)) * 10) / 10 : null; // rounded, so 80.6 - 75.3 shows +5.3 (not +5.299999999999997)
     shell('history', `
       <div class="card" style="text-align:center">
         <div class="result-head">${showLevel() ? levelChip(lv, 'big') : ''}${setChip(a)}</div>
