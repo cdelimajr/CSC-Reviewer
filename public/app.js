@@ -3,7 +3,7 @@
   'use strict';
   const $app = document.getElementById('app');
   const LETTERS = ['A', 'B', 'C', 'D'];
-  const APP_VERSION = '1.42.0'; // keep in step with package.json and docs/DOKUMENTASYON.md
+  const APP_VERSION = '1.43.0'; // keep in step with package.json and docs/DOKUMENTASYON.md
   const S = { user: null, meta: null, exam: null, timer: null, saveT: null };
 
   /* ---------------- helpers ---------------- */
@@ -578,7 +578,8 @@
   const Sound = (() => {
     const KEY = 'cse-sound';
     const get = () => ({ on: true, vol: 0.5, theme: 'soft', ...(store.get(KEY) || {}) });
-    const TONES = { soft: { wave: 'sine', tail: 0.18, gain: 1 }, marimba: { wave: 'triangle', tail: 0.08, gain: 1.2 }, retro: { wave: 'square', tail: 0.05, gain: 0.3 } };
+    const TONES = { soft: { wave: 'sine', tail: 0.18, gain: 1 }, marimba: { wave: 'triangle', tail: 0.08, gain: 1.2 }, retro: { wave: 'square', tail: 0.05, gain: 0.3 },
+      bell: { wave: 'triangle', tail: 0.45, gain: 1 } }; // the Premium sound only, with any tone setting
     // [frequency (Hz), start (s), length (s)]
     const TUNES = {
       tap: [[1320, 0, 0.03]],
@@ -588,6 +589,10 @@
       notify: [[988, 0, 0.06], [1319, 0.06, 0.12]],
       warn: [[880, 0, 0.12], [880, 0.22, 0.12]],
       updated: [[1047, 0, 0.22], [1319, 0.12, 0.26], [1568, 0.24, 0.5]], // soft chime: the app was updated
+      // Premium fanfare: a quick rising run, a bright chord, then a high sparkle. Longer and brighter than any
+      // other sound, so it is easy to tell apart: someone just became Premium.
+      premium: [[784, 0, 0.09], [988, 0.08, 0.09], [1175, 0.16, 0.09], [1568, 0.24, 0.5], [1976, 0.24, 0.5], [2349, 0.24, 0.5],
+        [3136, 0.62, 0.08], [2637, 0.7, 0.08], [3136, 0.78, 0.08], [3951, 0.86, 0.45]],
     };
     let ctx = null;
     function play(name) {
@@ -596,8 +601,8 @@
       try {
         ctx = ctx || new (window.AudioContext || window.webkitAudioContext)();
         if (ctx.state === 'suspended') ctx.resume();
-        const tone = name === 'updated' ? TONES.soft : TONES[st.theme] || TONES.soft, t0 = ctx.currentTime + 0.01;
-        const peak = Math.max(0.0002, st.vol * 0.22 * tone.gain * (name === 'tap' ? 0.45 : name === 'notify' ? 0.6 : 1));
+        const tone = name === 'updated' ? TONES.soft : name === 'premium' ? TONES.bell : TONES[st.theme] || TONES.soft, t0 = ctx.currentTime + 0.01;
+        const peak = Math.max(0.0002, st.vol * 0.22 * tone.gain * (name === 'tap' ? 0.45 : name === 'notify' ? 0.6 : name === 'premium' ? 0.7 : 1));
         for (const [f, at, len] of TUNES[name]) {
           const o = ctx.createOscillator(), g = ctx.createGain();
           o.type = tone.wave; o.frequency.value = f;
@@ -729,7 +734,50 @@
     const early = () => { if (S.exam && S.exam.a && S.exam.a.mode !== 'practice') unlock(); };
     document.addEventListener('pointerdown', early, true);
     document.addEventListener('keydown', early, true);
-    return { celebrate, voice, unlock, on };
+    return { celebrate, voice, unlock, on, confetti };
+  })();
+  /* ---------------- Premium: a distinct sound when it starts ----------------
+     When a user's Premium starts or is extended (online payment, an approved manual payment, a promo or group code,
+     or Premium given by the admin), the app plays the Premium fanfare (Sound 'premium'), with confetti and a
+     vibration, the first time it sees the new end date. It is checked each time the account is loaded from the
+     server, so a payment approved while the app was closed plays the next time the app opens (at the first tap if
+     the phone blocks sound until then). Once per new end date on each device (`cse-prem-seen-<user>`), and not on
+     the first login on a device. Follows Account → Sounds (on/off and volume). */
+  const PremiumCheer = (() => {
+    function play() {
+      setTimeout(() => {
+        Sound.playSoon('premium'); Cheer.confetti();
+        if (navigator.vibrate) try { navigator.vibrate([60, 40, 60, 40, 160]); } catch { /* not allowed */ }
+      }, 350); // after the "Premium is active" toast sound
+    }
+    function check() {
+      if (!S.user || S.user.role === 'admin' || S.offAuth) return;
+      const k = uk('cse-prem-seen'), until = Number(S.user.premium_until) || 0, seen = store.get(k);
+      if (typeof seen !== 'number') { store.set(k, until); return; } // first time on this device: no sound
+      if (until === seen) return;
+      store.set(k, until);
+      if (until > Date.now() && until > seen + 60e3) play();
+    }
+    return { check, play };
+  })();
+  /* Admin: the same Premium sound when a user gets Premium (online payment, promo or group code) or sends a manual
+     payment to check, while the admin has the app open. Asks the server every 30 seconds while the app is on the
+     screen and online (GET /api/admin/premium-ping: the time of the newest payment of each kind). The first answer
+     is only remembered, so opening the app does not play old payments. */
+  const AdminPing = (() => {
+    let last = null;
+    async function tick() {
+      if (!S.user || S.user.role !== 'admin' || S.offline || S.offAuth || document.hidden) return;
+      let r;
+      try { r = await api('GET', '/api/admin/premium-ping'); } catch { return; }
+      const was = last; last = { paid: r.paid_at || 0, pending: r.pending_at || 0, uid: S.user.id };
+      if (!was || was.uid !== last.uid) return;
+      if (last.paid > was.paid) { toast(L('⭐ May bagong Premium user!', '⭐ A new Premium user!')); PremiumCheer.play(); }
+      else if (last.pending > was.pending) { toast(L('💳 May bagong bayad na hinihintay ma-check.', '💳 A new payment is waiting to be checked.')); PremiumCheer.play(); }
+    }
+    setInterval(tick, 30e3);
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) tick(); });
+    return { tick };
   })();
   // A soft tap for buttons and menus. Exam choices have their own sounds (see choose()).
   const PRESS = '.btn, .seg button, .tabs button, .bottomnav a, .topbar a, .topbar button, .subject-btn, details.fold > summary, .navgrid button, .lvl-opt, .lang-flag, .choice, .list-item, .exam-card, .logout-btn';
@@ -3124,7 +3172,7 @@
       ${fold('acc-sec', `<h3>${L('Seguridad: mga huling login', 'Security: recent logins')}</h3>`, `<div id="secCard"><p class="muted small" style="margin:0">${L('Buksan para makita…', 'Open to see…')}</p></div>`)}
       ${bioFold()}
       ${fold('acc-sound', `<h3>${L('Tunog', 'Sounds')}</h3><span class="pill" id="sndPill">${Sound.get().on ? L('Naka-on', 'On') : L('Naka-off', 'Off')}</span>`, `
-        <p class="muted small" style="margin:0 0 10px">${L('Maiikling tunog kapag pumindot, pag-flip ng pahina sa exam, tama o mali sa practice, natapos ang exam, at 5 minutong natitira. Gumagana offline.', 'Short sounds when you tap, a page turn in the exam, right or wrong in practice, when an exam ends, and at 5 minutes left. Works offline.')}</p>
+        <p class="muted small" style="margin:0 0 10px">${L('Maiikling tunog kapag pumindot, pag-flip ng pahina sa exam, tama o mali sa practice, natapos ang exam, 5 minutong natitira, at kakaibang tunog kapag naging Premium ka. Gumagana offline.', 'Short sounds when you tap, a page turn in the exam, right or wrong in practice, when an exam ends, at 5 minutes left, and a special sound when you become Premium. Works offline.')}</p>
         <label class="check"><input type="checkbox" id="sndOn" ${Sound.get().on ? 'checked' : ''}> ${L('Naka-on ang tunog', 'Sounds on')}</label>
         <label class="check"><input type="checkbox" id="sndCheer" ${Cheer.on() ? 'checked' : ''}> ${L('Boses na "Congratulations!" kapag pumasa sa mock exam', 'A "Congratulations!" voice when you pass a mock exam')}</label>
         <p class="muted small" style="margin:4px 0 0 30px">${L('Tumutunog kahit naka-silent ang phone (sa lakas ng media volume), may kasamang confetti. Hiwalay ito sa ibang tunog.', 'Plays even when the phone is on silent (at the media volume), with confetti. It is separate from the other sounds.')} <a href="#" id="cheerTest">▶ ${L('Pakinggan', 'Listen')}</a></p>
@@ -3189,7 +3237,7 @@
     $('#sndVol').oninput = (e) => Sound.set({ vol: Number(e.target.value) / 100 });
     $('#sndVol').onchange = () => Sound.play('correct');
     $$('#sndTone [data-tone]').forEach((b) => (b.onclick = () => { Sound.set({ theme: b.dataset.tone }); $$('#sndTone button').forEach((x) => x.classList.toggle('active', x === b)); setTimeout(() => Sound.play('finish'), 120); }));
-    $('#sndTest').onclick = () => { const seq = ['tap', 'flip', 'correct', 'wrong', 'finish']; seq.forEach((n, i) => setTimeout(() => (n === 'flip' ? Sound.flip() : Sound.play(n)), i * 650)); };
+    $('#sndTest').onclick = () => { const seq = ['tap', 'flip', 'correct', 'wrong', 'finish', 'premium']; seq.forEach((n, i) => setTimeout(() => (n === 'flip' ? Sound.flip() : Sound.play(n)), i * 650)); };
     if ($('#zreset')) $('#zreset').onclick = (e) => {
       e.preventDefault();
       const was = zoomNow;
@@ -4537,6 +4585,7 @@
     const me = await api('GET', '/api/me');
     if (!me.user && me.ended === 'replaced') { S.authNote = ELSEWHERE(); S.exam = null; stopTimer(); }
     applyMe(me);
+    PremiumCheer.check();
     if (me.user) { store.set('cse-boot', me); OffAuth.touch(me); syncSoon(); Prefs.pull().catch(() => {}); Reminders.sync(); } else { store.del('cse-boot'); if (IS_APP) store.del('cse-token'); }
   }
   const stateKey = () => JSON.stringify([S.user && S.user.id, S.user && S.user.email_verified, S.premium, S.config && S.config.premium_required]);

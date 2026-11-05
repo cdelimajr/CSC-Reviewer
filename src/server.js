@@ -1434,6 +1434,15 @@ app.get('/api/admin/health', admin, wrap(async (req, res) => {
   res.json({ ...monitor.status(Number(st.capacity_users) || 150, { live: liveScreens, db_ms: dbMs, db_ok: dbOk }), premium_users: premiumNow });
 }));
 
+/* Admin: the time of the newest Premium payment (approved: online, promo, group code or approved manual) and of the
+   newest manual payment waiting to be checked. The admin's app asks every 30 seconds and plays the Premium sound
+   when either one is newer. */
+app.get('/api/admin/premium-ping', admin, wrap(async (req, res) => {
+  const r = await db.get(`SELECT (SELECT MAX(decided_at) FROM payments WHERE status = 'approved') AS paid_at,
+    (SELECT MAX(created_at) FROM payments WHERE status = 'pending') AS pending_at`);
+  res.json({ paid_at: Number(r.paid_at) || 0, pending_at: Number(r.pending_at) || 0 });
+}));
+
 app.get('/api/admin/users', admin, wrap(async (req, res) => {
   const q = `%${String(req.query.q || '').trim()}%`;
   res.json(await db.all(`SELECT u.id, u.name, u.email, u.role, u.disabled, u.created_at, u.email_verified, u.premium_until,
