@@ -592,8 +592,13 @@ const FAMILY = [
 ];
 const FAM = new Map(FAMILY.flatMap((f, i) => f.map((w) => [w, i])));
 const sameFamily = (a, b) => a === b || (FAM.has(a) && FAM.get(a) === FAM.get(b));
-// Other entries of a word list that are safe as wrong choices for word w.
-const others = (list, w) => shuffle(list.filter((x) => !sameFamily(x[0], w)));
+// Other entries of a word list that are safe as wrong choices for word w. A word like "clear" is the synonym
+// of more than one entry (lucid, transparent, vindicate), so an entry is also left out when its synonym or
+// antonym is used by a word in w's family.
+const others = (list, w) => {
+  const near = new Set(list.filter((r) => sameFamily(r[0], w)).flatMap((r) => r.slice(1)));
+  return shuffle(list.filter((x) => !sameFamily(x[0], w) && !near.has(x[1]) && !near.has(x[2])));
+};
 
 const verbalGen = [
   function synonym() {
