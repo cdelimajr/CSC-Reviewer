@@ -9,6 +9,18 @@ process.env.REQUIRE_EMAIL_VERIFICATION = '1';
 process.env.INITIAL_SETS = '3';
 process.env.PAYMONGO_SECRET_KEY = 'sk_test_key';
 process.env.PAYMONGO_WEBHOOK_SECRET = 'whsk_test_secret';
+process.env.ELEVENLABS_API_KEY = 'el_test_key';
+process.env.ELEVENLABS_VOICE_ID = 'conrado_test_id';
+// ElevenLabs is never called for real in the tests: a fake MP3 comes back, and each call is counted.
+const realFetch = global.fetch;
+const eleven = { calls: 0, last: null };
+global.fetch = async (url, opts) => {
+  if (String(url).startsWith('https://api.elevenlabs.io/')) {
+    eleven.calls++; eleven.last = { url: String(url), key: opts.headers['xi-api-key'], body: JSON.parse(opts.body) };
+    return new Response(Buffer.from('ID3fake-mp3'), { status: 200, headers: { 'Content-Type': 'audio/mpeg' } });
+  }
+  return realFetch(url, opts);
+};
 const app = require('../src/server');
 const mail = require('../src/mail');
 
@@ -881,6 +893,34 @@ const lastCode = (to) => {
       const src = [...lists.VOCAB, ...lists.SALITA].find((x) => x[1] === c || x[2] === c);
       assert.ok(!src || src[0] === w || !lists.sameFamily(src[0], w), `${g.name}: "${c}" is too close to ${w}`);
     }
+  }
+  // Read aloud with the ElevenLabs voice: made once (saved), Premium makes new audio, Free hears saved audio only.
+  {
+    const login = async (email, password) => {
+      const r = await fetch(base + '/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email, password }) });
+      return (r.headers.get('set-cookie') || '').split(';')[0];
+    };
+    const tts = (cookie, text) => fetch(base + '/api/tts', { method: 'POST', headers: { 'Content-Type': 'application/json', cookie }, body: JSON.stringify({ text }) });
+    assert.equal((await tts('', 'Hello')).status, 401, 'tts needs login');
+    const adm = await login('admin@test.ph', 'password123');
+    const me = await (await fetch(base + '/api/me', { headers: { cookie: adm } })).json();
+    assert.equal(me.config.voice.name, 'Conrado', 'app knows the voice is on');
+    assert.ok(!JSON.stringify(me).includes('el_test_key'), 'the key never goes to the app');
+    let t = await tts(adm, '1. Alin ang tamang sagot?\nA. Ito');
+    assert.equal(t.status, 200); assert.equal(t.headers.get('content-type'), 'audio/mpeg');
+    assert.equal(Buffer.from(await t.arrayBuffer()).toString(), 'ID3fake-mp3');
+    assert.equal(eleven.calls, 1); assert.equal(eleven.last.key, 'el_test_key'); assert.ok(eleven.last.url.includes('conrado_test_id'));
+    t = await tts(adm, '1.  Alin ang tamang sagot?\nA. Ito'); // same text (spaces do not matter): from the saved audio
+    assert.equal(t.status, 200); assert.equal(eleven.calls, 1, 'saved audio is not made again');
+    assert.equal((await tts(adm, '   ')).status, 400);
+    const F = client();
+    await F('POST', '/api/auth/register', { name: 'Free Voice', email: 'voice@test.ph', password: 'password123' });
+    await F('POST', '/api/auth/verify', { code: lastCode('voice@test.ph') });
+    const free = await login('voice@test.ph', 'password123');
+    assert.equal((await tts(free, '1. Alin ang tamang sagot?\nA. Ito')).status, 200, 'free hears saved audio');
+    const miss = await tts(free, 'A new text nobody heard yet');
+    assert.equal(miss.status, 402); assert.equal((await miss.json()).code, 'premium');
+    assert.equal(eleven.calls, 1, 'free never spends ElevenLabs characters');
   }
   console.log('All smoke tests passed.');
   srv.close(); process.exit(0);

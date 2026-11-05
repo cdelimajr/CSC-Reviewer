@@ -17,6 +17,10 @@ services:
         sync: false
       - key: BREVO_API_KEY
         sync: false
+      - key: ELEVENLABS_API_KEY
+        sync: false
+      - key: ELEVENLABS_VOICE_ID
+        sync: false
       - key: MAIL_FROM
         sync: false
       - key: PAYMONGO_SECRET_KEY
