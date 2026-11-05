@@ -33,11 +33,15 @@ const lastCode = (to) => {
   await app.ready;
   const srv = app.listen(0);
   const base = `http://127.0.0.1:${srv.address().port}`;
-  const client = () => {
-    let cookie = '';
+  // A browser: keeps its cookies; with a device ID it also sends X-Device like the app does.
+  const client = (device) => {
+    const jar = new Map();
     return async (method, url, body) => {
-      const r = await fetch(base + url, { method, headers: { 'Content-Type': 'application/json', cookie }, body: body && JSON.stringify(body) });
-      const sc = r.headers.get('set-cookie'); if (sc) cookie = sc.split(';')[0];
+      const headers = { 'Content-Type': 'application/json', cookie: [...jar].map(([k, v]) => `${k}=${v}`).join('; ') };
+      const dev = typeof device === 'function' ? device() : device;
+      if (dev) headers['X-Device'] = dev;
+      const r = await fetch(base + url, { method, headers, body: body && JSON.stringify(body) });
+      for (const c of r.headers.getSetCookie()) { const [kv] = c.split(';'); const i = kv.indexOf('='); jar.set(kv.slice(0, i), kv.slice(i + 1)); }
       return { status: r.status, data: await r.json() };
     };
   };
@@ -199,6 +203,37 @@ const lastCode = (to) => {
   assert.equal((await G('POST', '/api/attempts', { mode: 'pro', set_id: s1.id, full: true })).status, 402, 'only once');
   assert.equal((await G('POST', '/api/attempts', { mode: 'pro', set_id: s1.id })).data.items.length, 20, 'the mini mock still works');
   await A('PUT', '/api/admin/settings', { free_mock_daily: '1' });
+  // Free limits also count per device (1.40.0): a second free account on the same device gets no new allowance.
+  const DEV = 'web-11111111-2222-3333-4444-555555555555';
+  const newFree = async (C, email) => { await C('POST', '/api/auth/register', { name: 'Dev', email, password: 'password123' }); await C('POST', '/api/auth/verify', { code: lastCode(email) }); };
+  const D1 = client(DEV), D2 = client(DEV), D3 = client('web-99999999-8888-7777-6666-555555555555');
+  await newFree(D1, 'dev1@test.ph');
+  r = await D1('POST', '/api/attempts', { mode: 'pro', set_id: s1.id, full: true });
+  assert.equal(r.status, 200, 'first free account on the device: free full mock exam');
+  for (let i = 0; i < 3; i++) assert.equal((await D1('POST', '/api/attempts', { mode: 'practice', subject: 'verbal' })).status, 200);
+  await newFree(D2, 'dev2@test.ph');
+  me = (await D2('GET', '/api/me')).data;
+  assert.deepEqual([me.mock_today, me.practice_today, me.full_trials_left, me.solutions_left], [1, 3, 0, 0], 'second account on the same device sees the device usage');
+  r = await D2('POST', '/api/attempts', { mode: 'pro', set_id: s1.id });
+  assert.equal(r.status, 402, 'same device: no new mock exam today'); assert.equal(r.data.code, 'mock_daily');
+  assert.equal((await D2('POST', '/api/attempts', { mode: 'practice', subject: 'verbal' })).status, 402, 'same device: no new practice today');
+  await A('PUT', '/api/admin/settings', { free_mock_daily: '5' });
+  assert.equal((await D2('POST', '/api/attempts', { mode: 'pro', set_id: s1.id, full: true })).status, 402, 'same device: the free full mock exam is used');
+  r = await D2('POST', '/api/attempts', { mode: 'pro', set_id: s1.id });
+  assert.equal(r.status, 200); assert.equal(r.data.sol_free, undefined);
+  assert.ok(r.data.items.every((it) => it.answer === undefined), 'mock exam answers stay hidden');
+  await A('PUT', '/api/admin/settings', { free_mock_daily: '1' });
+  await newFree(D3, 'dev3@test.ph');
+  assert.equal((await D3('POST', '/api/attempts', { mode: 'pro', set_id: s1.id })).status, 200, 'another device: its own free allowance');
+  // The website keeps the device ID in a cookie too: clearing only the browser storage keeps the same device.
+  let d4 = 'web-00000000-aaaa-bbbb-cccc-dddddddddddd';
+  const D4 = client(() => d4);
+  await newFree(D4, 'dev4@test.ph');
+  assert.equal((await D4('POST', '/api/attempts', { mode: 'pro', set_id: s1.id })).status, 200);
+  await D4('POST', '/api/auth/logout');
+  d4 = 'web-00000000-eeee-ffff-0000-111111111111'; // the browser storage was cleared: a new random ID, same cookie
+  await newFree(D4, 'dev5@test.ph');
+  assert.equal((await D4('POST', '/api/attempts', { mode: 'pro', set_id: s1.id })).status, 402, 'the device cookie keeps the same device');
   assert.equal((await U('GET', '/api/offline/pack')).status, 402, 'offline is Premium only');
   // App installers (latest GitHub Release, faked here): only .apk and .exe, only for paid users
   const releases = require('../src/releases');
@@ -743,7 +778,7 @@ const lastCode = (to) => {
 
   // Admin
   assert.equal((await U('GET', '/api/admin/users')).status, 403, 'user blocked from admin');
-  r = await A('GET', '/api/admin/overview'); assert.ok(r.data.sales30d > 0 && r.data.sales7d === r.data.sales30d && r.data.paid30d > 0, 'sales on the overview'); assert.equal(typeof r.data.expiring7d, 'number'); assert.equal(r.data.users, 9); assert.equal(r.data.premiumUsers, 6); // 9 users (with "Trial", the free full-exam test). Ana got Premium with a promo code; Boss, Gina, Gabo and Gelo with Group Premium
+  r = await A('GET', '/api/admin/overview'); assert.ok(r.data.sales30d > 0 && r.data.sales7d === r.data.sales30d && r.data.paid30d > 0, 'sales on the overview'); assert.equal(typeof r.data.expiring7d, 'number'); assert.equal(r.data.users, 14); assert.equal(r.data.premiumUsers, 6); // 14 users (with "Trial", the free full-exam test, and 5 free accounts of the per-device test). Ana got Premium with a promo code; Boss, Gina, Gabo and Gelo with Group Premium
   r = await A('POST', '/api/admin/sets', { mode: 'subpro' }); assert.equal(r.data.number, 4);
   r = await A('POST', '/api/admin/questions', { subject: 'general', topic: 'Test', question: 'Q?', choices: ['a', 'b', 'c', 'd'], answer: 2 });
   assert.ok(r.data.id);
@@ -811,9 +846,54 @@ const lastCode = (to) => {
   assert.deepEqual([...topics].filter((t) => !explain.TIPS[t]), [], 'every topic has a Quick Note');
   assert.ok(explain.full({ subject: 'numerical', topic: 'Average', question: 'x', explanation: 'Step 1: a' }).endsWith('\nQuick Note: ' + explain.TIPS.Average));
   assert.equal(explain.full({ subject: 'numerical', topic: 'Average', question: 'x', explanation: 'a\nQuick Note: own' }), 'a\nQuick Note: own', 'its own Quick Note wins');
-  const bq = QUESTIONS[0];
-  assert.ok(explain.full({ subject: bq.s, topic: bq.t, question: bq.q, passage: bq.p, explanation: 'old text', source: 'seed' }).startsWith(bq.e), 'saved bank questions get the newest explanation');
-  assert.ok(explain.full({ subject: bq.s, topic: bq.t, question: bq.q, passage: bq.p, explanation: 'admin text', source: 'admin' }).startsWith('admin text'), 'admin edits are kept');
+  const bq = QUESTIONS[0], saved = (x, extra) => ({ subject: x.s, topic: x.t, question: x.q, passage: x.p, choices: [...x.d, x.a], answer: 3, ...extra });
+  assert.ok(explain.full(saved(bq, { explanation: 'old text', source: 'seed' })).startsWith(bq.e), 'saved bank questions get the newest explanation');
+  assert.ok(explain.full(saved(bq, { explanation: 'admin text', source: 'admin' })).startsWith('admin text'), 'admin edits are kept');
+  // Questions with the same words (e.g. "Piliin ang wastong pangungusap.") each get their OWN explanation.
+  const twins = QUESTIONS.filter((x) => x.q === 'Piliin ang wastong pangungusap.');
+  assert.ok(twins.length >= 2);
+  for (const x of twins) assert.ok(explain.full(saved(x, { explanation: '' })).startsWith(x.e), `own explanation: ${x.a}`);
+  assert.ok(explain.full(saved(twins[0], { explanation: '' })).includes('nang'), 'Tumakbo siya nang mabilis → the nang/ng explanation');
+  assert.ok(explain.full({ subject: 'analytical', topic: 'Classification', question: 'Which word does NOT belong to the group?', choices: ['a', 'b', 'c', 'd'], answer: 0, explanation: 'mine', source: 'generated' }).startsWith('mine'), 'generated questions keep their own explanation');
+  // Every built-in question: the answer is one of the choices, the 4 choices differ, and the green answer in the
+  // explanation is the right answer (never a wrong choice).
+  const norm = (t) => String(t).toLowerCase().replace(/[^a-z0-9ñ']+/g, ' ').trim();
+  for (const x of QUESTIONS) {
+    assert.equal(new Set([x.a, ...x.d]).size, 4, `4 different choices: ${x.q}`);
+    const green = [...x.e.matchAll(/==(.+?)==/g)].map((m) => norm(m[1]));
+    assert.ok(green.length && green.every((g) => norm(x.a).includes(g) || g.includes(norm(x.a))), `explanation points to the answer: ${x.q} → ${x.a}`);
+    assert.ok(!x.d.some((d) => green.includes(norm(d))), `explanation does not mark a wrong choice: ${x.q}`);
+  }
+  // Math: one small step per line. No generated math explanation multiplies or divides two big numbers in one jump.
+  for (const name of ['numerical']) for (const g of GENERATORS[name]) for (let i = 0; i < 60; i++) {
+    const it = g(); if (!it) continue;
+    assert.ok(it.choices[it.answer] !== undefined && new Set(it.choices).size === 4, `${g.name}: 4 different choices`);
+    for (const m of it.explanation.matchAll(/(\d[\d,]*) ([×÷]) (\d[\d,]*) = (\d[\d,.]*)/g)) {
+      const [a, b] = [m[1], m[3]].map((v) => Number(v.replace(/,/g, '')));
+      const hard = m[2] === '×' ? a > 12 && b > 12 && !(a % 10 === 0 || b % 10 === 0) : b > 12 && a / b > 12 && a % 10 !== 0;
+      assert.ok(!hard, `${g.name}: "${m[0]}" is too big a jump`);
+    }
+  }
+  // The odd-one-out number is the only one that breaks every simple rule.
+  const oddGen = GENERATORS.analytical.find((g) => g.name === 'oddNumber');
+  for (let i = 0; i < 200; i++) {
+    const it = oddGen(); if (!it) continue;
+    const nums = it.choices.map(Number);
+    for (let k = 2; k <= 12; k++) { const out = nums.filter((v) => v % k); assert.ok(!(out.length === 1 && out[0] !== nums[it.answer]), `oddNumber: only one odd one out (${nums})`); }
+  }
+  // Word choices: no wrong choice is a near-synonym of the right one.
+  const { lists } = require('../src/generators');
+  for (const g of GENERATORS.verbal.filter((x) => /synonym|antonym|kasing|kasalungat/i.test(x.name))) for (let i = 0; i < 100; i++) {
+    const it = g(); if (!it) continue;
+    const w = it.question.split(': ').pop().toLowerCase();
+    const row = [...lists.VOCAB, ...lists.SALITA].find((x) => x[0] === w);
+    if (!row) continue;
+    for (const c of it.choices) {
+      if (c === it.choices[it.answer] || c === row[1] || c === row[2]) continue; // the answer, or the planned trap
+      const src = [...lists.VOCAB, ...lists.SALITA].find((x) => x[1] === c || x[2] === c);
+      assert.ok(!src || src[0] === w || !lists.sameFamily(src[0], w), `${g.name}: "${c}" is too close to ${w}`);
+    }
+  }
   // Read aloud with the ElevenLabs voice: made once (saved), Premium makes new audio, Free hears saved audio only.
   {
     const login = async (email, password) => {

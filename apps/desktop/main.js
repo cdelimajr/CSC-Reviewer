@@ -74,6 +74,23 @@ function runHello(body, timeoutMs) {
       { windowsHide: true, timeout: timeoutMs }, (err, stdout) => resolve(err ? '' : String(stdout).trim()));
   });
 }
+// Device ID for the free plan limits (see Dev in public/app.js): made from the computer's Windows ID
+// (MachineGuid), so it stays the same after reinstalling the app. Only a hash leaves the computer.
+let deviceId = null;
+ipcMain.handle('device:id', () => new Promise((resolve) => {
+  if (deviceId) return resolve(deviceId);
+  const done = (raw) => {
+    if (!raw) return resolve(null);
+    deviceId = 'win-' + require('node:crypto').createHash('sha256').update('cse-reviewer:' + raw).digest('hex').slice(0, 40);
+    resolve(deviceId);
+  };
+  if (process.platform !== 'win32') return done(null);
+  execFile('reg', ['query', 'HKLM\\SOFTWARE\\Microsoft\\Cryptography', '/v', 'MachineGuid'], { windowsHide: true, timeout: 3000 }, (err, out) => {
+    const m = !err && /MachineGuid\s+REG_SZ\s+([0-9a-f-]+)/i.exec(String(out));
+    done(m ? m[1] : null);
+  });
+}));
+
 let helloCache = null;
 ipcMain.handle('hello:available', async () => {
   if (helloCache === null) {

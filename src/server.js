@@ -160,15 +160,21 @@ const freeLimits = (st) => ({
 });
 // Start of today in the Philippines (UTC+8), for the daily practice limit.
 const phDayStart = () => { const n = Date.now() + 8 * 3600e3; return n - (n % 864e5) - 8 * 3600e3; };
-const practiceToday = async (userId) => (await db.get(`SELECT COUNT(*) AS n FROM attempts WHERE user_id = ? AND mode = 'practice' AND started_at >= ?`, userId, phDayStart())).n;
-const mockToday = async (userId) => (await db.get(`SELECT COUNT(*) AS n FROM attempts WHERE user_id = ? AND mode != 'practice' AND started_at >= ?`, userId, phDayStart())).n;
+// Free plan limits count for the account AND for the device (1.40.0). Another free account on the same phone,
+// browser or computer shares the device's free practice, mock exams, full solutions and full-length mock exam.
+// Only free-plan exams (sol_free is set) count for the device, so a Premium account on the same device does not
+// use up anyone's free allowance. Premium accounts have no limits at all.
+const mine = (dev) => (dev ? '(user_id = ? OR (device = ? AND sol_free IS NOT NULL))' : 'user_id = ?');
+const mineArgs = (userId, dev) => (dev ? [userId, dev] : [userId]);
+const practiceToday = async (userId, dev) => (await db.get(`SELECT COUNT(*) AS n FROM attempts WHERE ${mine(dev)} AND mode = 'practice' AND started_at >= ?`, ...mineArgs(userId, dev), phDayStart())).n;
+const mockToday = async (userId, dev) => (await db.get(`SELECT COUNT(*) AS n FROM attempts WHERE ${mine(dev)} AND mode != 'practice' AND started_at >= ?`, ...mineArgs(userId, dev), phDayStart())).n;
 // Full solutions already given today on the free plan, and full-length mock exams already taken.
-const solutionsToday = async (userId) => (await db.get(`SELECT COALESCE(SUM(sol_free), 0) AS n FROM attempts WHERE user_id = ? AND sol_free IS NOT NULL AND started_at >= ?`, userId, phDayStart())).n;
-const fullTrialsUsed = async (userId) => (await db.get('SELECT COUNT(*) AS n FROM attempts WHERE user_id = ? AND full_trial = 1', userId)).n;
+const solutionsToday = async (userId, dev) => (await db.get(`SELECT COALESCE(SUM(sol_free), 0) AS n FROM attempts WHERE ${mine(dev)} AND sol_free IS NOT NULL AND started_at >= ?`, ...mineArgs(userId, dev), phDayStart())).n;
+const fullTrialsUsed = async (userId, dev) => (await db.get(`SELECT COUNT(*) AS n FROM attempts WHERE ${mine(dev)} AND full_trial = 1`, ...mineArgs(userId, dev))).n;
 // What a free user has left today (for the app: practice, mock, solutions, full-length trial).
-async function freeUsage(user, st) {
+async function freeUsage(user, st, dev = null) {
   const free = freeLimits(st);
-  const [p, m, s, f] = await Promise.all([practiceToday(user.id), mockToday(user.id), solutionsToday(user.id), fullTrialsUsed(user.id)]);
+  const [p, m, s, f] = await Promise.all([practiceToday(user.id, dev), mockToday(user.id, dev), solutionsToday(user.id, dev), fullTrialsUsed(user.id, dev)]);
   return { practice_today: p, mock_today: m, solutions_left: Math.max(0, free.solutions_daily - s), full_trials_left: Math.max(0, free.full_trials - f) };
 }
 // What the app needs to know about the settings (also kept on the device for offline use).
@@ -241,6 +247,31 @@ function readCookie(req, name) {
   return m ? decodeURIComponent(m.slice(name.length + 1)) : null;
 }
 
+/* Device ID for the free plan limits (1.40.0).
+   Each device has a random ID: the app makes one and sends it as "X-Device" (Android/iPhone: the phone's own app
+   ID when the Device plugin is there; Windows: from the computer's ID; website: a random ID kept on the browser).
+   The website also gets it as a long-lived cookie ("cse_dev"), so clearing only one of the two keeps it.
+   Only a hash of the ID is saved (attempts.device), never the ID itself, and it is used for nothing else.
+   Limits: a new browser, a private window, or clearing all site or app data makes a new device. */
+const DEVICE_COOKIE = 'cse_dev';
+const DEVICE_RE = /^[A-Za-z0-9:_-]{16,128}$/;
+function deviceOf(req) {
+  if (req._dev !== undefined) return req._dev;
+  const head = String(req.get('x-device') || ''), cookie = String(readCookie(req, DEVICE_COOKIE) || '');
+  // Website: the cookie wins (it stays when only the browser storage is cleared). Apps: the header.
+  const id = (!req.get('X-App') && DEVICE_RE.test(cookie) && cookie) || (DEVICE_RE.test(head) && head) || null;
+  req._dev = id ? sha('dev:' + id).slice(0, 32) : null;
+  return req._dev;
+}
+// Keep the website's device ID in a cookie too (2 years).
+function rememberDevice(req, res) {
+  if (req.get('X-App')) return;
+  const head = String(req.get('x-device') || '');
+  if (!readCookie(req, DEVICE_COOKIE) && DEVICE_RE.test(head)) {
+    res.cookie(DEVICE_COOKIE, head, { httpOnly: true, sameSite: 'lax', secure: req.secure, maxAge: 730 * 864e5, path: '/' });
+  }
+}
+
 // Simple in-memory rate limit for login/register.
 const hits = new Map();
 function limited(key, max = 10, windowMs = 10 * 60 * 1000) {
@@ -307,7 +338,7 @@ app.use('/api', (req, res, next) => {
   if (origin && (!CORS_ORIGINS.length || CORS_ORIGINS.includes(origin))) {
     res.set('Access-Control-Allow-Origin', CORS_ORIGINS.length ? origin : '*');
     if (CORS_ORIGINS.length) res.vary('Origin');
-    res.set('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-App');
+    res.set('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-App, X-Device');
     res.set('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
     res.set('Access-Control-Max-Age', '86400');
   }
@@ -527,12 +558,13 @@ app.post('/api/auth/device/remove', wrap(async (req, res) => {
 
 app.get('/api/me', wrap(async (req, res) => {
   const st = await getSettings();
+  rememberDevice(req, res);
   res.json({
     user: publicUser(req.user) || null,
     ...(req.replaced ? { ended: 'replaced' } : {}),
     config: { verify: REQUIRE_VERIFY, mail: mail.enabled, premium_required: st.premium_required === '1', free: freeLimits(st), online_pay: onlinePayOn(st), ...clientConfig(st) },
     premium: req.user ? hasPremium(req.user, st) : false,
-    ...(req.user ? await freeUsage(req.user, st) : { practice_today: 0, mock_today: 0, solutions_left: 0, full_trials_left: 0 }),
+    ...(req.user ? await freeUsage(req.user, st, deviceOf(req)) : { practice_today: 0, mock_today: 0, solutions_left: 0, full_trials_left: 0 }),
   });
 }));
 
@@ -649,9 +681,12 @@ app.post('/api/attempts', auth, verified, wrap(async (req, res) => {
   const premium = hasPremium(req.user, st);
   const free = freeLimits(st);
   const opts = { ...req.body };
+  // Free plan: counted for the account and for this device (another free account on the same device shares it).
+  const dev = premium ? null : deviceOf(req);
+  rememberDevice(req, res);
   if (!premium && mode === 'practice') {
-    if ((await practiceToday(req.user.id)) >= free.practice_daily) {
-      return res.status(402).json({ error: `Naubos mo na ang ${free.practice_daily} libreng practice ngayong araw. Bumalik bukas o kumuha ng Premium para walang limit.`, code: 'premium' });
+    if ((await practiceToday(req.user.id, dev)) >= free.practice_daily) {
+      return res.status(402).json({ error: `Naubos na ang ${free.practice_daily} libreng practice ngayong araw sa account o device na ito. Bumalik bukas o kumuha ng Premium para walang limit.`, code: 'premium' });
     }
     opts.count = Math.min(Number(opts.count) || 10, free.practice_items);
   }
@@ -659,14 +694,14 @@ app.post('/api/attempts', auth, verified, wrap(async (req, res) => {
   if (!premium && mode !== 'practice') {
     const set = req.body.set_id ? await db.get('SELECT number FROM exam_sets WHERE id = ? AND mode = ?', Number(req.body.set_id), mode) : null;
     if (!set || set.number > free.sets) return res.status(402).json({ error: 'Kailangan ng Premium para sa exam set na ito.', code: 'premium' });
-    // One mock exam a day on the free plan, counted on the server for the account (not the device).
-    if ((await mockToday(req.user.id)) >= free.mock_daily) {
-      return res.status(402).json({ error: 'Isang mock exam lang kada araw sa libreng plan. Bumalik bukas o kumuha ng Premium para walang limit.', code: 'mock_daily' });
+    // One mock exam a day on the free plan, counted on the server for the account and for this device.
+    if ((await mockToday(req.user.id, dev)) >= free.mock_daily) {
+      return res.status(402).json({ error: 'Isang mock exam lang kada araw sa libreng plan (sa account o device na ito). Bumalik bukas o kumuha ng Premium para walang limit.', code: 'mock_daily' });
     }
-    // The one free full-length mock exam (all questions of Set 1, full time).
+    // The one free full-length mock exam (all questions of Set 1, full time): one per account and per device.
     if (req.body.full) {
-      if ((await fullTrialsUsed(req.user.id)) >= free.full_trials) {
-        return res.status(402).json({ error: 'Nagamit mo na ang libreng buong mock exam. Kumuha ng Premium para sa buong exam anumang oras.', code: 'premium' });
+      if ((await fullTrialsUsed(req.user.id, dev)) >= free.full_trials) {
+        return res.status(402).json({ error: 'Nagamit na ang libreng buong mock exam sa account o device na ito. Kumuha ng Premium para sa buong exam anumang oras.', code: 'premium' });
       }
       fullTrial = true;
     }
@@ -685,9 +720,9 @@ app.post('/api/attempts', auth, verified, wrap(async (req, res) => {
   }
   if (!ex.items.length) return res.status(400).json({ error: 'Wala pang tanong para dito.' });
   // Free plan: this exam's share of today's full solutions (the first N questions).
-  const solFree = premium ? null : Math.min(ex.items.length, Math.max(0, free.solutions_daily - (await solutionsToday(req.user.id))));
-  const r = await db.run(`INSERT INTO attempts (user_id, mode, title, items, time_limit_sec, started_at, total, set_id, sol_free, full_trial) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    req.user.id, mode, ex.title, JSON.stringify(ex.items), ex.timeLimitSec, Date.now(), ex.items.length, setId, solFree, fullTrial ? 1 : 0);
+  const solFree = premium ? null : Math.min(ex.items.length, Math.max(0, free.solutions_daily - (await solutionsToday(req.user.id, dev))));
+  const r = await db.run(`INSERT INTO attempts (user_id, mode, title, items, time_limit_sec, started_at, total, set_id, sol_free, full_trial, device) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    req.user.id, mode, ex.title, JSON.stringify(ex.items), ex.timeLimitSec, Date.now(), ex.items.length, setId, solFree, fullTrial ? 1 : 0, dev);
   res.json(attemptView(await db.get('SELECT * FROM attempts WHERE id = ?', r.lastInsertRowid), true, false, !premium));
 }));
 

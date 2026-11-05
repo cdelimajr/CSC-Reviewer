@@ -7,7 +7,8 @@
 const db = require('./db');
 const explain = require('./explain');
 
-const keyOf = (it) => `${it.subject}|${it.question}|${it.passage || ''}`;
+// Same question = same subject, words, passage and correct answer (many questions share the same words).
+const keyOf = (it) => `${it.subject}|${it.question}|${it.passage || ''}|${Array.isArray(it.choices) ? it.choices[it.answer] : ''}`;
 
 async function collect(userId, premium) {
   const rows = await db.all(`SELECT id, mode, items, answers, finished_at FROM attempts WHERE user_id = ? AND finished_at IS NOT NULL
@@ -28,7 +29,7 @@ async function collect(userId, premium) {
       seen.add(k);
       if (right || (ch === undefined && r.mode === 'practice')) return;
       mistakes.push({ subject: it.subject, topic: it.topic || '', question: it.question, passage: it.passage || '', choices: it.choices,
-        answer: it.answer, explanation: explain.full(it), from: r.mode, at: r.finished_at });
+        answer: it.answer, explanation: explain.full(it), ...(it.source ? { source: it.source } : {}), from: r.mode, at: r.finished_at });
     });
   }
   const ranked = [...topics.values()].filter((t) => t.total >= 3)

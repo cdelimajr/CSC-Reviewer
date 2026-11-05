@@ -44,6 +44,60 @@ function numDistractors(ans, opts = {}) {
   return out;
 }
 
+/* ----------------------------- SMALL MATH STEPS ----------------------------- */
+// Math explanations look like a printed answer key that a 10-year-old can follow: one small operation per
+// line (lines that start with "="), and on each line the part to work out next is highlighted (^^part^^).
+// These helpers break a big × or ÷ into easy pieces (place values), so no line jumps straight to the answer.
+const placeParts = (n) => String(n).split('').map((d, i, a) => Number(d) * 10 ** (a.length - 1 - i)).filter(Boolean);
+const tz = (n) => { let z = 0; while (n && n % 10 === 0) { n /= 10; z++; } return z; }; // trailing zeros
+const zerosWord = (z) => `${z} zero${z > 1 ? 's' : ''}`;
+// The lines after "a × b" (whole numbers).
+function mulLines(a, b) {
+  const r = a * b;
+  if (!a || !b || a === 1 || b === 1 || (a <= 12 && b <= 12) || r <= 100) return [`= ${fmt(r)}`];
+  const pa = placeParts(a), pb = placeParts(b);
+  if (pa.length === 1 && pb.length === 1) { // 30 × 200: multiply the front digits, then add the zeros
+    const z = tz(a) + tz(b), da = a / 10 ** tz(a), db = b / 10 ** tz(b);
+    return [`= ${da} × ${db}, then add ${zerosWord(z)}`, `= ${da * db} → ${fmt(r)}`];
+  }
+  // Split the number with more parts: 35 × 24 = 35 × 20 + 35 × 4
+  const [x, y] = pb.length > pa.length || (pb.length === pa.length && b >= a) ? [a, b] : [b, a];
+  const parts = placeParts(y), prods = parts.map((p) => x * p);
+  const out = [`= ${parts.map((p) => `${fmt(x)} × ${fmt(p)}`).join(' + ')}`, `= ${prods.map(fmt).join(' + ')}`];
+  let sum = prods[0];
+  for (let i = 1; i < prods.length - 1; i++) { sum += prods[i]; out.push(`= ${fmt(sum)} + ${prods.slice(i + 1).map(fmt).join(' + ')}`); }
+  out.push(`= ${fmt(r)}`);
+  return out;
+}
+// The lines after "a ÷ b" when it divides evenly.
+function divLines(a, b) {
+  const q = a / b;
+  if (b === 1) return [`= ${fmt(q)}`];
+  const z = Math.min(tz(a), tz(b));
+  if (z) return [`= ${fmt(a / 10 ** z)} ÷ ${fmt(b / 10 ** z)}   (take away ${zerosWord(z)} from both)`, ...divLines(a / 10 ** z, b / 10 ** z)];
+  const parts = placeParts(q);
+  if ((q <= 12 && b <= 12) || parts.length === 1) return [`= ${fmt(q)}   (because ${fmt(b)} × ${fmt(q)} = ${fmt(a)})`];
+  const chunks = parts.map((p) => p * b);
+  return [`= (${chunks.map(fmt).join(' + ')}) ÷ ${fmt(b)}   (split ${fmt(a)} into easy parts)`,
+    `= ${chunks.map((c) => `${fmt(c)} ÷ ${fmt(b)}`).join(' + ')}`, `= ${parts.map(fmt).join(' + ')}`, `= ${fmt(q)}`];
+}
+// "Step n: label: a × b" followed by its lines.
+const mulStep = (label, a, b) => [`${label}: ${fmt(a)} × ${fmt(b)}`, ...mulLines(a, b)].join('\n');
+const divStep = (label, a, b) => [`${label}: ${fmt(a)} ÷ ${fmt(b)}`, ...divLines(a, b)].join('\n');
+// Adding a list one number at a time.
+function addLines(nums) {
+  if (nums.length <= 2) return [`= ${fmt(nums.reduce((s, v) => s + v, 0))}`];
+  const out = [];
+  let s = nums[0];
+  for (let i = 1; i < nums.length; i++) { s += nums[i]; out.push(`= ${fmt(s)}${i < nums.length - 1 ? ' + ' + nums.slice(i + 1).map(fmt).join(' + ') : ''}`); }
+  return out;
+}
+// A hint for a − b or a + b (b ≥ 0) when the numbers go below zero.
+const minusHint = (a, b) => (a >= b ? '' : a >= 0 ? `   (${b} is bigger than ${a}: ${b} − ${a} = ${b - a}, so the answer is below zero)`
+  : `   (we are already ${-a} below zero and go ${b} more down: ${-a} + ${b} = ${b - a})`);
+const plusHint = (a, b) => (a >= 0 ? '' : a + b >= 0 ? `   (${b} − ${-a} = ${a + b})` : `   (${-a} − ${b} = ${-(a + b)}, still below zero)`);
+const neg = (n) => (n < 0 ? `(${n})` : `${n}`);
+
 /* ----------------------------- NUMERICAL ----------------------------- */
 const N = 'numerical';
 const numerical = [
@@ -52,7 +106,7 @@ const numerical = [
     const n = ri(2, 60) * 20;
     const ans = (p * n) / 100;
     return mk(N, 'Percentage', `What is ${p}% of ${fmt(n)}?`, fmt(ans), numDistractors(ans).map(fmt),
-      `Step 1: Change ${p}% to a decimal: ${p} ÷ 100 = **${p / 100}**.\nStep 2: Multiply by the number: ${p / 100} × ${fmt(n)} = ==${fmt(ans)}==.`);
+      `Step 1: **%** means "out of 100", so ${p}% of ${fmt(n)} = **${p} × ${fmt(n)} ÷ 100**.\n${mulStep('Step 2: Multiply first', p, n)}\nStep 3: Divide by 100 (take away 2 zeros, or move the dot 2 places to the left): ${fmt(p * n)} ÷ 100 = ==${fmt(ans)}==.`);
   },
   function whatPercent() {
     const p = pick([5, 10, 15, 20, 25, 30, 40, 45, 50, 60, 75, 80]);
@@ -60,31 +114,32 @@ const numerical = [
     const part = (base * p) / 100;
     return mk(N, 'Percentage', `${fmt(part)} is what percent of ${fmt(base)}?`, p + '%',
       numDistractors(p, { step: 5 }).map((x) => x + '%'),
-      `Step 1: Divide the part by the whole: ${fmt(part)} ÷ ${fmt(base)} = **${p / 100}**.\nStep 2: Multiply by 100 to make it a percent: ${p / 100} × 100 = ==${p}%==.`);
+      `Percent = **part ÷ whole × 100**. Here the part is ${fmt(part)} and the whole is ${fmt(base)}.\nStep 1: Multiply the part by 100 first (add 2 zeros): ${fmt(part)} × 100 = **${fmt(part * 100)}**.\n${divStep('Step 2: Divide by the whole', part * 100, base)}\nStep 3: So ${fmt(part)} is ==${p}%== of ${fmt(base)}.\nCheck: ${p}% of ${fmt(base)} = ${p} × ${fmt(base)} ÷ 100 = ${fmt(part)} ✓`);
   },
   function discount() {
     const price = ri(4, 60) * 100;
     const d = pick([10, 15, 20, 25, 30, 40, 50]);
-    const ans = price - (price * d) / 100;
+    const one = price / 100, off = d * one, ans = price - off;
     return mk(N, 'Percentage', `A pair of shoes costs ${peso(price)}. During a sale, it is offered at ${d}% discount. What is the sale price?`,
-      peso(ans), [peso((price * d) / 100), peso(ans + price * 0.05), peso(ans - price * 0.05), peso(price - d * 10)],
-      `Step 1: Find the discount: ${d}% of ${peso(price)} = ${d / 100} × ${peso(price)} = **${peso((price * d) / 100)}**.\nStep 2: Take the discount away from the price: ${peso(price)} − ${peso((price * d) / 100)} = ==${peso(ans)}==.\n!!Trap!!: ${peso((price * d) / 100)} is only the discount, not the sale price.`);
+      peso(ans), [peso(off), peso(ans + price * 0.05), peso(ans - price * 0.05), peso(price - d * 10)],
+      `Step 1: Find 1% of the price: ${peso(price)} ÷ 100 = **${peso(one)}** (take away 2 zeros).\n${mulStep(`Step 2: The discount is ${d}%, so ${d} × ${peso(one)}`, d, one)}\nSo the discount is **${peso(off)}**.\nStep 3: Take the discount away from the price: ${peso(price)} − ${peso(off)} = ==${peso(ans)}==.\n!!Trap!!: ${peso(off)} is only the discount, not the sale price.`);
   },
   function simpleInterest() {
     const P = ri(2, 50) * 1000;
     const r = pick([2, 3, 4, 5, 6, 8, 10, 12]);
     const t = ri(1, 5);
-    const I = (P * r * t) / 100;
+    const one = P / 100, year = r * one, I = year * t;
     return mk(N, 'Simple Interest', `How much simple interest will ${peso(P)} earn at ${r}% per year for ${t} year${t > 1 ? 's' : ''}?`,
-      peso(I), [peso(I + (P * r) / 100), peso((P * r) / 100 === I ? I * 2 : (P * r) / 100), peso(P + I), peso(I / 2)],
-      `Use **I = P × r × t** (interest = money × rate × time).\nStep 1: P = ${peso(P)}, r = ${r}% = **${r / 100}**, t = **${t}** year${t > 1 ? 's' : ''}.\nStep 2: I = ${peso(P)} × ${r / 100} × ${t} = ==${peso(I)}==.\n!!Trap!!: the question asks for the interest only, not the money plus interest.`);
+      peso(I), [peso(I + year), peso(year === I ? I * 2 : year), peso(P + I), peso(I / 2)],
+      `Use **I = P × r × t** (interest = money × rate × time).\nStep 1: Find 1% of the money: ${peso(P)} ÷ 100 = **${peso(one)}** (take away 2 zeros).\n${mulStep(`Step 2: Interest for 1 year is ${r}%, so ${r} × ${peso(one)}`, r, one)}\n${t > 1 ? `${mulStep(`Step 3: For ${t} years, ${peso(year)} × ${t}`, year, t)}\nInterest: ==${peso(I)}==.` : `Step 3: It is only 1 year, so the interest is ==${peso(I)}==.`}\n!!Trap!!: the question asks for the interest only, not the money plus interest.`);
   },
   function workTogether() {
     const [a, b, ans] = pick([[3, 6, 2], [4, 12, 3], [6, 12, 4], [10, 15, 6], [12, 24, 8], [20, 30, 12], [5, 20, 4], [9, 18, 6], [8, 24, 6], [15, 30, 10], [6, 3, 2], [12, 6, 4], [4, 4, 2], [10, 40, 8]]);
     const names = shuffle(['Ana', 'Ben', 'Carlo', 'Dina', 'Ella', 'Felix', 'Gina', 'Hector']);
+    const L = (a * b) / gcd(a, b), ta = L / a, tb = L / b, top = ta + tb;
     return mk(N, 'Work Problem', `${names[0]} can paint a room in ${a} hours, while ${names[1]} can paint the same room in ${b} hours. Working together, how many hours will it take them to paint the room?`,
       `${ans} hours`, [`${(a + b) / 2} hours`, `${a + b} hours`, `${ans + 1} hours`, `${Math.abs(a - b) || ans + 2} hours`, `${ans + 2} hours`],
-      `Step 1: In 1 hour, ${names[0]} paints **1/${a}** of the room and ${names[1]} paints **1/${b}** of the room.\nStep 2: Together in 1 hour: 1/${a} + 1/${b} = **1/${ans}** of the room.\nStep 3: If they paint 1/${ans} each hour, the whole room takes ==${ans} hours==.\nShortcut: (${a} × ${b}) ÷ (${a} + ${b}) = ${a * b} ÷ ${a + b} = ${ans}.\n!!Trap!!: working together is FASTER than each one alone, so the answer must be less than ${Math.min(a, b)}.`);
+      `Step 1: In 1 hour, ${names[0]} paints **1/${a}** of the room and ${names[1]} paints **1/${b}** of the room.\nStep 2: Add what they paint together in 1 hour. Make the bottom numbers the same (**${L}**):\nStart: 1/${a} + 1/${b}\n= ^^1/${a}^^ + ^^1/${b}^^   (1/${a} = ${ta}/${L} and 1/${b} = ${tb}/${L})\n= ^^${ta}/${L} + ${tb}/${L}^^\n= ^^${top}/${L}^^   (divide top and bottom by ${top})\n= **1/${ans}** of the room each hour\nStep 3: If they paint 1/${ans} of the room each hour, the whole room takes ==${ans} hours==.\nShortcut: (${a} × ${b}) ÷ (${a} + ${b}) = ${a * b} ÷ ${a + b} = ${ans}.\n!!Trap!!: working together is FASTER than each one alone, so the answer must be less than ${Math.min(a, b)}.`);
   },
   function distance() {
     const s = ri(4, 16) * 5;
@@ -92,10 +147,12 @@ const numerical = [
     const d = s * t;
     if (Math.random() < 0.5) {
       return mk(N, 'Distance, Rate, Time', `A bus travels at an average speed of ${s} km/h. How far will it travel in ${t} hours?`,
-        `${d} km`, numDistractors(d, { step: s }).map((x) => x + ' km'), `Step 1: Use **distance = speed × time**.\nStep 2: The bus goes ${s} km every hour, for ${t} hours: ${s} × ${t} = ==${d} km==.`);
+        `${d} km`, numDistractors(d, { step: s }).map((x) => x + ' km'),
+        `Step 1: Use **distance = speed × time**. The bus goes ${s} km every hour, for ${t} hours.\n${mulStep('Step 2', s, t)}\nAnswer: ==${d} km==.`);
     }
     return mk(N, 'Distance, Rate, Time', `A car travels ${d} km in ${t} hours. What is its average speed?`,
-      `${s} km/h`, numDistractors(s, { step: 5 }).map((x) => x + ' km/h'), `Step 1: Use **speed = distance ÷ time**.\nStep 2: Share the ${d} km equally over ${t} hours: ${d} ÷ ${t} = ==${s} km/h==.`);
+      `${s} km/h`, numDistractors(s, { step: 5 }).map((x) => x + ' km/h'),
+      `Step 1: Use **speed = distance ÷ time**. Share the ${d} km equally over ${t} hours.\n${divStep('Step 2', d, t)}\nAnswer: ==${s} km/h==.\nCheck: ${s} × ${t} = ${d} ✓`);
   },
   function ages() {
     const b = ri(4, 15);
@@ -104,7 +161,7 @@ const numerical = [
     const [x, y] = shuffle(['Maria', 'Liza', 'Jose', 'Pedro', 'Rosa', 'Mark']);
     return mk(N, 'Age Problem', `${x} is ${k} times as old as ${y}. The sum of their ages is ${sum}. How old is ${x}?`,
       k * b, [b, k * b + k, k * b - k, sum - b + 1, (k + 1) * b - 2],
-      `Step 1: Let ${y}'s age = **n**. ${x} is ${k} times as old, so ${x} = **${k}n**.\nStep 2: Add them: n + ${k}n = ${sum} → ${k + 1}n = ${sum}.\nStep 3: n = ${sum} ÷ ${k + 1} = **${b}** (this is ${y}).\nStep 4: ${x} = ${k} × ${b} = ==${k * b}==.\n!!Trap!!: ${b} is ${y}'s age, not ${x}'s.`);
+      `Step 1: Let ${y}'s age = **n**. ${x} is ${k} times as old, so ${x} = **${k}n**.\nStep 2: Add them: n + ${k}n = ${sum}\n= ^^n + ${k}n^^ = ${sum}   (1 n plus ${k} n's)\n= **${k + 1}n = ${sum}**\n${divStep('Step 3: Find one n', sum, k + 1)}\nSo n = **${b}** (this is ${y}).\nStep 4: ${x} = ${k} × ${b} = ==${k * b}==.\nCheck: ${b} + ${k * b} = ${sum} ✓\n!!Trap!!: ${b} is ${y}'s age, not ${x}'s.`);
   },
   function average() {
     const n = 5;
@@ -115,14 +172,14 @@ const numerical = [
     nums.push(rest);
     return mk(N, 'Average', `A student got the following scores: ${nums.join(', ')}. What is the average score?`,
       avg, numDistractors(avg, { step: 2 }),
-      `Step 1: Add all the scores: ${nums.join(' + ')} = **${avg * n}**.\nStep 2: Count the scores: there are **${n}**.\nStep 3: Divide: ${avg * n} ÷ ${n} = ==${avg}==.`);
+      `Step 1: Add all the scores, one at a time:\nStart: ${nums.join(' + ')}\n${addLines(nums).join('\n')}\nStep 2: Count the scores: there are **${n}**.\n${divStep('Step 3: Divide the total by 5', avg * n, n)}\nAverage: ==${avg}==.`);
   },
   function consecutive() {
     const n = ri(10, 80);
     const S = 3 * n + 3;
     return mk(N, 'Algebra', `The sum of three consecutive integers is ${S}. What is the largest of the three?`,
       n + 2, [n, n + 1, n + 3, n - 1],
-      `Step 1: Consecutive means next to each other, so call them **x, x + 1, x + 2**.\nStep 2: Add them: x + x + 1 + x + 2 = **3x + 3** = ${S}.\nStep 3: 3x = ${S} − 3 = ${S - 3}, so x = ${S - 3} ÷ 3 = **${n}**.\nStep 4: The numbers are ${n}, ${n + 1}, ${n + 2}. The largest is ==${n + 2}==.\n!!Trap!!: ${n} is the smallest; the question asks for the largest.`);
+      `Step 1: Consecutive means next to each other, so call them **x, x + 1, x + 2**.\nStep 2: Add them: x + x + 1 + x + 2 = **3x + 3**, so 3x + 3 = ${S}.\nStep 3: Take away 3 from both sides: 3x = ${S} − 3 = **${S - 3}**.\n${divStep('Step 4: Divide both sides by 3', S - 3, 3)}\nSo x = **${n}**.\nStep 5: The numbers are ${n}, ${n + 1}, ${n + 2}. The largest is ==${n + 2}==.\nCheck: ${n} + ${n + 1} + ${n + 2} = ${S} ✓\n!!Trap!!: ${n} is the smallest; the question asks for the largest.`);
   },
   function ratioShare() {
     const a = ri(1, 5), b = ri(a + 1, 8);
@@ -131,7 +188,7 @@ const numerical = [
     const total = (a + b) * unit;
     return mk(N, 'Ratio and Proportion', `${peso(total)} is to be divided between two siblings in the ratio ${a}:${b}. How much is the larger share?`,
       peso(b * unit), [peso(a * unit), peso(total / 2), peso((b + 1) * unit), peso((b - 1) * unit || unit * 3)],
-      `Step 1: Add the ratio parts: ${a} + ${b} = **${a + b} parts**.\nStep 2: One part = ${peso(total)} ÷ ${a + b} = **${peso(unit)}**.\nStep 3: The larger share has ${b} parts: ${b} × ${peso(unit)} = ==${peso(b * unit)}==.\nCheck: the smaller share is ${a} × ${peso(unit)} = ${peso(a * unit)}, and ${peso(a * unit)} + ${peso(b * unit)} = ${peso(total)} ✓`);
+      `Step 1: Add the ratio parts: ${a} + ${b} = **${a + b} parts**.\n${divStep('Step 2: One part', total, a + b)}\nOne part = **${peso(unit)}**.\n${mulStep(`Step 3: The larger share has ${b} parts`, b, unit)}\nLarger share: ==${peso(b * unit)}==.\nCheck: the smaller share is ${a} × ${peso(unit)} = ${peso(a * unit)}, and ${peso(a * unit)} + ${peso(b * unit)} = ${peso(total)} ✓`);
   },
   function proportion() {
     const n1 = ri(2, 6), price = ri(3, 15) * n1, n2 = ri(7, 20);
@@ -140,50 +197,67 @@ const numerical = [
     const item = pick(['notebooks', 'ballpens', 'pencils', 'folders', 'envelopes']);
     return mk(N, 'Ratio and Proportion', `If ${n1} ${item} cost ${peso(price)}, how much will ${n2} ${item} cost?`,
       peso(ans), numDistractors(ans, { step: unit }).map(peso),
-      `Step 1: Find the price of **one**: ${peso(price)} ÷ ${n1} = **${peso(unit)}**.\nStep 2: Multiply by how many you want: ${n2} × ${peso(unit)} = ==${peso(ans)}==.`);
+      `${divStep('Step 1: Find the price of **one**', price, n1)}\nOne costs **${peso(unit)}**.\n${mulStep(`Step 2: Multiply by how many you want (${n2})`, n2, unit)}\nAnswer: ==${peso(ans)}==.`);
   },
   function linear() {
     const a = ri(2, 9), x = ri(-10, 15), b = ri(-20, 20);
     const c = a * x + b;
     const bs = b >= 0 ? `+ ${b}` : `− ${-b}`;
+    const r = c - b;
     return mk(N, 'Algebra', `Solve for x: ${a}x ${bs} = ${c}`,
       x, numDistractors(x, { step: 1, allowNeg: true }).concat([-x, x + 2]),
-      `Goal: get **x** alone on one side.\nStep 1: ${b >= 0 ? `Take away ${b} from` : `Add ${-b} to`} both sides: ${a}x = ${c} ${b >= 0 ? '−' : '+'} ${Math.abs(b)} = **${c - b}**.\nStep 2: Divide both sides by ${a}: x = ${c - b} ÷ ${a} = ==${x}==.\nCheck: ${a} × ${x < 0 ? `(${x})` : x} ${bs} = ${c} ✓`);
+      `Goal: get **x** alone on one side. The highlighted part is solved on the next line.\nStart: ${a}x ${bs} = ${c}\nStep 1: ${b >= 0 ? `Take away ${b} from` : `Add ${-b} to`} both sides:\n→ ${a}x = ^^${c} ${b >= 0 ? '−' : '+'} ${Math.abs(b)}^^\n→ ${a}x = **${r}**${b >= 0 ? minusHint(c, b) : plusHint(c, -b)}\nStep 2: ${a}x means ${a} × x, so divide both sides by ${a}:\n→ x = ^^${r} ÷ ${a}^^${r < 0 ? '   (negative ÷ positive = negative)' : ''}\n→ x = ==${x}==\nCheck: ${a} × ${neg(x)} ${bs} = ${a * x} ${bs} = ${c} ✓`);
   },
   function fractions() {
     const b = pick([2, 3, 4, 5, 6, 8]), d = pick([3, 4, 5, 6, 8, 10, 12]);
     const a = ri(1, b - 1), c = ri(1, d - 1);
     const op = pick(['+', '−']);
-    const raw = op === '+' ? a * d + c * b : a * d - c * b;
+    const L = (b * d) / gcd(b, d), ma = L / b, mc = L / d;
+    const raw = op === '+' ? a * ma + c * mc : a * ma - c * mc;
     if (raw <= 0) return null;
-    const g = gcd(raw, b * d), num = raw / g, den = (b * d) / g;
+    const g = gcd(raw, L), num = raw / g, den = L / g;
     const f = (n, dd) => (dd === 1 ? `${n}` : `${n}/${dd}`);
     const wrong1 = op === '+' ? f(a + c, b + d) : f(Math.abs(a - c) || 1, Math.abs(b - d) || 2);
+    const change = (t, bt, m) => (m === 1 ? `${t}/${bt} stays ${t}/${bt}` : `${t}/${bt} = (${t} × ${m})/(${bt} × ${m}) = ${t * m}/${L}`);
     return mk(N, 'Fractions', `Simplify: ${a}/${b} ${op} ${c}/${d}`,
       f(num, den), [wrong1, f(num + 1, den), f(num, den + 1), f(Math.max(1, num - 1), den)],
-      `Step 1: Make the bottom numbers the same. Use ${b} × ${d} = **${b * d}**.\nStep 2: Change each fraction: ${a}/${b} = ${a * d}/${b * d} and ${c}/${d} = ${c * b}/${b * d}.\nStep 3: ${op === '+' ? 'Add' : 'Subtract'} only the tops: ${a * d} ${op} ${c * b} = ${raw}, so **${raw}/${b * d}**.\n${g > 1 ? `Step 4: Simplify (divide top and bottom by ${g}): ==${f(num, den)}==.` : `Step 4: It cannot be made simpler, so the answer is ==${f(num, den)}==.`}${op === '+' ? `\n!!Trap!!: never add the bottoms (${wrong1} is wrong).` : ''}`);
+      `Step 1: Make the bottom numbers the same. The smallest number that both ${b} and ${d} go into is **${L}**.\nStep 2: Change each fraction (multiply the top and the bottom by the same number):\n${change(a, b, ma)}\n${change(c, d, mc)}\nStep 3: ${op === '+' ? 'Add' : 'Subtract'} only the tops; the bottom stays ${L}:\nStart: ${a}/${b} ${op} ${c}/${d}\n= ^^${a * ma}/${L} ${op} ${c * mc}/${L}^^\n= **${raw}/${L}**\n${g > 1 ? `Step 4: Simplify: divide the top and the bottom by ${g}: ${raw} ÷ ${g} = ${num}, ${L} ÷ ${g} = ${den}.\n= ==${f(num, den)}==` : `Step 4: Nothing divides both ${raw} and ${L}, so it is already simple: ==${f(num, den)}==.`}${op === '+' ? `\n!!Trap!!: never add the bottoms (${wrong1} is wrong).` : ''}`);
   },
   function orderOps() {
     const b = ri(2, 9), c = ri(2, 9), e = ri(2, 6), d = e * ri(2, 9), a = ri(5, 40);
-    const ans = a + b * c - d / e;
+    const bc = b * c, de = d / e, ans = a + bc - de;
     return mk(N, 'Basic Operations', `Evaluate: ${a} + ${b} × ${c} − ${d} ÷ ${e}`,
-      ans, [((a + b) * c - d) / e, (a + b) * c - d / e, a + b * (c - d / e), ans + e],
-      `Use **PEMDAS**: multiply and divide first, then add and subtract (left to right).\nStep 1: ${b} × ${c} = **${b * c}**\nStep 2: ${d} ÷ ${e} = **${d / e}**\nStep 3: ${a} + ${b * c} − ${d / e}\n= ${a + b * c} − ${d / e}\n= ==${ans}==\n!!Trap!!: going left to right without PEMDAS gives a wrong answer.`);
+      ans, [((a + b) * c - d) / e, (a + b) * c - de, a + b * (c - de), ans + e].map((v) => fmt(v)),
+      `Use **PEMDAS**: × and ÷ first (left to right), then + and − (left to right). The highlighted part is solved on the next line.\nStart: ${a} + ^^${b} × ${c}^^ − ${d} ÷ ${e}   (multiply first)\n= ${a} + ${bc} − ^^${d} ÷ ${e}^^   (then divide)\n= ^^${a} + ${bc}^^ − ${de}   (now add, from the left)\n= ^^${a + bc} − ${de}^^   (then subtract)\n= ==${ans}==\n!!Trap!!: going straight from left to right ((${a} + ${b}) × ${c} − ${d}, then ÷ ${e}) gives ${fmt(((a + b) * c - d) / e)}, which is wrong.`);
+  },
+  function bracketDivide() {
+    // Like a printed answer key: A − [B ÷ C(D + E)]
+    const C = ri(2, 5), Q = ri(2, 6), B = C * Q, D = ri(1, 5), E = ri(1, 5), S = D + E, P = Q * S, A = ri(10, 60), ans = A - P;
+    const wrong = Number.isInteger(B / (C * S)) ? A - B / (C * S) : A - P + C;
+    return mk(N, 'Basic Operations', `Evaluate: ${A} − [${B} ÷ ${C}(${D} + ${E})]`, ans, [wrong, A + P, ans + S, ans - Q, A - B - S],
+      `Use **PEMDAS** and work from the **inside out**. The highlighted part is solved on the next line.\nStart: ${A} − [${B} ÷ ${C}(^^${D} + ${E}^^)]   (Parentheses first)\n= ${A} − [^^${B} ÷ ${C}^^ × ${S}]   (${C}(${S}) means ${C} × ${S}; ÷ and × go left to right, so divide first)\n= ${A} − [^^${Q} × ${S}^^]   (then multiply)\n= ^^${A} − ${P}^^   (the bracket is done, now subtract)\n= ==${ans}==${minusHint(A, P)}\n!!Trap!!: do not multiply ${C} × ${S} first. ÷ and × are done from **left to right**.`);
+  },
+  function bracketAdd() {
+    // Like a printed answer key: A − [B + C(D − E)]
+    const C = ri(2, 6), E = ri(1, 5), D = E + ri(1, 5), S = D - E, P = C * S, B = ri(1, 9), T = B + P, A = ri(5, 40), ans = A - T;
+    return mk(N, 'Basic Operations', `Evaluate: ${A} − [${B} + ${C}(${D} − ${E})]`, ans, [A - (B + C) * S, A + T, ans + B, ans - C, A - B + P],
+      `Use **PEMDAS** and work from the **inside out**. The highlighted part is solved on the next line.\nStart: ${A} − [${B} + ${C}(^^${D} − ${E}^^)]   (Parentheses first)\n= ${A} − [${B} + ^^${C} × ${S}^^]   (${C}(${S}) means ${C} × ${S}; multiply before adding)\n= ${A} − [^^${B} + ${P}^^]   (then add inside the bracket)\n= ^^${A} − ${T}^^   (the bracket is done, now subtract)\n= ==${ans}==${minusHint(A, T)}\n!!Trap!!: do not add ${B} + ${C} first. Multiply before you add.`);
   },
   function profit() {
     const cost = ri(4, 40) * 50;
     const p = pick([10, 20, 25, 30, 40, 50]);
-    const sell = cost + (cost * p) / 100;
+    const sell = cost + (cost * p) / 100, gain = sell - cost;
+    if (!Number.isInteger(gain)) return null;
     return mk(N, 'Percentage', `A store owner bought an item for ${peso(cost)} and sold it for ${peso(sell)}. What is the percent profit based on cost?`,
       p + '%', numDistractors(p, { step: 5 }).map((x) => x + '%'),
-      `Step 1: Profit = selling price − cost = ${peso(sell)} − ${peso(cost)} = **${peso(sell - cost)}**.\nStep 2: Divide by the **cost**: ${peso(sell - cost)} ÷ ${peso(cost)} = ${p / 100}.\nStep 3: Multiply by 100: ==${p}%==.`);
+      `Step 1: Profit = selling price − cost = ${peso(sell)} − ${peso(cost)} = **${peso(gain)}**.\nStep 2: Percent profit = profit ÷ cost × 100. Multiply the profit by 100 first (add 2 zeros): ${fmt(gain)} × 100 = **${fmt(gain * 100)}**.\n${divStep('Step 3: Divide by the **cost**', gain * 100, cost)}\nPercent profit: ==${p}%==.\n!!Trap!!: divide by the cost (what the owner paid), not by the selling price.`);
   },
   function decimals() {
     const ia = ri(11, 99), ib = ri(11, 49), a = ia / 10, b = ib / 10;
     const ans = Number((a * b).toFixed(2));
     return mk(N, 'Decimals', `What is ${a} × ${b}?`,
       fmt(ans), [fmt(Number((a * b * 10).toFixed(1))), fmt(Number((a + b).toFixed(2))), fmt(Number((ans + 0.1).toFixed(2))), fmt(Number((ans / 10).toFixed(3)))],
-      `Step 1: Forget the dots and multiply: ${ia} × ${ib} = **${ia * ib}**.\nStep 2: Count the decimal places: ${a} has 1 and ${b} has 1, so **2 places** in all.\nStep 3: Put the dot 2 places from the right: ${(ia * ib / 100).toFixed(2)}${(ia * ib / 100).toFixed(2) === fmt(ans) ? '' : ` = ${fmt(ans)}`}.\nAnswer: ==${fmt(ans)}==`);
+      `${mulStep('Step 1: Forget the dots and multiply like whole numbers', ia, ib)}\nStep 2: Count the decimal places: ${a} has 1 and ${b} has 1, so **2 places** in all.\nStep 3: Put the dot 2 places from the right: ${fmt(ia * ib)} → ${(ia * ib / 100).toFixed(2)}${(ia * ib / 100).toFixed(2) === fmt(ans) ? '' : ` = ${fmt(ans)}`}.\nAnswer: ==${fmt(ans)}==`);
   },
   function numberSeriesN() { return series(N); },
   function wordProblemCoins() {
@@ -193,18 +267,18 @@ const numerical = [
     const amount = fives * 5 + tens * 10;
     return mk(N, 'Word Problem', `Juan has ${total} coins consisting of ₱5 and ₱10 coins. Their total value is ${peso(amount)}. How many ₱10 coins does he have?`,
       tens, [fives, tens + 1, tens - 1, Math.round(total / 2) === tens ? tens + 2 : Math.round(total / 2)],
-      `Step 1: Let **t** = the number of ₱10 coins. The rest are ₱5 coins: **${total} − t**.\nStep 2: Write the money: 10t + 5(${total} − t) = ${amount}\n→ 10t + ${5 * total} − 5t = ${amount}\n→ 5t = ${amount} − ${5 * total} = ${amount - 5 * total}\nStep 3: t = ${amount - 5 * total} ÷ 5 = ==${tens}==.\nCheck: ${tens} × ₱10 + ${fives} × ₱5 = ${peso(tens * 10)} + ${peso(fives * 5)} = ${peso(amount)} ✓`);
+      `Step 1: Pretend ALL ${total} coins are ₱5 coins: ${total} × ₱5 = **${peso(5 * total)}**.\nStep 2: But he has ${peso(amount)}. The extra money: ${peso(amount)} − ${peso(5 * total)} = **${peso(amount - 5 * total)}**.\n${divStep('Step 3: Each ₱10 coin is ₱5 more than a ₱5 coin, so count how many ₱5 are in the extra', amount - 5 * total, 5)}\nSo there are ==${tens}== ₱10 coins.\nCheck: ${tens} × ₱10 + ${fives} × ₱5 = ${peso(tens * 10)} + ${peso(fives * 5)} = ${peso(amount)} ✓`);
   },
   function areaPerimeter() {
     const l = ri(5, 30), w = ri(3, l);
     if (Math.random() < 0.5) {
       return mk(N, 'Geometry', `A rectangular lot is ${l} m long and ${w} m wide. What is its area?`,
         `${l * w} sq m`, [`${2 * (l + w)} sq m`, `${l * w + l} sq m`, `${l * w - w} sq m`, `${(l + w) * 2 + 10} sq m`],
-        `Area is the space **inside** the lot.\nArea = length × width = ${l} × ${w} = ==${l * w} sq m==.\n!!Trap!!: ${2 * (l + w)} is the perimeter (the edge), not the area.`);
+        `Area is the space **inside** the lot: area = length × width.\n${mulStep('Step 1', l, w)}\nArea: ==${l * w} sq m==.\n!!Trap!!: ${2 * (l + w)} is the perimeter (the edge), not the area.`);
     }
     return mk(N, 'Geometry', `How many meters of fencing are needed to enclose a rectangular garden ${l} m long and ${w} m wide?`,
       `${2 * (l + w)} m`, [`${l * w} m`, `${l + w} m`, `${2 * (l + w) + 4} m`, `${2 * l + w} m`],
-      `A fence goes **around** the edge, so we need the **perimeter**.\nStep 1: One length + one width: ${l} + ${w} = ${l + w}.\nStep 2: A rectangle has 2 of each: 2 × ${l + w} = ==${2 * (l + w)} m==.\n!!Trap!!: ${l * w} is the area (the inside), not the fence.`);
+      `A fence goes **around** the edge, so we need the **perimeter**.\nStep 1: One length + one width: ${l} + ${w} = **${l + w}**.\n${mulStep('Step 2: A rectangle has 2 lengths and 2 widths, so double it', 2, l + w)}\nFence: ==${2 * (l + w)} m==.\n!!Trap!!: ${l * w} is the area (the inside), not the fence.`);
   },
 ];
 
@@ -311,7 +385,7 @@ const analytical = [
     const ans = DAYS[(t + n) % 7];
     return mk(A, 'Calendar', `If today is ${DAYS[t]}, what day of the week will it be ${n} days from today?`,
       ans, shuffle(DAYS.filter((x) => x !== ans)),
-      `Every **7 days** it is the same day again.\nStep 1: ${n} ÷ 7 = ${Math.floor(n / 7)} weeks, remainder **${n % 7}**.\nStep 2: The ${Math.floor(n / 7)} full weeks bring us back to ${DAYS[t]}.\n${n % 7 ? `Step 3: Move ${n % 7} more day${n % 7 > 1 ? 's' : ''}: ${Array.from({ length: n % 7 }, (_, i) => DAYS[(t + i + 1) % 7]).join(' → ')}.\nAnswer: ==${ans}==` : `Step 3: No extra days, so it is still ==${ans}==.`}`);
+      `Every **7 days** it is the same day again.\nStep 1: How many full weeks are in ${n} days? 7 × ${Math.floor(n / 7)} = ${7 * Math.floor(n / 7)}, so **${Math.floor(n / 7)} weeks**.\nLeft over: ${n} − ${7 * Math.floor(n / 7)} = **${n % 7}** day${n % 7 === 1 ? '' : 's'}.\nStep 2: The ${Math.floor(n / 7)} full weeks bring us back to ${DAYS[t]}.\n${n % 7 ? `Step 3: Move ${n % 7} more day${n % 7 > 1 ? 's' : ''}: ${Array.from({ length: n % 7 }, (_, i) => DAYS[(t + i + 1) % 7]).join(' → ')}.\nAnswer: ==${ans}==` : `Step 3: No extra days, so it is still ==${ans}==.`}`);
   },
   function dataInterp() {
     const months = ['January', 'February', 'March', 'April', 'May'];
@@ -337,6 +411,12 @@ const analytical = [
     const mult = shuffle(Array.from({ length: 12 }, (_, i) => r * (i + 2))).slice(0, 3);
     let odd;
     do { odd = ri(10, 99); } while (odd % r === 0);
+    // Make sure no other simple rule (even numbers, the 3 times table …) picks out a different number.
+    const all = [...mult, odd];
+    for (let k = 2; k <= 12; k++) {
+      const out = all.filter((v) => v % k !== 0);
+      if (out.length === 1 && out[0] !== odd) return null;
+    }
     return mk(A, 'Classification', `Which number does NOT belong to the group?`,
       odd, mult, `Check the **${r} times table**: ${mult.map((m) => `${m} = ${r} × ${m / r}`).join(', ')}.\n${odd} ÷ ${r} is not a whole number, so ==${odd}== does not belong.`);
   },
@@ -489,7 +569,7 @@ const VOCAB = [
 // [salita, kasingkahulugan, kasalungat]
 const SALITA = [
   ['marilag', 'maganda', 'pangit'], ['masigasig', 'masipag', 'tamad'], ['mapagkumbaba', 'mababang-loob', 'mayabang'], ['matayog', 'mataas', 'mababa'],
-  ['maalwan', 'maginhawa', 'maghirap'], ['dalisay', 'wagas', 'marumi'], ['mahinahon', 'kalmado', 'magagalitin'], ['mapanglaw', 'malungkot', 'masaya'],
+  ['maalwan', 'maginhawa', 'mahirap'], ['dalisay', 'wagas', 'marumi'], ['mahinahon', 'kalmado', 'magagalitin'], ['mapanglaw', 'malungkot', 'masaya'],
   ['matapat', 'tapat', 'taksil'], ['maramot', 'kuripot', 'mapagbigay'], ['marahas', 'mabangis', 'mahinhin'], ['malawak', 'malapad', 'makitid'],
   ['payak', 'simple', 'masalimuot'], ['bantog', 'tanyag', 'di-kilala'], ['pagal', 'pagod', 'masigla'], ['pighati', 'dalamhati', 'galak'],
   ['hikahos', 'mahirap', 'mayaman'], ['mabagal', 'makupad', 'mabilis'], ['maagap', 'maaga', 'huli'], ['matimtiman', 'mahinhin', 'magaslaw'],
@@ -498,29 +578,46 @@ const SALITA = [
   ['salat', 'kapos', 'sagana'], ['ligaya', 'saya', 'lungkot'],
 ];
 
+// Words whose meanings are close. A word from the same family is never used as a wrong choice, because it
+// could also be right (e.g. DIMINISH: "decrease" is the answer, so "lessen" must not be a wrong choice).
+const FAMILY = [
+  ['serene', 'tranquil', 'placid', 'pacify'], ['diminish', 'abate', 'mitigate', 'alleviate', 'wane'], ['hinder', 'impede'],
+  ['adamant', 'obstinate', 'tenacious'], ['benevolent', 'magnanimous', 'amiable', 'cordial', 'gregarious', 'hostile'],
+  ['jovial', 'elated', 'zealous', 'fervent', 'reluctant'], ['lethargic', 'indolent', 'diligent', 'prolific'],
+  ['ambiguous', 'vague', 'lucid', 'transparent'], ['cautious', 'meticulous', 'vigilant', 'prudent'], ['candid', 'sincere'],
+  ['ephemeral', 'brevity', 'concise', 'verbose'], ['trivial', 'negligible'], ['exonerate', 'vindicate'], ['emulate', 'scrutinize'],
+  ['affluent', 'opulent'], ['abundant', 'dearth', 'sparse'], ['rejuvenate', 'fortify', 'deteriorate'], ['arduous', 'tedious', 'futile'],
+  ['hikahos', 'dukha', 'salat', 'maalwan'], ['malawak', 'maluwag'], ['mapanglaw', 'pighati', 'ligaya', 'malamlam'], ['mapagkumbaba', 'palalo'],
+  ['matapat', 'tuso', 'taimtim', 'dalisay'], ['mahinahon', 'matiwasay', 'matimtiman', 'marahas'], ['masigasig', 'pagal', 'mabagal', 'maagap'],
+];
+const FAM = new Map(FAMILY.flatMap((f, i) => f.map((w) => [w, i])));
+const sameFamily = (a, b) => a === b || (FAM.has(a) && FAM.get(a) === FAM.get(b));
+// Other entries of a word list that are safe as wrong choices for word w.
+const others = (list, w) => shuffle(list.filter((x) => !sameFamily(x[0], w)));
+
 const verbalGen = [
   function synonym() {
     const [w, syn] = pick(VOCAB);
-    const ds = shuffle(VOCAB.filter((x) => x[0] !== w && x[1] !== syn)).slice(0, 3).map((x) => x[1]);
+    const ds = others(VOCAB, w).filter((x) => x[1] !== syn).slice(0, 3).map((x) => x[1]);
     return mk(V, 'Vocabulary (Synonym)', `Choose the word closest in meaning to: ${w.toUpperCase()}`, syn, ds,
       `**${w.toUpperCase()}** means **${syn}**.\nSo the word closest in meaning is ==${syn}==.\nTip: put each choice in place of the word in a sentence and see which keeps the same meaning.`);
   },
   function antonym() {
     const [w, syn, ant] = pick(VOCAB);
-    const ds = shuffle(VOCAB.filter((x) => x[0] !== w && x[2] !== ant)).slice(0, 2).map((x) => x[2]);
-    return mk(V, 'Vocabulary (Antonym)', `Choose the word OPPOSITE in meaning to: ${w.toUpperCase()}`, ant, [syn, ...ds, pick(VOCAB)[2]],
+    const ds = others(VOCAB, w).filter((x) => x[2] !== ant).slice(0, 3).map((x) => x[2]);
+    return mk(V, 'Vocabulary (Antonym)', `Choose the word OPPOSITE in meaning to: ${w.toUpperCase()}`, ant, [syn, ...ds],
       `**${w.toUpperCase()}** means ${syn}. The opposite of that is ==${ant}==.\n!!Trap!!: "${syn}" has the SAME meaning, not the opposite.`);
   },
   function kasingkahulugan() {
     const [w, syn] = pick(SALITA);
-    const ds = shuffle(SALITA.filter((x) => x[0] !== w && x[1] !== syn)).slice(0, 3).map((x) => x[1]);
+    const ds = others(SALITA, w).filter((x) => x[1] !== syn).slice(0, 3).map((x) => x[1]);
     return mk(V, 'Talasalitaan (Filipino)', `Piliin ang kasingkahulugan ng salitang may malaking titik: ${w.toUpperCase()}`, syn, ds,
       `Ang **${w.toUpperCase()}** ay nangangahulugang **${syn}**.\nKaya ang kasingkahulugan ay ==${syn}==.`);
   },
   function kasalungat() {
     const [w, syn, ant] = pick(SALITA);
-    const ds = shuffle(SALITA.filter((x) => x[0] !== w && x[2] !== ant)).slice(0, 2).map((x) => x[2]);
-    return mk(V, 'Talasalitaan (Filipino)', `Piliin ang kasalungat ng salitang may malaking titik: ${w.toUpperCase()}`, ant, [syn, ...ds, pick(SALITA)[2]],
+    const ds = others(SALITA, w).filter((x) => x[2] !== ant).slice(0, 3).map((x) => x[2]);
+    return mk(V, 'Talasalitaan (Filipino)', `Piliin ang kasalungat ng salitang may malaking titik: ${w.toUpperCase()}`, ant, [syn, ...ds],
       `Ang **${w.toUpperCase()}** ay ${syn}. Ang kabaligtaran nito ay ==${ant}==.\n!!Bitag!!: ang "${syn}" ay kasingkahulugan, hindi kasalungat.`);
   },
 ];
@@ -539,7 +636,7 @@ function generate(subject) {
   return null;
 }
 
-module.exports = { generate, shuffle, GENERATORS, helpers: { ri, pick, shuffle, gcd, peso, fmt, ord, mk, numDistractors, misspell, variants }, lists: { VOCAB, SALITA, SURNAMES, FIRST, SPELL } };
+module.exports = { generate, shuffle, GENERATORS, helpers: { ri, pick, shuffle, gcd, peso, fmt, ord, mk, numDistractors, misspell, variants, mulLines, divLines, mulStep, divStep, addLines, minusHint }, lists: { VOCAB, SALITA, SURNAMES, FIRST, SPELL, sameFamily } };
 
 // More question types (they add themselves to GENERATORS).
 require('./generators-extra');
