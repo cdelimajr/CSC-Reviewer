@@ -1,8 +1,8 @@
 // Extra question generators. Each one builds a fresh item from templates and fact lists,
 // so the same exam almost never repeats. They are added to the GENERATORS lists in generators.js.
 const { GENERATORS, helpers, lists } = require('./generators');
-const { ri, pick, shuffle, gcd, peso, fmt, mk, numDistractors, misspell } = helpers;
-const { VOCAB, SALITA, SURNAMES, FIRST, SPELL } = lists;
+const { ri, pick, shuffle, gcd, peso, fmt, mk, numDistractors, misspell, mulLines, divStep, mulStep, addLines } = helpers;
+const { VOCAB, SALITA, SURNAMES, FIRST, SPELL, sameFamily } = lists;
 
 /* ============================ GENERAL INFORMATION ============================ */
 const G = 'general';
@@ -190,13 +190,13 @@ const verbal = [
   function analogyAntonym() {
     const [a, b] = shuffle(VOCAB);
     return mk(V, 'Word Analogy', `${a[0].toUpperCase()} : ${a[2].toUpperCase()} :: ${b[0].toUpperCase()} : ___`, b[2],
-      [b[1], ...shuffle(VOCAB.filter((x) => x !== a && x !== b)).slice(0, 2).map((x) => x[1])],
+      [b[1], ...shuffle(VOCAB.filter((x) => x !== a && !sameFamily(x[0], b[0]))).slice(0, 2).map((x) => x[1])],
       `Step 1: **${cap1(a[0])}** and **${a[2]}** are opposites.\nStep 2: So find the opposite of **${b[0]}**. ${cap1(b[0])} means ${b[1]}, and the opposite is ==${b[2]}==.\n!!Trap!!: "${b[1]}" means the SAME as ${b[0]}, not the opposite.`);
   },
   function analogySynonym() {
     const [a, b] = shuffle(VOCAB);
     return mk(V, 'Word Analogy', `${a[0].toUpperCase()} : ${a[1].toUpperCase()} :: ${b[0].toUpperCase()} : ___`, b[1],
-      [b[2], ...shuffle(VOCAB.filter((x) => x !== a && x !== b)).slice(0, 2).map((x) => x[2])],
+      [b[2], ...shuffle(VOCAB.filter((x) => x !== a && !sameFamily(x[0], b[0]))).slice(0, 2).map((x) => x[2])],
       `Step 1: **${cap1(a[0])}** and **${a[1]}** mean the same thing.\nStep 2: So find the word that means the same as **${b[0]}**: ==${b[1]}==.\n!!Trap!!: "${b[2]}" is the opposite of ${b[0]}.`);
   },
 
@@ -235,29 +235,42 @@ const numerical = [
     const neu = up ? old + (old * p) / 100 : old - (old * p) / 100;
     return mk(N, 'Percentage', `The price of a sack of rice changed from ${peso(old)} to ${peso(neu)}. What is the percent ${up ? 'increase' : 'decrease'}?`,
       p + '%', numDistractors(p, { step: 5 }).map((x) => x + '%'),
-      `Step 1: Find how much it changed: ${peso(Math.max(neu, old))} − ${peso(Math.min(neu, old))} = **${peso(Math.abs(neu - old))}**.\nStep 2: Divide by the **old** price: ${peso(Math.abs(neu - old))} ÷ ${peso(old)} = ${p / 100}.\nStep 3: Multiply by 100: ==${p}%== ${up ? 'increase' : 'decrease'}.\n!!Trap!!: always divide by the OLD price, not the new one.`);
+      `Step 1: Find how much it changed: ${peso(Math.max(neu, old))} − ${peso(Math.min(neu, old))} = **${peso(Math.abs(neu - old))}**.\nStep 2: Percent change = change ÷ **old** price × 100. Multiply the change by 100 first (add 2 zeros): ${fmt(Math.abs(neu - old))} × 100 = **${fmt(Math.abs(neu - old) * 100)}**.\n${divStep('Step 3: Divide by the old price', Math.abs(neu - old) * 100, old)}\nSo it is a ==${p}%== ${up ? 'increase' : 'decrease'}.\n!!Trap!!: always divide by the OLD price, not the new one.`);
   },
   function gcfLcm() {
     const g = ri(2, 12), a = g * ri(2, 9), b = g * ri(2, 9);
     if (a === b) return null;
     const G2 = gcd(a, b), L = (a * b) / G2;
-    if (Math.random() < 0.5) return mk(N, 'Basic Operations', `What is the greatest common factor (GCF) of ${a} and ${b}?`, G2, numDistractors(G2, { step: Math.max(1, Math.round(G2 / 2)) }).concat([a, b]), `GCF = the **biggest number** that divides both evenly.\n${a} = ${G2} × ${a / G2}\n${b} = ${G2} × ${b / G2}\n${a / G2} and ${b / G2} share no other factor, so the GCF is ==${G2}==.`);
-    return mk(N, 'Basic Operations', `What is the least common multiple (LCM) of ${a} and ${b}?`, L, [a * b === L ? L * 2 : a * b, L + G2, L - G2, L / 2].filter((x) => x > 0 && Number.isInteger(x)), `LCM = the **smallest number** that both ${a} and ${b} go into.\nStep 1: The GCF of ${a} and ${b} is **${G2}**.\nStep 2: LCM = (${a} × ${b}) ÷ ${G2} = ${a * b} ÷ ${G2} = ==${L}==.\nCheck: ${L} ÷ ${a} = ${L / a} and ${L} ÷ ${b} = ${L / b} ✓`);
+    if (Math.random() < 0.5) return mk(N, 'Basic Operations', `What is the greatest common factor (GCF) of ${a} and ${b}?`, G2, numDistractors(G2, { step: Math.max(1, Math.round(G2 / 2)) }).concat([a, b]), `GCF = the **biggest number** that divides both evenly.\n${a} = ${G2} × ${a / G2}\n${b} = ${G2} × ${b / G2}\nBoth have **${G2}** as a factor, and the leftovers ${a / G2} and ${b / G2} share no other factor (except 1), so the GCF is ==${G2}==.`);
+    return mk(N, 'Basic Operations', `What is the least common multiple (LCM) of ${a} and ${b}?`, L, [a * b === L ? L * 2 : a * b, L + G2, L - G2, L / 2].filter((x) => x > 0 && Number.isInteger(x)), `LCM = the **smallest number** that both ${a} and ${b} go into.\nStep 1: Find the GCF (the biggest number that divides both): ${a} = ${G2} × ${a / G2} and ${b} = ${G2} × ${b / G2}, so the GCF is **${G2}**.\nStep 2: LCM = GCF × the two leftover numbers = ${G2} × ${a / G2} × ${b / G2}\n= ^^${G2} × ${a / G2}^^ × ${b / G2}\n= ^^${a} × ${b / G2}^^\n${mulLines(a, b / G2).join('\n').replace(/^= /, '= ')}\nLCM: ==${L}==.\nCheck: ${L} ÷ ${a} = ${L / a} and ${L} ÷ ${b} = ${L / b} ✓ (both go in evenly)`);
   },
   function powersRoots() {
     if (Math.random() < 0.5) {
-      const n = ri(11, 30);
-      return mk(N, 'Basic Operations', `What is the square root of ${n * n}?`, n, [n + 1, n - 1, n + 2, Math.round((n * n) / 2)], `Square root asks: **what number times itself** makes ${n * n}?\n${n} × ${n} = ${n * n}, so the answer is ==${n}==.`);
+      const n = ri(11, 30), sq = n * n, lo = Math.floor(n / 10) * 10;
+      const ends = { 0: '0', 1: '1 or 9', 4: '2 or 8', 5: '5', 6: '4 or 6', 9: '3 or 7' }[sq % 10];
+      return mk(N, 'Basic Operations', `What is the square root of ${sq}?`, n, [n + 1, n - 1, n + 2, Math.round(sq / 2)],
+        `Square root asks: **what number times itself** makes ${sq}?\n${n % 10 === 0 ? `Step 1: ${n} × ${n} = ${sq} exactly.` : `Step 1: ${lo} × ${lo} = ${lo * lo} and ${lo + 10} × ${lo + 10} = ${(lo + 10) ** 2}, so the answer is **between ${lo} and ${lo + 10}**.\nStep 2: ${sq} ends in **${sq % 10}**. Only numbers ending in **${ends}** give that last digit when multiplied by themselves.\nStep 3: Try ${n}: ${n} × ${n}\n${mulLines(n, n).join('\n')} ✓`}\nSo the square root of ${sq} is ==${n}==.`);
     }
     const b = ri(2, 6), e = ri(2, 4);
-    return mk(N, 'Basic Operations', `What is ${b} raised to the power of ${e} (${b}^${e})?`, b ** e, [b * e, b ** (e + 1), b ** e + b, (b + 1) ** e], `${b}^${e} means ${b} multiplied by itself **${e} times**.\n${Array(e).fill(b).join(' × ')} = ==${b ** e}==${b * e === b ** e ? '' : `\n!!Trap!!: it is NOT ${b} × ${e} = ${b * e}.`}`);
+    const lines = [`Start: ^^${b} × ${b}^^${` × ${b}`.repeat(e - 2)}`];
+    for (let i = 2; i < e; i++) lines.push(`= ^^${b ** i} × ${b}^^${` × ${b}`.repeat(e - 1 - i)}`);
+    lines.push(`= ==${b ** e}==`);
+    return mk(N, 'Basic Operations', `What is ${b} raised to the power of ${e} (${b}^${e})?`, b ** e, [b * e, b ** (e + 1), b ** e + b, (b + 1) ** e],
+      `${b}^${e} means ${b} multiplied by itself **${e} times**. Multiply one pair at a time (the highlighted part):\n${lines.join('\n')}${b * e === b ** e ? '' : `\n!!Trap!!: it is NOT ${b} × ${e} = ${b * e}.`}`);
   },
   function conversion() {
     const t = ri(0, 3);
-    if (t === 0) { const km = ri(2, 30) / 2; return mk(N, 'Measurement', `How many meters are in ${km} kilometers?`, fmt(km * 1000) + ' m', [fmt(km * 100) + ' m', fmt(km * 10) + ' m', fmt(km * 10000) + ' m'], `1 km = **1,000 m**. Big unit → small unit, so **multiply**.\n${km} × 1,000 = ==${fmt(km * 1000)} m==.`); }
-    if (t === 1) { const h = ri(2, 9) + pick([0, 0.25, 0.5, 0.75]); return mk(N, 'Measurement', `How many minutes are in ${h} hours?`, `${h * 60} minutes`, [`${h * 100} minutes`, `${h * 60 + 15} minutes`, `${h * 60 - 30} minutes`], `1 hour = **60 minutes**.\n${h} × 60 = ==${h * 60} minutes==.\n!!Trap!!: an hour is 60 minutes, not 100.`); }
-    if (t === 2) { const kg = ri(3, 40) / 2; return mk(N, 'Measurement', `How many grams are in ${kg} kilograms?`, fmt(kg * 1000) + ' g', [fmt(kg * 100) + ' g', fmt(kg * 10) + ' g', fmt(kg * 10000) + ' g'], `1 kg = **1,000 g**. Big unit → small unit, so **multiply**.\n${kg} × 1,000 = ==${fmt(kg * 1000)} g==.`); }
-    const l = ri(2, 20); return mk(N, 'Measurement', `A container holds ${l} liters. How many 250-mL bottles can it fill?`, l * 4, [l * 2, l * 25, l * 40, l * 5], `Step 1: 1 L = 1,000 mL, so ${l} L = **${l * 1000} mL**.\nStep 2: ${l * 1000} ÷ 250 = ==${l * 4} bottles==.\nEasy way: 4 bottles of 250 mL make 1 L, so ${l} × 4 = ${l * 4}.`);
+    const big = (v, unit, small) => `1 ${unit} = **1,000 ${small}**. Big unit → small unit, so **multiply** by 1,000.\nStart: ${v} × 1,000\n${Number.isInteger(v) ? `= ${v} with 3 zeros added` : `= move the dot 3 places to the right: ${v} → ${fmt(v * 1000).replace(/,/g, '')}`}\n= ==${fmt(v * 1000)} ${small}==`;
+    if (t === 0) { const km = ri(2, 30) / 2; return mk(N, 'Measurement', `How many meters are in ${km} kilometers?`, fmt(km * 1000) + ' m', [fmt(km * 100) + ' m', fmt(km * 10) + ' m', fmt(km * 10000) + ' m'], big(km, 'km', 'm')); }
+    if (t === 1) {
+      const w = ri(2, 9), f = pick([0, 0.25, 0.5, 0.75]), h = w + f, extra = f * 60;
+      return mk(N, 'Measurement', `How many minutes are in ${h} hours?`, `${h * 60} minutes`, [`${h * 100} minutes`, `${h * 60 + 15} minutes`, `${h * 60 - 30} minutes`],
+        `1 hour = **60 minutes**.\n${f ? `Step 1: Split it: ${h} hours = ${w} hours + ${f} hour (${{ 0.25: 'a quarter', 0.5: 'half', 0.75: 'three quarters' }[f]} of an hour).\nStep 2: ${w} hours: ${w} × 60 = **${w * 60}** minutes.\nStep 3: ${f} hour: ${f} × 60 = **${extra}** minutes.\nStep 4: Add: ${w * 60} + ${extra} = ==${h * 60} minutes==.` : `${w} × 60\n${mulLines(w, 60).join('\n')}\nAnswer: ==${h * 60} minutes==.`}\n!!Trap!!: an hour is 60 minutes, not 100.`);
+    }
+    if (t === 2) { const kg = ri(3, 40) / 2; return mk(N, 'Measurement', `How many grams are in ${kg} kilograms?`, fmt(kg * 1000) + ' g', [fmt(kg * 100) + ' g', fmt(kg * 10) + ' g', fmt(kg * 10000) + ' g'], big(kg, 'kg', 'g')); }
+    const l = ri(2, 20);
+    return mk(N, 'Measurement', `A container holds ${l} liters. How many 250-mL bottles can it fill?`, l * 4, [l * 2, l * 25, l * 40, l * 5],
+      `Step 1: 1 L = 1,000 mL, so ${l} L = ${l} × 1,000 = **${fmt(l * 1000)} mL**.\n${divStep('Step 2: How many 250s are in it', l * 1000, 250)}\nAnswer: ==${l * 4} bottles==.\nEasy way: 4 bottles of 250 mL make 1 L (250 + 250 + 250 + 250 = 1,000), so ${l} × 4 = ${l * 4}.`);
   },
   function median() {
     const n = pick([5, 7]);
@@ -280,24 +293,33 @@ const numerical = [
         .filter(Boolean).map((x, i) => `Step ${i + 1}: ${x}`).join('\n') + `\nTotal: ==${durText(dur)}==.`);
   },
   function rounding() {
-    const n = ri(1000, 99999) + ri(0, 999) / 1000;
-    const place = pick([['nearest hundred', 100], ['nearest thousand', 1000], ['nearest ten', 10]]);
-    const ans = Math.round(n / place[1]) * place[1];
-    const peek = Math.floor(n / (place[1] / 10)) % 10; // the digit just to the right of the place
-    return mk(N, 'Basic Operations', `Round ${fmt(n)} to the ${place[0]}.`, fmt(ans), [fmt(ans + place[1]), fmt(ans - place[1]), fmt(Math.floor(n))],
-      `Step 1: Find the **${place[0].replace('nearest ', '')}s** place.\nStep 2: Look at the digit just to its right: it is **${peek}**.\nStep 3: ${peek >= 5 ? '5 or more → round **up**.' : 'Less than 5 → keep it the same (round **down**).'}\nAnswer: ==${fmt(ans)}==`);
+    // Two decimal places at most, so the number on screen is exactly the number being rounded.
+    const n = ri(1000, 99999) + ri(0, 99) / 100;
+    const [name, p] = pick([['hundred', 100], ['thousand', 1000], ['ten', 10]]);
+    const base = Math.floor(n / p) * p, ans = Math.round(n / p) * p;
+    const digit = Math.floor(n / p) % 10, peek = Math.floor(n / (p / 10)) % 10; // the place digit and the one to its right
+    const up = peek >= 5;
+    return mk(N, 'Basic Operations', `Round ${fmt(n)} to the nearest ${name}.`, fmt(ans), [fmt(up ? base : ans + p), fmt(up ? ans + p : ans - p), fmt(Math.floor(n))],
+      `Step 1: Find the **${name}s** place in ${fmt(n)}: it is the digit **${digit}**.\nStep 2: Look at the digit just to its right: it is **${peek}**.\nStep 3: Keep everything up to the ${name}s place and make the rest zero: **${fmt(base)}**.\nStep 4: ${up ? `${peek} is 5 or more → round **up**: add one ${name}: ${fmt(base)} + ${fmt(p)} = ==${fmt(ans)}==.` : `${peek} is less than 5 → round **down** (keep it): ==${fmt(ans)}==.`}`);
   },
   function wagesProblem() {
     const rate = ri(40, 90) * 10, days = ri(5, 26);
     return mk(N, 'Word Problem', `A worker earns ${peso(rate)} per day. How much will the worker earn in ${days} days?`, peso(rate * days),
-      numDistractors(rate * days, { step: rate }).map(peso), `Pay for **1 day** × the **number of days**.\n${peso(rate)} × ${days} = ==${peso(rate * days)}==.`);
+      numDistractors(rate * days, { step: rate }).map(peso), `Pay for **1 day** × the **number of days**.\n${mulStep(`Step 1: ${peso(rate)} × ${days} days`, rate, days).replace(/^(Step 1: [^:]*): .*$/m, '$1:')}\nThe worker earns ==${peso(rate * days)}==.`);
   },
   function changeMoney() {
     const items = Array.from({ length: 3 }, () => ri(20, 250));
     const total = items.reduce((a, b) => a + b, 0);
     const paid = Math.ceil((total + 1) / 500) * 500;
+    // Count up from the total to the money paid, like a cashier: to the next 10, the next 100, then the rest.
+    const hops = [];
+    let x = total;
+    if (x % 10) { hops.push([x, 10 - (x % 10)]); x += 10 - (x % 10); }
+    if (x % 100 && x < paid) { hops.push([x, 100 - (x % 100)]); x += 100 - (x % 100); }
+    if (x < paid) hops.push([x, paid - x]);
     return mk(N, 'Word Problem', `Ana bought items costing ${items.map(peso).join(', ')} and paid with ${peso(paid)}. How much change should she receive?`,
-      peso(paid - total), numDistractors(paid - total, { step: 10 }).map(peso), `Step 1: Add the prices: ${items.map(peso).join(' + ')} = **${peso(total)}**.\nStep 2: Change = money paid − total: ${peso(paid)} − ${peso(total)} = ==${peso(paid - total)}==.`);
+      peso(paid - total), numDistractors(paid - total, { step: 10 }).map(peso),
+      `Step 1: Add the prices one at a time:\nStart: ${items.join(' + ')}\n${addLines(items).join('\n')}\nTotal: **${peso(total)}**.\nStep 2: Change = money paid − total = ${peso(paid)} − ${peso(total)}. Count up from ${peso(total)} to ${peso(paid)}, like a cashier:\n${hops.map(([from, add]) => `${peso(from)} + ${peso(add)} = ${peso(from + add)}`).join('\n')}\nStep 3: Add what you counted: ${hops.map((h) => h[1]).join(' + ')} = ==${peso(paid - total)}==.\nCheck: ${peso(total)} + ${peso(paid - total)} = ${peso(paid)} ✓`);
   },
 ];
 

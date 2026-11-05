@@ -151,7 +151,7 @@
       doc.text(`${L('Sagot mo', 'Your answer')}: ${ch === undefined ? L('walang sagot', 'none') : LETTERS[ch]}   ·   ${L('Tamang sagot', 'Correct answer')}: ${LETTERS[it.answer]}   ·   ${ok ? L('TAMA', 'CORRECT') : L('MALI', 'WRONG')}`,
         { size: 9.5, bold: true, indent: 14, color: ok ? GREEN : RED, after: 1 });
       // The app's color marks (**key**, ==answer==, !!trap!!) are dropped here; the steps stay on their own lines.
-      if (it.explanation) doc.text(`${L('Paliwanag', 'Explanation')}: ${String(it.explanation).replace(/\*\*|==|!!/g, '')}`, { size: 9.5, indent: 14, color: MUTED, after: 1 });
+      if (it.explanation) doc.text(`${L('Paliwanag', 'Explanation')}: ${String(it.explanation).replace(/\*\*|==|!!|\^\^/g, '')}`, { size: 9.5, indent: 14, color: MUTED, after: 1 });
       doc.space(5);
     });
     return doc.bytes();
