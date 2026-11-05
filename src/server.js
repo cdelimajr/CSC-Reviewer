@@ -19,6 +19,7 @@ const releases = require('./releases');
 const promo = require('./promo');
 const bulk = require('./bulk');
 const monitor = require('./monitor');
+const voice = require('./voice');
 
 const PORT = Number(process.env.PORT) || 3000;
 const ADMIN_EMAIL = (process.env.ADMIN_EMAIL || '').trim().toLowerCase();
@@ -176,6 +177,8 @@ const clientConfig = (st) => ({
   // Plan prices, for the Premium offers on the free plan (the Premium page and the server work out the real price).
   prices: { day: st.day_on !== '0' ? Number(st.price_day) : null, week: st.week_on !== '0' ? Number(st.price_week) : null, month: Number(st.price) },
   ads: { on: st.ads_on === '1', adsense_client: st.adsense_client, adsense_slot: st.adsense_slot, admob_banner: st.admob_banner },
+  // Read aloud with the owner's ElevenLabs voice (see voice.js). Off = the device's own voice.
+  voice: voice.enabled() ? { name: voice.NAME } : null,
 });
 
 /* one-time email codes */
@@ -531,6 +534,15 @@ app.get('/api/me', wrap(async (req, res) => {
     premium: req.user ? hasPremium(req.user, st) : false,
     ...(req.user ? await freeUsage(req.user, st) : { practice_today: 0, mock_today: 0, solutions_left: 0, full_trials_left: 0 }),
   });
+}));
+
+/* Read aloud with the ElevenLabs voice: the text in, an MP3 out. Saved audio is for every account;
+   new audio only for Premium (see voice.js). The app falls back to the device's voice on any error. */
+app.post('/api/tts', auth, wrap(async (req, res) => {
+  if (limited('tts:' + req.user.id, 120, 10 * 60e3)) return res.status(429).json({ error: 'Masyadong maraming subok. Maghintay muna.', code: 'quota' });
+  const r = await voice.speak(req.user, String(req.body.text || '').slice(0, voice.MAX_TEXT), hasPremium(req.user, await getSettings()));
+  if (!r.audio) return res.status(r.status).json({ error: r.error, code: r.code });
+  res.set({ 'Content-Type': 'audio/mpeg', 'Cache-Control': 'private, max-age=86400' }).send(r.audio);
 }));
 
 // The guided tour (new Premium users) was finished or skipped, so it does not show again on other devices.
@@ -1767,6 +1779,7 @@ app.get('*', (req, res) => res.sendFile(path.join(__dirname, '..', 'public', 'in
 
 // Clean expired sessions every hour.
 setInterval(() => db.run('DELETE FROM sessions WHERE expires_at < ?', Date.now()).catch((e) => console.error('Session cleanup error:', e)), 3600e3).unref();
+setInterval(() => voice.cleanup().catch((e) => console.error('Voice cleanup error:', e)), 6 * 3600e3).unref();
 
 /* Auto Fix (server): one failed request or background job must never stop the whole server.
    Errors are written to the log and the server keeps running; each request already answers with an error
