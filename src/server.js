@@ -48,6 +48,9 @@ const SETTING_DEFAULTS = {
   pay_note: 'Ipadala ang bayad sa napiling account sa itaas, tapos ilagay ang reference number dito.',
   // Free plan (only when Premium is turned on): online only, with these limits.
   free_practice_daily: '3', free_practice_items: '10', free_sets: '1', free_mock_daily: '1', // Set 1 is always free
+  // Free plan: full step-by-step solutions a day (the rest show the answer and the Quick Note), and how many
+  // full-length mock exams (all 170 or 165 questions of Set 1) a free account may take, ever.
+  free_solutions_daily: '10', free_full_trials: '1',
   // Exam screen: the RA 10173 watermark and the warning line on top (on by default).
   exam_watermark: '1', exam_privacy_strip: '1',
   // Payments: turn online (PayMongo) and manual payments on or off. pay_methods holds the manual
@@ -74,7 +77,7 @@ const SETTING_DEFAULTS = {
 };
 const LONG_SETTINGS = { pay_methods: 20000 };
 // [key, smallest, largest] for the settings that are numbers (Admin → Settings).
-const NUM_SETTINGS = [['price', 0, 100000], ['plan_days', 1, 3650], ['free_practice_daily', 0, 100], ['free_practice_items', 5, 100],
+const NUM_SETTINGS = [['price', 0, 100000], ['plan_days', 1, 3650], ['free_practice_daily', 0, 100], ['free_practice_items', 5, 100], ['free_solutions_daily', 0, 1000], ['free_full_trials', 0, 10],
   ['free_sets', 1, 1000], ['free_mock_daily', 0, 100], ['bulk_min', 2, 100], ['bulk_max', 2, 500], ['bulk_seat_days', 7, 730],
   ['price_year', 0, 1000000], ['plan_year_days', 30, 3650], ['capacity_users', 10, 1000000],
   ['price_day', 0, 100000], ['plan_day_days', 1, 6], ['price_week', 0, 100000], ['plan_week_days', 2, 29]];
@@ -151,14 +154,27 @@ const freeLimits = (st) => ({
   mock_daily: Math.max(0, Number(st.free_mock_daily ?? 1) || 0),
   mock_per_subject: FREE_PER_SUBJECT, // free mock exam: the first 5 questions of each subject of Set 1
   review_per_subject: FREE_PER_SUBJECT, // free review after a mock exam or practice: 5 questions per subject
+  solutions_daily: Math.max(0, Number(st.free_solutions_daily ?? 10) || 0),
+  full_trials: Math.max(0, Number(st.free_full_trials ?? 1) || 0),
 });
 // Start of today in the Philippines (UTC+8), for the daily practice limit.
 const phDayStart = () => { const n = Date.now() + 8 * 3600e3; return n - (n % 864e5) - 8 * 3600e3; };
 const practiceToday = async (userId) => (await db.get(`SELECT COUNT(*) AS n FROM attempts WHERE user_id = ? AND mode = 'practice' AND started_at >= ?`, userId, phDayStart())).n;
 const mockToday = async (userId) => (await db.get(`SELECT COUNT(*) AS n FROM attempts WHERE user_id = ? AND mode != 'practice' AND started_at >= ?`, userId, phDayStart())).n;
+// Full solutions already given today on the free plan, and full-length mock exams already taken.
+const solutionsToday = async (userId) => (await db.get(`SELECT COALESCE(SUM(sol_free), 0) AS n FROM attempts WHERE user_id = ? AND sol_free IS NOT NULL AND started_at >= ?`, userId, phDayStart())).n;
+const fullTrialsUsed = async (userId) => (await db.get('SELECT COUNT(*) AS n FROM attempts WHERE user_id = ? AND full_trial = 1', userId)).n;
+// What a free user has left today (for the app: practice, mock, solutions, full-length trial).
+async function freeUsage(user, st) {
+  const free = freeLimits(st);
+  const [p, m, s, f] = await Promise.all([practiceToday(user.id), mockToday(user.id), solutionsToday(user.id), fullTrialsUsed(user.id)]);
+  return { practice_today: p, mock_today: m, solutions_left: Math.max(0, free.solutions_daily - s), full_trials_left: Math.max(0, free.full_trials - f) };
+}
 // What the app needs to know about the settings (also kept on the device for offline use).
 const clientConfig = (st) => ({
   watermark: st.exam_watermark !== '0', privacy_strip: st.exam_privacy_strip !== '0',
+  // Plan prices, for the Premium offers on the free plan (the Premium page and the server work out the real price).
+  prices: { day: st.day_on !== '0' ? Number(st.price_day) : null, week: st.week_on !== '0' ? Number(st.price_week) : null, month: Number(st.price) },
   ads: { on: st.ads_on === '1', adsense_client: st.adsense_client, adsense_slot: st.adsense_slot, admob_banner: st.admob_banner },
 });
 
@@ -513,7 +529,7 @@ app.get('/api/me', wrap(async (req, res) => {
     ...(req.replaced ? { ended: 'replaced' } : {}),
     config: { verify: REQUIRE_VERIFY, mail: mail.enabled, premium_required: st.premium_required === '1', free: freeLimits(st), online_pay: onlinePayOn(st), ...clientConfig(st) },
     premium: req.user ? hasPremium(req.user, st) : false,
-    ...(req.user ? await (async () => { const [p, m] = await Promise.all([practiceToday(req.user.id), mockToday(req.user.id)]); return { practice_today: p, mock_today: m }; })() : { practice_today: 0, mock_today: 0 }),
+    ...(req.user ? await freeUsage(req.user, st) : { practice_today: 0, mock_today: 0, solutions_left: 0, full_trials_left: 0 }),
   });
 }));
 
@@ -577,16 +593,21 @@ app.get('/api/health', wrap(async (req, res) => {
 
 /* ------------------------------ attempts ------------------------------ */
 // Items sent to the browser. Answers are hidden during a timed mock exam.
-function clientItems(items, reveal) {
-  return items.map((it) => ({
-    subject: it.subject, topic: it.topic, question: it.question, passage: it.passage || '', choices: it.choices,
-    ...(reveal ? { answer: it.answer, explanation: explain.full(it) } : {}),
-  }));
+// solFree (free plan): only the first solFree questions get the full step-by-step solution; the rest get the
+// answer and the topic's Quick Note, marked ex_locked so the app can offer Premium.
+function clientItems(items, reveal, solFree = null) {
+  return items.map((it, i) => {
+    const out = { subject: it.subject, topic: it.topic, question: it.question, passage: it.passage || '', choices: it.choices };
+    if (!reveal) return out;
+    const e = explain.full(it);
+    if (solFree == null || i < solFree) return { ...out, answer: it.answer, explanation: e };
+    return { ...out, answer: it.answer, explanation: explain.noteOnly(e), ex_locked: true };
+  });
 }
 // lite: free plan review of a finished mock exam or practice. Only the first 5 questions of each subject
 // have the question, choices and explanation; the rest only say their subject and correct letter, so the
 // score per subject still adds up (Premium gets the full review, PDF, email and print).
-function attemptView(a, full = true, lite = false) {
+function attemptView(a, full = true, lite = false, capped = lite) {
   const items = JSON.parse(a.items);
   const done = !!a.finished_at;
   const practice = a.mode === 'practice';
@@ -598,10 +619,11 @@ function attemptView(a, full = true, lite = false) {
   if (full) {
     out.answers = JSON.parse(a.answers || '{}');
     if (lite && done) {
-      const seen = {}, full = clientItems(items, true);
+      const seen = {}, full = clientItems(items, true, capped ? a.sol_free : null);
       out.lite = true; out.review_per_subject = FREE_PER_SUBJECT;
       out.items = full.map((it) => ((seen[it.subject] = (seen[it.subject] || 0) + 1) <= FREE_PER_SUBJECT ? it : { subject: it.subject, answer: it.answer, locked: true }));
-    } else out.items = clientItems(items, done || practice);
+    } else out.items = clientItems(items, done || practice, capped ? a.sol_free : null);
+    if (a.full_trial) out.full_trial = true;
   }
   return out;
 }
@@ -621,12 +643,20 @@ app.post('/api/attempts', auth, verified, wrap(async (req, res) => {
     }
     opts.count = Math.min(Number(opts.count) || 10, free.practice_items);
   }
+  let fullTrial = false;
   if (!premium && mode !== 'practice') {
     const set = req.body.set_id ? await db.get('SELECT number FROM exam_sets WHERE id = ? AND mode = ?', Number(req.body.set_id), mode) : null;
     if (!set || set.number > free.sets) return res.status(402).json({ error: 'Kailangan ng Premium para sa exam set na ito.', code: 'premium' });
     // One mock exam a day on the free plan, counted on the server for the account (not the device).
     if ((await mockToday(req.user.id)) >= free.mock_daily) {
       return res.status(402).json({ error: 'Isang mock exam lang kada araw sa libreng plan. Bumalik bukas o kumuha ng Premium para walang limit.', code: 'mock_daily' });
+    }
+    // The one free full-length mock exam (all questions of Set 1, full time).
+    if (req.body.full) {
+      if ((await fullTrialsUsed(req.user.id)) >= free.full_trials) {
+        return res.status(402).json({ error: 'Nagamit mo na ang libreng buong mock exam. Kumuha ng Premium para sa buong exam anumang oras.', code: 'premium' });
+      }
+      fullTrial = true;
     }
   }
   let ex, setId = null;
@@ -637,14 +667,16 @@ app.post('/api/attempts', auth, verified, wrap(async (req, res) => {
     if (!set) return res.status(404).json({ error: 'Hindi makita ang exam set.' });
     ex = { title: set.title, items: JSON.parse(set.items), timeLimitSec: EXAMS[mode].minutes * 60 };
     setId = set.id;
-    if (!premium) ex = freeMock(ex, mode, free.mock_per_subject);
+    if (!premium && !fullTrial) ex = freeMock(ex, mode, free.mock_per_subject);
   } else {
     ex = await buildExam(mode, opts);
   }
   if (!ex.items.length) return res.status(400).json({ error: 'Wala pang tanong para dito.' });
-  const r = await db.run(`INSERT INTO attempts (user_id, mode, title, items, time_limit_sec, started_at, total, set_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-    req.user.id, mode, ex.title, JSON.stringify(ex.items), ex.timeLimitSec, Date.now(), ex.items.length, setId);
-  res.json(attemptView(await db.get('SELECT * FROM attempts WHERE id = ?', r.lastInsertRowid)));
+  // Free plan: this exam's share of today's full solutions (the first N questions).
+  const solFree = premium ? null : Math.min(ex.items.length, Math.max(0, free.solutions_daily - (await solutionsToday(req.user.id))));
+  const r = await db.run(`INSERT INTO attempts (user_id, mode, title, items, time_limit_sec, started_at, total, set_id, sol_free, full_trial) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    req.user.id, mode, ex.title, JSON.stringify(ex.items), ex.timeLimitSec, Date.now(), ex.items.length, setId, solFree, fullTrial ? 1 : 0);
+  res.json(attemptView(await db.get('SELECT * FROM attempts WHERE id = ?', r.lastInsertRowid), true, false, !premium));
 }));
 
 // Free plan mock exam: the first few questions of each subject of the set, with the time cut to match

@@ -90,4 +90,7 @@ function full(it) {
   return e;
 }
 
-module.exports = { TIPS, full };
+// Free plan past today's full solutions: only the Quick Note is shown (the steps are for Premium).
+const noteOnly = (e) => { const i = String(e).search(/(^|\n)Quick Note:/); return i < 0 ? '' : String(e).slice(i).replace(/^\n/, ''); };
+
+module.exports = { TIPS, full, noteOnly };
