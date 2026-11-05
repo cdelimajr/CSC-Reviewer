@@ -5,6 +5,7 @@ const express = require('express');
 const compression = require('compression');
 const db = require('./db');
 const { seed } = require('./seed');
+const explain = require('./explain');
 const { SUBJECTS, EXAMS } = require('./blueprint');
 const { buildExam, grade } = require('./exam');
 const mail = require('./mail');
@@ -579,7 +580,7 @@ app.get('/api/health', wrap(async (req, res) => {
 function clientItems(items, reveal) {
   return items.map((it) => ({
     subject: it.subject, topic: it.topic, question: it.question, passage: it.passage || '', choices: it.choices,
-    ...(reveal ? { answer: it.answer, explanation: it.explanation } : {}),
+    ...(reveal ? { answer: it.answer, explanation: explain.full(it) } : {}),
   }));
 }
 // lite: free plan review of a finished mock exam or practice. Only the first 5 questions of each subject
@@ -717,7 +718,7 @@ app.post('/api/attempts/:id/email', auth, verified, wrap(async (req, res) => {
   if (!a || a.user_id !== req.user.id || !a.finished_at) return res.status(404).json({ error: 'Hindi makita ang exam.' });
   if (limited('mailres:' + req.user.id, 10, 60 * 60 * 1000)) return res.status(429).json({ error: 'Masyadong marami nang naipadala. Subukan ulit mamaya.' });
   const v = attemptView(a);
-  v.items = JSON.parse(a.items); // with answers and explanations
+  v.items = JSON.parse(a.items).map((it) => ({ ...it, explanation: explain.full(it) })); // with answers and explanations
   const lang = req.body.lang === 'en' ? 'en' : 'tl';
   const pdf = Buffer.from(PDF.report(v, { lang, subjects: SUBJECTS, who: `${req.user.name} <${req.user.email}>` }));
   const r = await mail.review(req.user.email, req.user.name, v, SUBJECTS, pdf);
@@ -800,7 +801,7 @@ const OFFLINE_SETS = Number(process.env.OFFLINE_SETS ?? 5); // newest sets per l
 const OFFLINE_DAYS = 30; // the app must go online at least this often
 const fullItems = (items) => items.map((it) => ({
   subject: it.subject, topic: it.topic, question: it.question, passage: it.passage || '', choices: it.choices,
-  answer: it.answer, explanation: it.explanation || '',
+  answer: it.answer, explanation: explain.full(it),
 }));
 
 // Offline use is a Premium feature.
