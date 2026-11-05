@@ -234,10 +234,14 @@ const db = {
       'ALTER TABLE payments ADD COLUMN no_refund_at INTEGER',
       // Promo code: the plans it works on ("day,week,year"); empty = every plan.
       `ALTER TABLE promo_codes ADD COLUMN plans TEXT NOT NULL DEFAULT ''`,
+      // Free plan limits per device (1.40.0): a hash of the device's random app ID (never the ID itself),
+      // so a second free account on the same phone or computer does not get a new free allowance.
+      'ALTER TABLE attempts ADD COLUMN device TEXT',
     ]) {
       try { await client.execute(sql); } catch (e) { if (!/duplicate column/i.test(e.message)) throw e; }
     }
     await client.execute('CREATE INDEX IF NOT EXISTS idx_payments_invoice ON payments(invoice_id)');
+    await client.execute('CREATE INDEX IF NOT EXISTS idx_attempts_device ON attempts(device, started_at)');
   },
   all: async (sql, ...args) => plain(await client.execute({ sql, args })),
   get: async (sql, ...args) => plain(await client.execute({ sql, args }))[0],

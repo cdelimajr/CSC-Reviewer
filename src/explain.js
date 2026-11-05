@@ -3,6 +3,8 @@
 // An explanation is plain text with a few marks (the app colors them; the PDF just drops the marks):
 //   one step per line ("\n")          "Step 1: ..." lines get a round number badge
 //   **key idea**   blue and bold      ==answer==   green and bold      !!trap!!   red
+//   ^^part^^       the part being worked out right now (highlighted), like the colored part in a math answer key
+//   lines that start with "=" are math lines: one small operation per line, lined up under each other
 //   "Quick Note: ..." starts the tip box at the end (it can go on for more lines).
 // Old explanations without marks still show fine.
 //
@@ -77,14 +79,21 @@ const TIPS = {
   'Peace and Security': 'Peace work means **talking and agreeing** (dialogue), not fighting.',
 };
 
-const keyOf = (s, q, p) => `${s}|${q}|${p || ''}`;
-const BANK = new Map(QUESTIONS.map((x) => [keyOf(x.s, x.q, x.p), x.e]));
+// A built-in question is found by its subject, question, passage AND correct answer. Many questions share the
+// same words (e.g. "Piliin ang wastong pangungusap." or "Which word does NOT belong to the group?"), so the
+// question alone is not enough: it used to give one of them the other's explanation.
+const keyOf = (s, q, p, a) => `${s}|${q}|${p || ''}|${a}`;
+const BANK = new Map(QUESTIONS.map((x) => [keyOf(x.s, x.q, x.p, x.a), x.e]));
 const hasNote = (e) => /(^|\n)Quick Note:/.test(e);
 
 // The explanation to show for an item: the newest text for built-in questions, plus the topic's Quick Note.
+// Only items from the built-in bank (source "seed", or older saved items without a source) are looked up;
+// generated and admin questions keep their own explanation.
 function full(it) {
   let e = String(it.explanation || '');
-  if (it.source !== 'admin') e = BANK.get(keyOf(it.subject, it.question, it.passage)) ?? e;
+  if ((it.source === 'seed' || it.source == null) && Array.isArray(it.choices)) {
+    e = BANK.get(keyOf(it.subject, it.question, it.passage, it.choices[it.answer])) ?? e;
+  }
   const tip = TIPS[it.topic];
   if (tip && !hasNote(e)) e = (e ? e + '\n' : '') + 'Quick Note: ' + tip;
   return e;

@@ -3,18 +3,22 @@
   'use strict';
   const $app = document.getElementById('app');
   const LETTERS = ['A', 'B', 'C', 'D'];
-  const APP_VERSION = '1.39.0'; // keep in step with package.json and docs/DOKUMENTASYON.md
+  const APP_VERSION = '1.40.0'; // keep in step with package.json and docs/DOKUMENTASYON.md
   const S = { user: null, meta: null, exam: null, timer: null, saveT: null };
 
   /* ---------------- helpers ---------------- */
   const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   /* Explanations (see src/explain.js): one step per line, **key** blue, ==answer== green, !!trap!! red,
-     "Step 1:" gets a number badge, lines starting with "=" are math steps, and "Quick Note:" starts the tip box. */
-  const exInline = (t) => esc(t).replace(/\*\*(.+?)\*\*/g, '<b class="ex-key">$1</b>').replace(/==(.+?)==/g, '<b class="ex-ans">$1</b>').replace(/!!(.+?)!!/g, '<b class="ex-bad">$1</b>');
+     ^^part^^ = the part being worked out now (highlighted, like the colored part in a math answer key),
+     "Step 1:" gets a number badge, lines starting with "=", "→" or "Start:" are math steps, and "Quick Note:" starts the tip box. */
+  const exInline = (t) => esc(t).replace(/\^\^(.+?)\^\^/g, '<span class="ex-hl">$1</span>').replace(/\*\*(.+?)\*\*/g, '<b class="ex-key">$1</b>').replace(/==(.+?)==/g, '<b class="ex-ans">$1</b>').replace(/!!(.+?)!!/g, '<b class="ex-bad">$1</b>');
   const exLines = (t) => t.split('\n').filter((l) => l.trim()).map((l) => {
     const m = l.match(/^Step (\d+):\s*/);
     if (m) return `<div class="ex-line"><span class="ex-num">${m[1]}</span>${exInline(l.slice(m[0].length))}</div>`;
-    return `<div class="ex-line${/^\s*=/.test(l) ? ' ex-math' : ''}">${exInline(l)}</div>`;
+    // Math lines ("Start:", "= …", "→ …"): one step each; a note after 3 spaces "   (…)" is shown small and grey.
+    const math = /^\s*(=|→|Start:)/.test(l), k = l.search(/ {3}\(/);
+    const body = math && k > 0 ? `${exInline(l.slice(0, k))} <span class="ex-why">${exInline(l.slice(k).trim())}</span>` : exInline(l);
+    return `<div class="ex-line${math ? ' ex-math' : ''}">${body}</div>`;
   }).join('');
   /* Free plan, past today's full solutions: the steps are hidden behind a Premium offer, the Quick Note still shows. */
   const pesoTxt = (n) => '₱' + Number(n).toLocaleString('en-PH');
@@ -45,6 +49,38 @@
     del(k) { try { localStorage.removeItem(k); } catch { /* ignore */ } },
   };
   const uk = (k) => `${k}-${S.user ? S.user.id : 0}`; // key for the logged-in user
+
+  /* ---------------- device ID (free plan limits, 1.40.0) ----------------
+     The free plan's limits (practice, mock exam, full solutions, the free full-length mock exam) count for the
+     account AND for this device, so logging in with another free account on the same device does not give a new
+     free allowance. The ID is sent as "X-Device"; the server saves only a hash of it (see deviceOf in server.js).
+     Android/iPhone: the phone's own app ID (Device plugin), which stays after clearing the app's data on Android.
+     Windows: an ID made from the computer's ID. Website: a random ID kept in the browser (and a cookie). */
+  const Dev = (() => {
+    const ok = (x) => typeof x === 'string' && /^[A-Za-z0-9:_-]{16,128}$/.test(x);
+    const random = () => {
+      try { if (crypto.randomUUID) return crypto.randomUUID(); } catch { /* old browser */ }
+      const a = new Uint8Array(16);
+      try { crypto.getRandomValues(a); } catch { for (let i = 0; i < 16; i++) a[i] = Math.floor(Math.random() * 256); }
+      return [...a].map((b) => b.toString(16).padStart(2, '0')).join('');
+    };
+    let id = store.get('cse-device');
+    if (!ok(id)) { id = 'web-' + random(); store.set('cse-device', id); }
+    const native = async () => {
+      try {
+        if (window.cseDesktop && window.cseDesktop.deviceId) { const v = await window.cseDesktop.deviceId(); if (ok(v)) return v; }
+        const cap = window.Capacitor;
+        const D = cap && cap.isNativePlatform && cap.isNativePlatform() && cap.isPluginAvailable && cap.isPluginAvailable('Device')
+          ? (cap.Plugins.Device || cap.registerPlugin('Device')) : null;
+        if (D) { const r = await D.getId(); const v = r && r.identifier ? 'app-' + String(r.identifier).replace(/[^A-Za-z0-9_-]/g, '') : ''; if (ok(v)) return v; }
+      } catch { /* keep the saved ID */ }
+      return null;
+    };
+    // The device's own ID wins (it stays when the app data is cleared). Never waits more than 1.5 seconds.
+    const ready = Promise.race([native(), new Promise((r) => setTimeout(() => r(null), 1500))])
+      .then((v) => { if (v && v !== id) { id = v; store.set('cse-device', v); } });
+    return { ready, get id() { return id; } };
+  })();
 
   /* ---------------- language: Tagalog or English ----------------
      Every text on screen is written in both languages side by side: L('Tagalog', 'English').
@@ -124,7 +160,8 @@
     'Na-check na ang bayad na ito.': 'This payment was already checked.',
     'Piliin ang Professional o Subprofessional.': 'Choose Professional or Subprofessional.',
     'Dapat JSON array ng mga tanong.': 'It must be a JSON array of questions.',
-    'Isang mock exam lang kada araw sa libreng plan. Bumalik bukas o kumuha ng Premium para walang limit.': 'One mock exam a day on the free plan. Come back tomorrow, or get Premium for no limit.',
+    'Isang mock exam lang kada araw sa libreng plan (sa account o device na ito). Bumalik bukas o kumuha ng Premium para walang limit.': 'One mock exam a day on the free plan (for this account or device). Come back tomorrow, or get Premium for no limit.',
+    'Nagamit na ang libreng buong mock exam sa account o device na ito. Kumuha ng Premium para sa buong exam anumang oras.': 'The free full-length mock exam was already used on this account or device. Get Premium for the full exam any time.',
     'Para sa Premium ang pag-email ng resulta.': 'Emailing the result is for Premium.',
     'Masyadong marami nang naipadala. Subukan ulit mamaya.': 'Too many sent. Please try again later.',
     'Hindi naipadala ang email. Subukan ulit mamaya.': 'The email was not sent. Please try again later.',
@@ -168,8 +205,8 @@
   const serverText = (m) => {
     if (lang !== 'en' || !m) return m;
     if (SERVER_EN[m]) return SERVER_EN[m];
-    const d = /^Naubos mo na ang (\d+) libreng practice ngayong araw/.exec(m);
-    if (d) return `You have used your ${d[1]} free practice sessions for today. Come back tomorrow, or get Premium for no limit.`;
+    const d = /^Naubos na ang (\d+) libreng practice ngayong araw/.exec(m);
+    if (d) return `The ${d[1]} free practice sessions for today are used up on this account or device. Come back tomorrow, or get Premium for no limit.`;
     const g = /^Pumili ng (\d+) hanggang (\d+) na tao\.$/.exec(m);
     if (g) return `Choose ${g[1]} to ${g[2]} people.`;
     const pl = /^Para lang sa (.+) na plan ang promo code na ito\. Pumili ng ganoong plan\.$/.exec(m);
@@ -187,7 +224,8 @@
       if (S.offAuth) { setOffline(true); const e = new Error(L('Walang internet. Kailangan ng internet para dito.', 'No internet. This needs an internet connection.')); e.offline = true; throw e; }
     }
     let res;
-    const headers = body ? { 'Content-Type': 'application/json' } : {};
+    await Dev.ready;
+    const headers = body ? { 'Content-Type': 'application/json', 'X-Device': Dev.id } : { 'X-Device': Dev.id };
     if (IS_APP) {
       headers['X-App'] = '1';
       const t = store.get('cse-token');
@@ -2304,8 +2342,8 @@
     // Free plan: today's limit is already used, so say it now instead of after the privacy and start windows.
     if (isFree() && !S.offline && S.countDay === phDay()) { // counts from today (a new day: the server decides)
       const f = S.config.free;
-      if (mode !== 'practice' && (S.mockToday || 0) >= f.mock_daily) { toast(serverText('Isang mock exam lang kada araw sa libreng plan. Bumalik bukas o kumuha ng Premium para walang limit.')); return go('#/premium'); }
-      if (mode === 'practice' && (S.practiceToday || 0) >= f.practice_daily) { toast(serverText(`Naubos mo na ang ${f.practice_daily} libreng practice ngayong araw. Bumalik bukas o kumuha ng Premium para walang limit.`)); return go('#/premium'); }
+      if (mode !== 'practice' && (S.mockToday || 0) >= f.mock_daily) { toast(serverText('Isang mock exam lang kada araw sa libreng plan (sa account o device na ito). Bumalik bukas o kumuha ng Premium para walang limit.')); return go('#/premium'); }
+      if (mode === 'practice' && (S.practiceToday || 0) >= f.practice_daily) { toast(serverText(`Naubos na ang ${f.practice_daily} libreng practice ngayong araw sa account o device na ito. Bumalik bukas o kumuha ng Premium para walang limit.`)); return go('#/premium'); }
     }
     if (!(await privacyNotice())) return;
     if (mode !== 'practice') {
@@ -3206,6 +3244,7 @@
       ])}
       ${sec(L('7. Privacy (Data Privacy Act, RA 10173)', '7. Privacy (Data Privacy Act, RA 10173)'), [
         L('Ang kinokolekta: pangalan, email, mga sagot at score, settings ng app, record ng bayad (halaga, paraan, reference, screenshot ng resibo kung manual), at log ng login (oras, IP address, uri ng device). Walang card number, PIN, larawan ng mukha o fingerprint.', 'What we collect: name, email, answers and scores, app settings, payment records (amount, method, reference, receipt screenshot if manual), and a login log (time, IP address, device type). No card number, PIN, face picture or fingerprint.'),
+        L('Libreng plan: may random na ID ang device (naka-hash lang ang naka-save sa server) para mabilang ang libreng practice, mock exam at solusyon kada device. Kaya hindi nadadagdagan ang libreng limit kapag nag-login ng ibang libreng account sa parehong device. Wala itong ibang gamit.', 'Free plan: the device has a random ID (only a hash of it is saved on the server) so the free practice, mock exams and solutions are counted per device. So logging in with another free account on the same device does not add to the free limits. It is used for nothing else.'),
         L('Bakit: para sa account, exam at resulta, bayad at resibo, at seguridad. Hindi namin ibinebenta ang data mo. Binubura ang log ng login pagkalipas ng 180 araw.', 'Why: for your account, exams and results, payments and receipts, and security. We never sell your data. The login log is deleted after 180 days.'),
         L('May karapatan kang malaman, makita, maitama, at ipabura ang data mo. Makipag-ugnayan sa amin para dito; kapag binura ang account, kasama nang nabubura ang mga resulta.', 'You have the right to know, see, correct, and have your data deleted. Contact us for this; deleting the account also deletes its results.'),
         L('Kapag may data breach na maaaring makasama sa iyo, ipapaalam namin sa iyo at sa National Privacy Commission sa loob ng 72 oras.', 'If there is a data breach that may harm you, we will tell you and the National Privacy Commission within 72 hours.'),
@@ -3557,7 +3596,7 @@
         <label>${L('Mga pagpipilian (piliin ang tamang sagot)', 'Choices (pick the correct answer)')}</label>
         ${[0, 1, 2, 3].map((i) => `<div class="row" style="margin-bottom:8px;flex-wrap:nowrap"><input type="radio" name="fa" value="${i}" ${i === v.answer ? 'checked' : ''} style="width:22px;height:22px" aria-label="${L('Tamang sagot', 'Correct answer')} ${LETTERS[i]}"><b>${LETTERS[i]}</b><input type="text" class="fc" value="${esc(v.choices[i])}"></div>`).join('')}
         <label>${L('Paliwanag', 'Explanation')}</label><textarea id="fe">${esc(v.explanation)}</textarea>
-        <p class="muted small" style="margin:4px 0 0">${L('Isang hakbang kada linya. <code>Step 1:</code> = bilog na numero, <code>**salita**</code> = asul, <code>==sagot==</code> = berde, <code>!!bitag!!</code> = pula, <code>Quick Note: ...</code> = kahon ng tip (kapag wala, Quick Note ng topic ang ilalagay).', 'One step per line. <code>Step 1:</code> = number badge, <code>**word**</code> = blue, <code>==answer==</code> = green, <code>!!trap!!</code> = red, <code>Quick Note: ...</code> = tip box (if none, the topic\'s Quick Note is added).')}</p>
+        <p class="muted small" style="margin:4px 0 0">${L('Isang hakbang kada linya. <code>Step 1:</code> = bilog na numero, <code>**salita**</code> = asul, <code>==sagot==</code> = berde, <code>!!bitag!!</code> = pula, <code>^^bahagi^^</code> = naka-highlight ang bahaging kinukuwenta, linyang nagsisimula sa <code>=</code> = isang hakbang ng kuwenta, <code>Quick Note: ...</code> = kahon ng tip (kapag wala, Quick Note ng topic ang ilalagay).', 'One step per line. <code>Step 1:</code> = number badge, <code>**word**</code> = blue, <code>==answer==</code> = green, <code>!!trap!!</code> = red, <code>^^part^^</code> = highlights the part being worked out, a line starting with <code>=</code> = one math step, <code>Quick Note: ...</code> = tip box (if none, the topic\'s Quick Note is added).')}</p>
         <div class="err" id="ferr"></div>
         <div class="row" style="justify-content:flex-end"><button type="button" class="btn ghost" data-x>${L('Kanselahin', 'Cancel')}</button><button class="btn" type="submit">${L('I-save', 'Save')}</button></div>
       </form>`, (bg, close) => {
