@@ -3,7 +3,7 @@
   'use strict';
   const $app = document.getElementById('app');
   const LETTERS = ['A', 'B', 'C', 'D'];
-  const APP_VERSION = '1.41.0'; // keep in step with package.json and docs/DOKUMENTASYON.md
+  const APP_VERSION = '1.42.0'; // keep in step with package.json and docs/DOKUMENTASYON.md
   const S = { user: null, meta: null, exam: null, timer: null, saveT: null };
 
   /* ---------------- helpers ---------------- */
@@ -731,156 +731,6 @@
     document.addEventListener('keydown', early, true);
     return { celebrate, voice, unlock, on };
   })();
-  /* ---------------- read aloud (voiceover) ----------------
-     A 🔊 button reads the question and its choices (A, B, C, D), and after an answer in practice, the result
-     and the solution. The Review on the result screen has the same button for each question.
-     - With internet, and when the server has the ElevenLabs voice set up (config.voice, see src/voice.js), the
-       owner's own voice ("Conrado") reads it. Audio already made for a text is saved on the server and here (for
-       this session), so it is made only once. New audio is made for Premium; Free hears the saved ones.
-     - Otherwise (offline, no voice set up, Free with new text, or any error) it uses the voices already on the
-       device (the browser's speechSynthesis; on the Android/iPhone app the phone's own text-to-speech), which is
-       free and works offline.
-     - The voice follows the language of the text: Tagalog questions get a Filipino voice, English ones an English
-       voice. Many devices have no Filipino voice: then the English (Philippines) or default voice reads it, and
-       the user is told once how to add Filipino in the phone's settings.
-     - Free: the 🔊 button, at normal speed. Premium (Account → Read aloud): auto-read each new question and each
-       solution, and the speed (0.75× to 1.5×).
-     - It stops on a page turn, on another screen, or when the 🔊 is tapped again (it shows ⏹ while reading). */
-  const Voice = (() => {
-    const KEY = 'cse-voice';
-    const synth = window.speechSynthesis || null;
-    const RATES = [0.75, 1, 1.25, 1.5];
-    const get = () => ({ auto: false, rate: 1, ...(store.get(KEY) || {}) });
-    const set = (v) => { store.set(KEY, { ...get(), ...v }); Prefs.touched(); };
-    const tts = () => {
-      const C = window.Capacitor;
-      if (!C || !C.isNativePlatform || !C.isNativePlatform() || !C.isPluginAvailable || !C.isPluginAvailable('TextToSpeech')) return null;
-      return C.Plugins.TextToSpeech || null;
-    };
-    const ok = () => !!(tts() || (synth && window.SpeechSynthesisUtterance) || cloudOn());
-    const rate = () => (S.premium && RATES.includes(Number(get().rate)) ? Number(get().rate) : 1);
-    // Tagalog or English? Common Tagalog words decide.
-    const TL = new Set('ang ng mga sa na ay si ni kay ito iyan iyon ano alin sino saan kailan bakit paano kung para hindi oo at ko mo niya namin natin nila kanya ating aming kami tayo sila siya ikaw ako may mayroon wala lamang lang din rin po ba pa nang kaysa dahil upang tamang sagot salita pangungusap kahulugan'.split(' '));
-    const langOf = (t) => {
-      const w = String(t).toLowerCase().match(/[a-zñ']+/g) || [];
-      if (!w.length) return lang === 'en' ? 'en' : 'fil';
-      return w.filter((x) => TL.has(x)).length / w.length >= 0.12 ? 'fil' : 'en';
-    };
-    let voices = [];
-    const loadVoices = () => { try { voices = synth ? synth.getVoices() : []; } catch { voices = []; } };
-    if (synth) { loadVoices(); try { synth.addEventListener('voiceschanged', loadVoices); } catch { /* old browser */ } }
-    const pickVoice = (l) => {
-      const by = (re) => voices.find((v) => re.test(v.lang.replace('_', '-')));
-      return l === 'fil' ? by(/^(fil|tl)\b/i) || null : by(/^en-PH/i) || by(/^en-US/i) || by(/^en\b/i) || null;
-    };
-    let warned = false;
-    const noFilipino = () => {
-      if (warned || store.get('cse-voice-warned')) return;
-      warned = true; store.set('cse-voice-warned', 1);
-      toast(L('Walang Filipino na boses sa device na ito, kaya Ingles na boses ang babasa. Pwede itong idagdag sa Settings ng phone → Text-to-speech.', 'This device has no Filipino voice, so an English voice reads it. You can add one in the phone\'s Settings → Text-to-speech.'));
-    };
-    // Plain text for the voice: no markup from the explanations, and short pieces (long ones get cut off in Chrome).
-    const clean = (t) => String(t || '').replace(/\*\*|==|!!/g, '').replace(/^\s*=\s*/gm, '= ').replace(/_{2,}/g, ' blank ').replace(/[ \t]+/g, ' ');
-    const pieces = (t) => clean(t).split(/\n+|(?<=[.!?])\s+/).map((s) => s.trim()).filter(Boolean)
-      .flatMap((s) => (s.length <= 220 ? [s] : s.match(/.{1,200}(\s|$)|.+/g).map((x) => x.trim())));
-    // The ElevenLabs voice through the server (the key never comes to the app).
-    const cloudOn = () => !!(S.config && S.config.voice && S.user && !S.offline && !S.offAuth && navigator.onLine !== false);
-    const clips = new Map(); // text → blob URL, for this session
-    let player = null;
-    async function cloudUrl(text) {
-      if (clips.has(text)) return clips.get(text);
-      const headers = { 'Content-Type': 'application/json' };
-      if (IS_APP) { headers['X-App'] = '1'; const t = store.get('cse-token'); if (t) headers.Authorization = 'Bearer ' + t; }
-      const r = await fetch(API + '/api/tts', { method: 'POST', headers, body: JSON.stringify({ text }), credentials: IS_APP ? 'omit' : 'same-origin' });
-      if (!r.ok || !/audio/.test(r.headers.get('Content-Type') || '')) throw new Error('tts ' + r.status);
-      const url = URL.createObjectURL(await r.blob());
-      clips.set(text, url);
-      if (clips.size > 40) { const [k, u] = clips.entries().next().value; clips.delete(k); URL.revokeObjectURL(u); }
-      return url;
-    }
-    async function cloud(text, my) {
-      const url = await cloudUrl(text);
-      if (my !== run) return true;
-      player = player || new Audio();
-      player.setAttribute('playsinline', '');
-      player.src = url; player.playbackRate = rate(); player.currentTime = 0;
-      await new Promise((res, rej) => {
-        player.onended = () => res(); player.onerror = () => rej(new Error('play'));
-        player.play().catch(rej);
-      });
-      return true;
-    }
-    let run = 0, btn = null;
-    const mark = (b) => {
-      if (btn && btn !== b) { btn.classList.remove('on'); btn.textContent = '🔊'; btn.setAttribute('aria-pressed', 'false'); }
-      btn = b || null;
-      if (btn) { btn.classList.add('on'); btn.textContent = '⏹'; btn.setAttribute('aria-pressed', 'true'); }
-    };
-    function stop() {
-      run++; mark(null);
-      try { if (player) { player.onended = player.onerror = null; player.pause(); } } catch { /* ignore */ }
-      try { if (synth) synth.cancel(); } catch { /* ignore */ }
-      const n = tts(); if (n) n.stop().catch(() => {});
-    }
-    // parts: [[text, 'fil' | 'en' | undefined], ...]. The language is guessed when not given.
-    async function say(parts, b) {
-      stop();
-      if (!ok()) { toast(L('Walang boses na pambasa sa device na ito.', 'This device has no reading voice.')); return; }
-      const my = run;
-      mark(b);
-      const keep = parts.filter((p) => p && String(p[0] || '').trim());
-      if (cloudOn()) {
-        try { await cloud(keep.map(([t]) => clean(t).trim()).join('\n').slice(0, 2500), my); if (my === run) mark(null); return; } catch { /* the device's voice reads it */ }
-        if (my !== run) return;
-      }
-      const list = keep.flatMap(([t, l]) => { const lg = l || langOf(t); return pieces(t).map((s) => [s, lg]); });
-      const n = tts();
-      try {
-        if (n) {
-          let fil = true;
-          try { fil = (await n.isLanguageSupported({ lang: 'fil-PH' })).supported; } catch { /* unknown */ }
-          for (const [s, lg] of list) {
-            if (my !== run) return;
-            if (lg === 'fil' && !fil) noFilipino();
-            await n.speak({ text: s, lang: lg === 'fil' && fil ? 'fil-PH' : 'en-US', rate: rate(), pitch: 1, volume: 1, category: 'playback' });
-          }
-        } else {
-          if (!voices.length) loadVoices();
-          for (const [s, lg] of list) {
-            if (my !== run) return;
-            const v = pickVoice(lg);
-            if (lg === 'fil' && !v) noFilipino();
-            await new Promise((res) => {
-              const u = new SpeechSynthesisUtterance(s);
-              if (v) { u.voice = v; u.lang = v.lang; } else u.lang = lg === 'fil' ? 'fil-PH' : 'en-US';
-              u.rate = rate();
-              u.onend = u.onerror = () => res();
-              synth.speak(u);
-              if (synth.paused) synth.resume();
-            });
-          }
-        }
-      } catch { /* the voice was stopped or failed */ }
-      if (my === run) mark(null);
-    }
-    // A 🔊 button: the first tap reads, a tap while reading stops.
-    const toggle = (parts, b) => { if (b && btn === b) return stop(); say(parts, b); };
-    // Texts to read
-    const ex = (t, l) => [t, l];
-    const question = (it, n) => [
-      it.passage ? ex(it.passage) : null,
-      ex(`${n ? n + '. ' : ''}${it.question}`),
-      ...it.choices.map((c, i) => ex(`${LETTERS[i]}. ${c}`, langOf(it.question + ' ' + c))),
-    ];
-    const solution = (it, chosen) => [
-      chosen === undefined ? null : ex(chosen === it.answer ? L('Tama!', 'Correct!') : L(`Mali. Ang tamang sagot ay ${LETTERS[it.answer]}.`, `Wrong. The correct answer is ${LETTERS[it.answer]}.`), lang === 'en' ? 'en' : 'fil'),
-      chosen === undefined || chosen !== it.answer ? ex(`${LETTERS[it.answer]}. ${it.choices[it.answer]}`) : null,
-      it.ex_locked ? ex(L('Naka-lock ang buong solusyon.', 'The full solution is locked.'), lang === 'en' ? 'en' : 'fil') : null,
-      ex(it.explanation),
-    ];
-    const btnHtml = (attr, label) => `<button type="button" class="say-btn" ${attr} aria-pressed="false" title="${esc(label)}" aria-label="${esc(label)}">🔊</button>`;
-    return { ok, get, set, say, toggle, stop, question, solution, btnHtml, RATES, hasFilipino: () => { loadVoices(); return !!pickVoice('fil'); }, native: () => !!tts(), cloudName: () => (S.config && S.config.voice ? S.config.voice.name : '') };
-  })();
   // A soft tap for buttons and menus. Exam choices have their own sounds (see choose()).
   const PRESS = '.btn, .seg button, .tabs button, .bottomnav a, .topbar a, .topbar button, .subject-btn, details.fold > summary, .navgrid button, .lvl-opt, .lang-flag, .choice, .list-item, .exam-card, .logout-btn';
   document.addEventListener('click', (e) => {
@@ -1393,7 +1243,7 @@
     let pushT = 0, lastPull = 0;
     const atKey = () => uk('cse-prefs-at');
     const collect = () => ({
-      lang, look: look() || null, a11y: store.get('cse-a11y'), sound: store.get('cse-sound'), voice: store.get('cse-voice'),
+      lang, look: look() || null, a11y: store.get('cse-a11y'), sound: store.get('cse-sound'),
       level: store.get(uk('cse-level')), remind: store.get(uk('cse-remind')),
     });
     function apply(d) {
@@ -1402,7 +1252,6 @@
       if (d.look && typeof d.look === 'object') store.set('cse-look', d.look);
       if (d.a11y && typeof d.a11y === 'object') store.set('cse-a11y', d.a11y);
       if (d.sound && typeof d.sound === 'object') store.set('cse-sound', d.sound);
-      if (d.voice && typeof d.voice === 'object') store.set('cse-voice', d.voice);
       if (d.level === 'pro' || d.level === 'subpro') store.set(uk('cse-level'), d.level);
       if (d.remind && typeof d.remind === 'object') store.set(uk('cse-remind'), d.remind);
       applyLook(); Reminders.sync();
@@ -2880,8 +2729,7 @@
     const tag = qTag(a);
     page.innerHTML = `
       <div class="paper-head"><div class="q-section">${a.mode === 'practice' ? esc(subjName(it.subject)) : `Part ${roman}: ${esc(subjName(it.subject))}`}${sectionStart(a.items, idx) && a.mode !== 'practice' ? ` <span class="pill">${L('Bagong bahagi', 'New part')}</span>` : ''}</div>
-        <button type="button" class="flag-btn paper-flag${ex.flags.has(idx) ? ' on' : ''}" data-flag aria-pressed="${ex.flags.has(idx)}" title="${ex.flags.has(idx) ? L('Minarkahan (pindutin para alisin)', 'Marked (tap to remove)') : L('Markahan para balikan', 'Mark to come back to')}" aria-label="${ex.flags.has(idx) ? L('Minarkahan', 'Marked') : L('Markahan para balikan', 'Mark to come back to')}"><span aria-hidden="true">⚑</span></button>
-        ${Voice.ok() ? Voice.btnHtml('data-say', L('Basahin nang malakas ang tanong at mga pagpipilian', 'Read the question and choices aloud')).replace('say-btn', 'say-btn paper-flag') : ''}</div>
+        <button type="button" class="flag-btn paper-flag${ex.flags.has(idx) ? ' on' : ''}" data-flag aria-pressed="${ex.flags.has(idx)}" title="${ex.flags.has(idx) ? L('Minarkahan (pindutin para alisin)', 'Marked (tap to remove)') : L('Markahan para balikan', 'Mark to come back to')}" aria-label="${ex.flags.has(idx) ? L('Minarkahan', 'Marked') : L('Markahan para balikan', 'Mark to come back to')}"><span aria-hidden="true">⚑</span></button></div>
       <div class="q-num">${L(`${tag} ${idx + 1} sa ${a.items.length}`, `${tag} ${idx + 1} of ${a.items.length}`)} · ${esc(it.topic)}</div>
       ${it.passage ? `<div class="passage">${esc(it.passage)}</div>` : ''}
       <div class="q-text"><span class="q-no">${idx + 1}.</span> ${esc(it.question)}</div>
@@ -2890,7 +2738,7 @@
         if (reveal) { if (i === it.answer) cls = 'correct'; else if (i === chosen) cls = 'wrong'; } else if (i === chosen) cls = 'selected';
         return `<button class="choice ${cls}" data-c="${i}" ${reveal ? 'disabled' : ''} aria-pressed="${i === chosen}"><span class="letter">${LETTERS[i]}</span><span>${esc(c)}</span></button>`;
       }).join('')}</div>
-      ${reveal ? `<div class="explain">${Voice.ok() ? Voice.btnHtml('data-say-ex', L('Basahin nang malakas ang solusyon', 'Read the solution aloud')).replace('say-btn', 'say-btn ex-say') : ''}<b>${chosen === it.answer ? L('✅ Tama!', '✅ Correct!') : L(`❌ Mali. Ang tamang sagot ay ${LETTERS[it.answer]}.`, `❌ Wrong. The correct answer is ${LETTERS[it.answer]}.`)}</b>${exBox(it, L('Solusyon / Paliwanag', 'Solution / Explanation'))}</div>` : ''}
+      ${reveal ? `<div class="explain"><b>${chosen === it.answer ? L('✅ Tama!', '✅ Correct!') : L(`❌ Mali. Ang tamang sagot ay ${LETTERS[it.answer]}.`, `❌ Wrong. The correct answer is ${LETTERS[it.answer]}.`)}</b>${exBox(it, L('Solusyon / Paliwanag', 'Solution / Explanation'))}</div>` : ''}
       ${last ? `<div class="paper-end"><p>${L('— Katapusan ng exam —', '— End of the exam —')}</p><button class="btn" type="button" data-end>${L('Isumite ang exam', 'Submit the exam')} ✓</button></div>` : ''}
       <div class="page-no">— ${idx + 1} —</div>
       ${idx > 0 ? `<button class="corner prev" type="button" data-turn="-1" aria-label="${L('Nakaraang pahina', 'Previous page')}"></button>` : ''}
@@ -2900,14 +2748,6 @@
     $$('[data-turn]', page).forEach((b) => (b.onclick = () => turn(+b.dataset.turn)));
     if ($('[data-end]', page)) $('[data-end]', page).onclick = submitFlow;
     $('[data-flag]', page).onclick = (e) => { e.stopPropagation(); ex.toggleFlag(); };
-    // Read aloud: the 🔊 buttons, and (Premium, Account → Read aloud) each new page and each solution by itself.
-    if (ex.sayIdx !== idx) Voice.stop();
-    if ($('[data-say]', page)) $('[data-say]', page).onclick = (e) => { e.stopPropagation(); Voice.toggle(Voice.question(it, idx + 1), e.currentTarget); };
-    if ($('[data-say-ex]', page)) $('[data-say-ex]', page).onclick = (e) => { e.stopPropagation(); Voice.toggle(Voice.solution(it, chosen), e.currentTarget); };
-    const autoSay = S.premium && Voice.get().auto && Voice.ok() && !document.querySelector('.modal-bg');
-    if (autoSay && reveal && ex.saidEx !== idx) { ex.saidEx = idx; setTimeout(() => { if (S.exam === ex && ex.idx === idx) Voice.say(Voice.solution(it, chosen), $('#qwrap [data-say-ex]')); }, 350); }
-    else if (autoSay && !reveal && ex.sayIdx !== idx) setTimeout(() => { if (S.exam === ex && ex.idx === idx && ex.answers[idx] === undefined) Voice.say(Voice.question(it, idx + 1), $('#qwrap [data-say]')); }, dir ? 450 : 250);
-    ex.sayIdx = idx;
     const n = Object.keys(ex.answers).length;
     $('#answered').textContent = L(`${n}/${a.items.length} nasagutan`, `${n}/${a.items.length} answered`);
     $('#prog').style.width = pct(n, a.items.length) + '%';
@@ -3086,7 +2926,7 @@
       $('#rlist').innerHTML = rows.length ? rows.slice(0, 200).map(({ it, i, ch }) => `
         <div class="review-item">
           <div class="row between"><span class="q-num">#${i + 1} · ${esc(subjName(it.subject))} · ${esc(it.topic)}</span>
-          <span class="row" style="gap:6px;flex-wrap:nowrap">${Voice.ok() ? Voice.btnHtml(`data-say-rv="${i}"`, L('Basahin nang malakas', 'Read aloud')) : ''}<span class="pill ${ch === it.answer ? 'ok' : 'bad'}">${ch === it.answer ? L('Tama', 'Correct') : ch === undefined ? L('Walang sagot', 'No answer') : L('Mali', 'Wrong')}</span></span></div>
+          <span class="pill ${ch === it.answer ? 'ok' : 'bad'}">${ch === it.answer ? L('Tama', 'Correct') : ch === undefined ? L('Walang sagot', 'No answer') : L('Mali', 'Wrong')}</span></div>
           ${it.passage ? `<details><summary class="small muted">${L('Basahin ang talata', 'Read the passage')}</summary><div class="passage">${esc(it.passage)}</div></details>` : ''}
           <div style="font-weight:600;margin:6px 0;white-space:pre-wrap">${esc(it.question)}</div>
           ${ch !== undefined && ch !== it.answer ? `<div class="ans-line" style="color:var(--bad)">${L('Sagot mo', 'Your answer')}: ${LETTERS[ch]}. ${esc(it.choices[ch])}</div>` : ''}
@@ -3095,12 +2935,6 @@
         </div>`).join('') + (rows.length > 200 ? `<p class="muted small">${L('Ipinapakita ang unang 200.', 'Showing the first 200.')}</p>` : '') : `<div class="card empty">${lite ? L('Walang mali sa mga tanong na may review. 🎉', 'No mistakes in the questions with a review. 🎉') : L('Perpekto! Walang mali. 🎉', 'Perfect! No mistakes. 🎉')}</div>`;
     };
     $$('#rf button').forEach((b) => (b.onclick = () => paint(b.dataset.f))); paint('wrong');
-    // Read aloud in the review: the question, the choices, then the answer and the solution.
-    $('#rlist').addEventListener('click', (e) => {
-      const b = e.target.closest('[data-say-rv]'); if (!b) return;
-      const i = +b.dataset.sayRv, it = a.items[i];
-      Voice.toggle([...Voice.question(it, i + 1), ...Voice.solution(it, a.answers[i])], b);
-    });
     if ($('#again')) $('#again').onclick = () => {
       if (practice) {
         const subject = a.items[0]?.subject || 'verbal';
@@ -3299,14 +3133,6 @@
         <label>${L('Tono', 'Tone')}</label>
         <div class="seg" id="sndTone">${[['soft', L('Malambing', 'Soft')], ['marimba', 'Marimba'], ['retro', 'Retro']].map(([k, n]) => `<button type="button" data-tone="${k}" class="${Sound.get().theme === k ? 'active' : ''}">${n}</button>`).join('')}</div>
         <button type="button" class="btn ghost small" id="sndTest" style="margin-top:10px">▶ ${L('Subukan', 'Try it')}</button>`)}
-      ${fold('acc-voice', `<h3>${L('Basa nang malakas', 'Read aloud')}</h3><span class="pill" id="vcPill">${Voice.get().auto ? L('Kusa', 'Auto') : '🔊'}</span>`, `
-        <p class="muted small" style="margin:0 0 10px">${L('Pindutin ang 🔊 sa tanong, sa solusyon, o sa Review para basahin ito nang malakas. Pindutin ulit (⏹) para tumigil.', 'Tap 🔊 on a question, a solution, or in the Review to hear it read aloud. Tap again (⏹) to stop.')}
-          ${Voice.cloudName() ? L(` Kapag may internet, si <b>${esc(Voice.cloudName())}</b> ang babasa. Kapag offline, ang boses ng device.`, ` With internet, <b>${esc(Voice.cloudName())}</b> reads it. Offline, the device's voice does.`) : ''}</p>
-        <label class="check"><input type="checkbox" id="vcAuto" ${Voice.get().auto ? 'checked' : ''}> ${L('Kusang basahin ang bawat bagong tanong, at ang solusyon pagkasagot sa practice', 'Read each new question by itself, and the solution after you answer in practice')}</label>
-        <label>${L('Bilis', 'Speed')}</label>
-        <div class="seg" id="vcRate">${Voice.RATES.map((r) => `<button type="button" data-rate="${r}" class="${Number(Voice.get().rate) === r ? 'active' : ''}">${r}×</button>`).join('')}</div>
-        ${Voice.ok() && !Voice.native() && !Voice.hasFilipino() ? `<p class="muted small" style="margin:8px 0 0">${L('Walang Filipino na boses ang device na ito para sa offline, kaya Ingles na boses ang babasa ng Tagalog. Maidaragdag ito sa Settings ng phone o computer → Text-to-speech / Speech.', 'This device has no Filipino voice for offline use, so an English voice reads Tagalog. You can add one in the phone or computer Settings → Text-to-speech / Speech.')}</p>` : ''}
-        <button type="button" class="btn ghost small" id="vcTest" style="margin-top:10px">▶ ${L('Subukan', 'Try it')}</button>`)}
       ${pwFold()}
       ${fold('acc-install', `<h3>${L('I-install sa phone', 'Install on your phone')}</h3>`, `
         <p class="muted small" style="margin:0 0 10px">${L('<b>Android (Chrome):</b> pindutin ang ⋮ menu → "Add to Home screen" o "Install app".<br><b>iPhone (Safari):</b> pindutin ang Share (□↑) → "Add to Home Screen".<br>Sa Premium, gumagana ito kahit offline. Kailangan ng internet para mag-login, magbayad, at makatanggap ng email.',
@@ -3363,9 +3189,6 @@
     $('#sndVol').oninput = (e) => Sound.set({ vol: Number(e.target.value) / 100 });
     $('#sndVol').onchange = () => Sound.play('correct');
     $$('#sndTone [data-tone]').forEach((b) => (b.onclick = () => { Sound.set({ theme: b.dataset.tone }); $$('#sndTone button').forEach((x) => x.classList.toggle('active', x === b)); setTimeout(() => Sound.play('finish'), 120); }));
-    $('#vcAuto').onchange = (e) => { Voice.set({ auto: e.target.checked }); $('#vcPill').textContent = e.target.checked ? L('Kusa', 'Auto') : '🔊'; };
-    $$('#vcRate [data-rate]').forEach((b) => (b.onclick = () => { Voice.set({ rate: Number(b.dataset.rate) }); $$('#vcRate button').forEach((x) => x.classList.toggle('active', x === b)); }));
-    $('#vcTest').onclick = () => Voice.say([[L('Magandang araw! Ako ang babasa ng mga tanong para sa iyo.', 'Good day! I will read the questions for you.'), lang === 'en' ? 'en' : 'fil']]);
     $('#sndTest').onclick = () => { const seq = ['tap', 'flip', 'correct', 'wrong', 'finish']; seq.forEach((n, i) => setTimeout(() => (n === 'flip' ? Sound.flip() : Sound.play(n)), i * 650)); };
     if ($('#zreset')) $('#zreset').onclick = (e) => {
       e.preventDefault();
@@ -4656,7 +4479,6 @@
   /* ---------------- router ---------------- */
   async function route() {
     stopTimer();
-    Voice.stop();
     guardOff();
     if (S.exam) { saveAnswers(true); S.exam = null; document.onkeydown = null; }
     document.querySelectorAll('.modal-bg').forEach((m) => m.remove());
