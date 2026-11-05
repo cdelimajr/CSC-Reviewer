@@ -240,11 +240,16 @@ const lastCode = (to) => {
   assert.equal(r.status, 400); assert.equal(r.data.code, 'no_refund', 'manual payment needs the no-refund tick');
   assert.equal((await U('POST', '/api/payments', { agree_no_refund: true, reference: 'GC123456', amount: '1' })).status, 200);
   assert.ok(mail.outbox.some((m) => m.to === 'admin@test.ph' && m.subject.startsWith('Bagong bayad')), 'admin notified');
+  // Admin's Premium sound: the newest waiting and approved payment times
+  assert.equal((await U('GET', '/api/admin/premium-ping')).status, 403, 'premium ping is admin only');
+  const ping0 = (await A('GET', '/api/admin/premium-ping')).data;
+  assert.ok(ping0.pending_at > 0, 'premium ping sees the waiting payment');
   r = await A('GET', '/api/admin/payments');
   assert.equal(r.data.length, 1);
   assert.equal(r.data[0].amount, '99', 'manual payment amount is the price, not what the app sent');
   r = await A('POST', `/api/admin/payments/${r.data[0].id}`, { action: 'approve' });
   assert.ok(r.data.until > Date.now() + 29 * 864e5);
+  assert.ok((await A('GET', '/api/admin/premium-ping')).data.paid_at > ping0.paid_at, 'premium ping sees the approval');
   r = await U('GET', '/api/premium'); assert.equal(r.data.active, true);
   // Receipt: in the approval email (with a PDF) and in Premium → Your payments; only for the owner (and admins)
   const apr = mail.outbox.filter((m) => m.to === 'juan@test.ph' && m.subject.startsWith('Aktibo na')).pop();
