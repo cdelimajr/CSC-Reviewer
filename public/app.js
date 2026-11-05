@@ -3,11 +3,27 @@
   'use strict';
   const $app = document.getElementById('app');
   const LETTERS = ['A', 'B', 'C', 'D'];
-  const APP_VERSION = '1.37.0'; // keep in step with package.json and docs/DOKUMENTASYON.md
+  const APP_VERSION = '1.38.0'; // keep in step with package.json and docs/DOKUMENTASYON.md
   const S = { user: null, meta: null, exam: null, timer: null, saveT: null };
 
   /* ---------------- helpers ---------------- */
   const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  /* Explanations (see src/explain.js): one step per line, **key** blue, ==answer== green, !!trap!! red,
+     "Step 1:" gets a number badge, lines starting with "=" are math steps, and "Quick Note:" starts the tip box. */
+  const exInline = (t) => esc(t).replace(/\*\*(.+?)\*\*/g, '<b class="ex-key">$1</b>').replace(/==(.+?)==/g, '<b class="ex-ans">$1</b>').replace(/!!(.+?)!!/g, '<b class="ex-bad">$1</b>');
+  const exLines = (t) => t.split('\n').filter((l) => l.trim()).map((l) => {
+    const m = l.match(/^Step (\d+):\s*/);
+    if (m) return `<div class="ex-line"><span class="ex-num">${m[1]}</span>${exInline(l.slice(m[0].length))}</div>`;
+    return `<div class="ex-line${/^\s*=/.test(l) ? ' ex-math' : ''}">${exInline(l)}</div>`;
+  }).join('');
+  const exHtml = (t, head = '') => {
+    const s = String(t || '');
+    if (!s.trim()) return '';
+    const i = s.search(/(^|\n)Quick Note:/);
+    const main = i < 0 ? s : s.slice(0, i), note = i < 0 ? '' : s.slice(i).replace(/^\n?Quick Note:\s*/, '');
+    return `${head ? `<div class="ex-head">${head}</div>` : ''}${main.trim() ? `<div class="ex-steps">${exLines(main)}</div>` : ''}`
+      + (note.trim() ? `<div class="ex-note"><b class="ex-note-h">💡 Quick Note</b>${exLines(note)}</div>` : '');
+  };
   const $ = (sel, root = document) => root.querySelector(sel);
   const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
   // The website calls its own server. The phone/desktop apps set window.CSE_API (see config.js) and log in with a token.
@@ -2664,7 +2680,7 @@
         if (reveal) { if (i === it.answer) cls = 'correct'; else if (i === chosen) cls = 'wrong'; } else if (i === chosen) cls = 'selected';
         return `<button class="choice ${cls}" data-c="${i}" ${reveal ? 'disabled' : ''} aria-pressed="${i === chosen}"><span class="letter">${LETTERS[i]}</span><span>${esc(c)}</span></button>`;
       }).join('')}</div>
-      ${reveal ? `<div class="explain"><b>${chosen === it.answer ? L('✅ Tama!', '✅ Correct!') : L(`❌ Mali. Ang tamang sagot ay ${LETTERS[it.answer]}.`, `❌ Wrong. The correct answer is ${LETTERS[it.answer]}.`)}</b><br>${esc(it.explanation || '')}</div>` : ''}
+      ${reveal ? `<div class="explain"><b>${chosen === it.answer ? L('✅ Tama!', '✅ Correct!') : L(`❌ Mali. Ang tamang sagot ay ${LETTERS[it.answer]}.`, `❌ Wrong. The correct answer is ${LETTERS[it.answer]}.`)}</b>${exHtml(it.explanation, L('Solusyon / Paliwanag', 'Solution / Explanation'))}</div>` : ''}
       ${last ? `<div class="paper-end"><p>${L('— Katapusan ng exam —', '— End of the exam —')}</p><button class="btn" type="button" data-end>${L('Isumite ang exam', 'Submit the exam')} ✓</button></div>` : ''}
       <div class="page-no">— ${idx + 1} —</div>
       ${idx > 0 ? `<button class="corner prev" type="button" data-turn="-1" aria-label="${L('Nakaraang pahina', 'Previous page')}"></button>` : ''}
@@ -2844,7 +2860,7 @@
           <div style="font-weight:600;margin:6px 0;white-space:pre-wrap">${esc(it.question)}</div>
           ${ch !== undefined && ch !== it.answer ? `<div class="ans-line" style="color:var(--bad)">${L('Sagot mo', 'Your answer')}: ${LETTERS[ch]}. ${esc(it.choices[ch])}</div>` : ''}
           <div class="ans-line" style="color:var(--ok)">${L('Tamang sagot', 'Correct answer')}: ${LETTERS[it.answer]}. ${esc(it.choices[it.answer])}</div>
-          ${it.explanation ? `<div class="explain">${esc(it.explanation)}</div>` : ''}
+          ${it.explanation ? `<div class="explain">${exHtml(it.explanation, L('Solusyon / Paliwanag', 'Solution / Explanation'))}</div>` : ''}
         </div>`).join('') + (rows.length > 200 ? `<p class="muted small">${L('Ipinapakita ang unang 200.', 'Showing the first 200.')}</p>` : '') : `<div class="card empty">${lite ? L('Walang mali sa mga tanong na may review. 🎉', 'No mistakes in the questions with a review. 🎉') : L('Perpekto! Walang mali. 🎉', 'Perfect! No mistakes. 🎉')}</div>`;
     };
     $$('#rf button').forEach((b) => (b.onclick = () => paint(b.dataset.f))); paint('wrong');
@@ -2911,7 +2927,7 @@
         <b>${i + 1}. ${esc(it.question)}</b> <span class="p-topic">[${esc(subjName(it.subject))} · ${esc(it.topic)}]</span>
         <ol type="A">${it.choices.map((c, j) => `<li class="${j === it.answer ? 'p-ok' : j === ch ? 'p-bad' : ''}">${esc(c)}</li>`).join('')}</ol>
         <div class="${ch === it.answer ? 'p-ok' : 'p-bad'}">${L('Sagot mo', 'Your answer')}: ${ch === undefined ? '–' : LETTERS[ch]} · ${L('Tamang sagot', 'Correct answer')}: ${LETTERS[it.answer]}</div>
-        ${it.explanation ? `<div class="p-exp">${esc(it.explanation)}</div>` : ''}</div>`; }).join('')}
+        ${it.explanation ? `<div class="p-exp">${exHtml(it.explanation)}</div>` : ''}</div>`; }).join('')}
       <p class="p-foot">CSE Reviewer · ${L('Para sa personal na review lamang (RA 10173)', 'For personal review only (RA 10173)')}</p>`;
     const done = () => { document.body.classList.remove('printing'); el.innerHTML = ''; window.removeEventListener('afterprint', done); };
     window.addEventListener('afterprint', done);
@@ -3508,6 +3524,7 @@
         <label>${L('Mga pagpipilian (piliin ang tamang sagot)', 'Choices (pick the correct answer)')}</label>
         ${[0, 1, 2, 3].map((i) => `<div class="row" style="margin-bottom:8px;flex-wrap:nowrap"><input type="radio" name="fa" value="${i}" ${i === v.answer ? 'checked' : ''} style="width:22px;height:22px" aria-label="${L('Tamang sagot', 'Correct answer')} ${LETTERS[i]}"><b>${LETTERS[i]}</b><input type="text" class="fc" value="${esc(v.choices[i])}"></div>`).join('')}
         <label>${L('Paliwanag', 'Explanation')}</label><textarea id="fe">${esc(v.explanation)}</textarea>
+        <p class="muted small" style="margin:4px 0 0">${L('Isang hakbang kada linya. <code>Step 1:</code> = bilog na numero, <code>**salita**</code> = asul, <code>==sagot==</code> = berde, <code>!!bitag!!</code> = pula, <code>Quick Note: ...</code> = kahon ng tip (kapag wala, Quick Note ng topic ang ilalagay).', 'One step per line. <code>Step 1:</code> = number badge, <code>**word**</code> = blue, <code>==answer==</code> = green, <code>!!trap!!</code> = red, <code>Quick Note: ...</code> = tip box (if none, the topic\'s Quick Note is added).')}</p>
         <div class="err" id="ferr"></div>
         <div class="row" style="justify-content:flex-end"><button type="button" class="btn ghost" data-x>${L('Kanselahin', 'Cancel')}</button><button class="btn" type="submit">${L('I-save', 'Save')}</button></div>
       </form>`, (bg, close) => {

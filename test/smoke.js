@@ -151,6 +151,7 @@ const lastCode = (to) => {
   assert.equal(r.data.lite, true, 'free review is short');
   assert.equal(r.data.review_per_subject, 5);
   assert.ok(r.data.items.every((it) => !it.locked && it.question && it.explanation !== undefined), 'free mock: all 5 per subject have a review');
+  assert.ok(r.data.items.every((it) => it.explanation.includes('Quick Note: ')), 'every reviewed question has a Quick Note');
   // Free practice: the first 5 questions have a review, the rest only the subject and letter
   r = await F('POST', '/api/attempts', { mode: 'practice', subject: 'verbal', count: 10 });
   assert.equal(r.data.items.length, 10);
@@ -759,6 +760,24 @@ const lastCode = (to) => {
   const ver = require('../package.json').version;
   assert.ok(fs.readFileSync(path.join(__dirname, '..', 'public', 'app.js'), 'utf8').includes(`APP_VERSION = '${ver}'`), 'app.js version = package.json');
   assert.ok(fs.readFileSync(path.join(__dirname, '..', 'docs', 'DOKUMENTASYON.md'), 'utf8').includes(`**Kasalukuyang bersyon:** ${ver}`), 'docs version = package.json');
+  // Explanations: every generated question has a full explanation, every topic has a Quick Note,
+  // and saved built-in questions show the newest explanation.
+  const explain = require('../src/explain');
+  const { GENERATORS } = require('../src/generators');
+  const { QUESTIONS } = require('../src/bank');
+  const topics = new Set(QUESTIONS.map((q) => q.t));
+  for (const gens of Object.values(GENERATORS)) for (const g of gens) for (let i = 0; i < 40; i++) {
+    let it; try { it = g(); } catch { continue; }
+    if (!it) continue;
+    topics.add(it.topic);
+    assert.ok(it.explanation && !/undefined|NaN|\$\{/.test(it.explanation), `${g.name}: explanation`);
+  }
+  assert.deepEqual([...topics].filter((t) => !explain.TIPS[t]), [], 'every topic has a Quick Note');
+  assert.ok(explain.full({ subject: 'numerical', topic: 'Average', question: 'x', explanation: 'Step 1: a' }).endsWith('\nQuick Note: ' + explain.TIPS.Average));
+  assert.equal(explain.full({ subject: 'numerical', topic: 'Average', question: 'x', explanation: 'a\nQuick Note: own' }), 'a\nQuick Note: own', 'its own Quick Note wins');
+  const bq = QUESTIONS[0];
+  assert.ok(explain.full({ subject: bq.s, topic: bq.t, question: bq.q, passage: bq.p, explanation: 'old text', source: 'seed' }).startsWith(bq.e), 'saved bank questions get the newest explanation');
+  assert.ok(explain.full({ subject: bq.s, topic: bq.t, question: bq.q, passage: bq.p, explanation: 'admin text', source: 'admin' }).startsWith('admin text'), 'admin edits are kept');
   console.log('All smoke tests passed.');
   srv.close(); process.exit(0);
 })().catch((e) => { console.error(e); process.exit(1); });

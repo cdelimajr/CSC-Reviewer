@@ -176,7 +176,19 @@ th { color: var(--muted); font-weight: 600; font-size: 0.8125rem; }
 .choice.wrong { border-color: var(--bad); background: var(--bad-soft); }
 .choice.wrong .letter { background: var(--bad); color: var(--on-primary); }
 .choice:disabled { cursor: default; }
-.explain { margin-top: 14px; padding: 12px 14px; border-radius: 10px; background: var(--warn-soft); font-size: 0.9375rem; }
+.explain { margin-top: 14px; padding: 12px 14px; border-radius: 12px; background: var(--card); border: 2px solid var(--line); border-color: color-mix(in srgb, var(--primary-2) 45%, var(--line)); font-size: 0.9375rem; }
+/* Step-by-step explanations (see exHtml in app.js) */
+.ex-head { margin: 6px 0 4px; font-size: 0.75rem; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; color: var(--bad); }
+.ex-steps { line-height: 1.55; }
+.ex-line { margin: 3px 0; }
+.ex-math { padding-left: 1.4em; font-variant-numeric: tabular-nums; }
+.ex-num { display: inline-grid; place-items: center; width: 1.4em; height: 1.4em; margin-right: 6px; border-radius: 50%; background: var(--primary-soft); color: var(--primary); font-size: 0.8em; font-weight: 800; vertical-align: 1px; }
+.ex-key { color: var(--primary); }
+.ex-ans { color: var(--ok); }
+.ex-bad { color: var(--bad); }
+.ex-note { margin-top: 10px; padding: 8px 12px; border-left: 4px solid var(--accent); border-radius: 8px; background: var(--warn-soft); font-size: 0.9em; line-height: 1.5; }
+.ex-note-h { display: block; margin-bottom: 2px; color: var(--bad); }
+#printArea .ex-note { background: none; border-left: 2px solid #999; }
 .flag-btn.on { background: var(--warn-soft); color: #9a6b00; }
 .navgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(42px, 1fr)); gap: 6px; }
 .navgrid button { height: 40px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); cursor: pointer; font-size: 0.8125rem; font-weight: 600; position: relative; }

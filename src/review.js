@@ -5,6 +5,7 @@
 // Free plan: only from practice (mock exam questions stay hidden on the free plan, see attemptView in server.js),
 // and only the 3 weakest topics are shown. Premium: everything.
 const db = require('./db');
+const explain = require('./explain');
 
 const keyOf = (it) => `${it.subject}|${it.question}|${it.passage || ''}`;
 
@@ -27,7 +28,7 @@ async function collect(userId, premium) {
       seen.add(k);
       if (right || (ch === undefined && r.mode === 'practice')) return;
       mistakes.push({ subject: it.subject, topic: it.topic || '', question: it.question, passage: it.passage || '', choices: it.choices,
-        answer: it.answer, explanation: it.explanation || '', from: r.mode, at: r.finished_at });
+        answer: it.answer, explanation: explain.full(it), from: r.mode, at: r.finished_at });
     });
   }
   const ranked = [...topics.values()].filter((t) => t.total >= 3)
