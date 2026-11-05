@@ -3,7 +3,7 @@
   'use strict';
   const $app = document.getElementById('app');
   const LETTERS = ['A', 'B', 'C', 'D'];
-  const APP_VERSION = '1.38.0'; // keep in step with package.json and docs/DOKUMENTASYON.md
+  const APP_VERSION = '1.39.0'; // keep in step with package.json and docs/DOKUMENTASYON.md
   const S = { user: null, meta: null, exam: null, timer: null, saveT: null };
 
   /* ---------------- helpers ---------------- */
@@ -16,6 +16,14 @@
     if (m) return `<div class="ex-line"><span class="ex-num">${m[1]}</span>${exInline(l.slice(m[0].length))}</div>`;
     return `<div class="ex-line${/^\s*=/.test(l) ? ' ex-math' : ''}">${exInline(l)}</div>`;
   }).join('');
+  /* Free plan, past today's full solutions: the steps are hidden behind a Premium offer, the Quick Note still shows. */
+  const pesoTxt = (n) => '₱' + Number(n).toLocaleString('en-PH');
+  const dayOffer = () => { const p = S.config && S.config.prices; return p && p.day ? L(` · ${pesoTxt(p.day)} isang araw`, ` · ${pesoTxt(p.day)} for a day`) : ''; };
+  const exLocked = () => `<div class="ex-lock"><div class="ex-blur" aria-hidden="true"><div>Step 1: ▇▇▇▇ ▇▇ ▇▇▇▇▇▇ ▇▇▇</div><div>Step 2: ▇▇▇ ▇▇▇▇ = ▇▇</div><div>= ▇▇▇▇</div></div>
+    <div class="ex-lock-msg"><b>🔒 ${L('Naka-lock ang buong solusyon', 'The full solution is locked')}</b>
+    <span class="muted small">${L(`Naubos mo na ang ${S.config?.free?.solutions_daily ?? 10} libreng buong solusyon ngayong araw. Babalik bukas.`, `You have used today's ${S.config?.free?.solutions_daily ?? 10} free full solutions. More tomorrow.`)}</span>
+    <a class="btn small" href="#/premium">⭐ ${L('Buksan lahat ng solusyon', 'Unlock every solution')}${dayOffer()}</a></div></div>`;
+  const exBox = (it, head) => (it.ex_locked ? `${head ? `<div class="ex-head">${head}</div>` : ''}${exLocked()}${exHtml(it.explanation)}` : exHtml(it.explanation, head));
   const exHtml = (t, head = '') => {
     const s = String(t || '');
     if (!s.trim()) return '';
@@ -1745,7 +1753,7 @@
       ${S.user.role === 'admin' ? '' : `<div class="card" style="margin-top:12px">
         <h3>${p.active && until ? L('I-extend ang Premium', 'Extend Premium') : L('Kumuha ng Premium', 'Get Premium')}</h3>
         ${plans.length > 1 ? `<div class="seg plan-seg" id="planSel" role="group" aria-label="${L('Pumili ng plan', 'Choose a plan')}">${plans.map((x) => `<button type="button" data-plan="${x.id}" class="${x.id === plan.id ? 'active' : ''}" aria-pressed="${x.id === plan.id}">
-          <span class="plan-name">${PLAN_NAME(x)}</span><span class="plan-price" data-pp="${x.id}">${esc(pesos(x.price))}</span>${x.save ? `<span class="pill ok">${L('Tipid', 'Save')} ${x.save}%</span>` : ''}</button>`).join('')}</div>` : ''}
+          <span class="plan-name">${PLAN_NAME(x)}</span><span class="plan-price" data-pp="${x.id}">${esc(pesos(x.price))}</span>${x.save ? `<span class="pill ok">${L('Tipid', 'Save')} ${x.save}%</span>` : ''}${x.id === 'week' ? `<span class="pill warn">${L('Malapit na ang exam?', 'Exam is near?')}</span>` : ''}</button>`).join('')}</div>` : ''}
         <p style="margin:6px 0" id="priceTag"></p>
         ${p.promo || p.online || manual ? `<form id="promoF" class="promo-box" autocomplete="off"><label for="promoIn">${L('May promo o group code ka?', 'Have a promo or group code?')}</label>
           <div class="row" style="flex-wrap:nowrap"><input type="text" id="promoIn" maxlength="30" placeholder="${L('hal.', 'e.g.')} REVIEW20 / GRP-XXXX-XXXX" style="text-transform:uppercase;margin:0" autocapitalize="characters" spellcheck="false">
@@ -2152,7 +2160,15 @@
       ? L(`⏳ <b>Matatapos ang Premium mo ${d <= 1 ? 'bukas' : `sa ${d} araw`}</b> (${esc(day)}). I-extend para tuloy ang lahat ng exam set at offline →`, `⏳ <b>Your Premium ends ${d <= 1 ? 'tomorrow' : `in ${d} days`}</b> (${esc(day)}). Extend it to keep all exam sets and offline →`)
       : L(`⌛ <b>Natapos na ang Premium mo</b> noong ${esc(day)}. Naka-save pa rin ang lahat ng resulta mo. I-extend →`, `⌛ <b>Your Premium ended</b> on ${esc(day)}. All your results are still saved. Extend →`)}</a>`;
   }
-  // Streak strip on Results (Premium only): days in a row, the last 7 days, and the reminder.
+  // Free plan, all of today's practice used: when it comes back (midnight, Philippine time) and a one-day Premium offer.
+  function practiceDoneCard() {
+    const left = Math.max(0, (phDay() + 1) * 864e5 - 8 * 3600e3 - Date.now());
+    const h = Math.floor(left / 3600e3), m = Math.floor((left % 3600e3) / 60000);
+    return `<div class="card upsell-card" style="margin-bottom:12px"><h3 style="margin:0 0 6px">⏳ ${L(`Naubos na ang ${S.config.free.practice_daily} libreng practice ngayong araw`, `Today's ${S.config.free.practice_daily} free practice sessions are used up`)}</h3>
+      <p class="small" style="margin:0 0 10px">${L(`Babalik ito sa loob ng <b>${h} oras at ${m} minuto</b> (hatinggabi). Ayaw mong maghintay? Mag-practice nang walang limit, may buong solusyon sa bawat sagot.`, `It comes back in <b>${h} h ${m} min</b> (midnight). Don't want to wait? Practice with no limit, with a full solution for every answer.`)}</p>
+      <a class="btn" href="#/premium">⭐ ${L('Kumuha ng Premium', 'Get Premium')}${dayOffer()}</a></div>`;
+  }
+  // Streak strip on Results (every user since 1.39.0): days in a row, the last 7 days, and the reminder.
   function streakCard() {
     const days = studyDays(), st = streakOf(days), set = new Set(days), today = phDay(), r = Reminders.get();
     const names = lang === 'en' ? ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'] : ['Li', 'Lu', 'Ma', 'Mi', 'Hu', 'Bi', 'Sa'];
@@ -2186,6 +2202,7 @@
         <p class="small" style="margin:0 0 10px">${le.sections.map((s) => `${esc(subjName(s.subject))} (${s.count})`).join(' · ')}</p>
         ${isFree() ? `<p class="small" style="margin:-4px 0 10px">🆓 ${L(`Libreng plan: ${freeMock()} tanong kada subject (${freeExam(le).items} tanong, ${fmtDur(freeExam(le).minutes)}). <a href="#/premium">Buong exam sa Premium →</a>`, `Free plan: ${freeMock()} questions per subject (${freeExam(le).items} questions, ${fmtDur(freeExam(le).minutes)}). <a href="#/premium">Full exam with Premium →</a>`)}</p>` : ''}
         <div class="row"><button class="btn" type="button" data-set1="${lv}">▶ ${L('Simulan ang Set 1', 'Start Set 1')}</button><a class="btn secondary" href="#/sets/${lv}">${L('Lahat ng exam set', 'All exam sets')}</a></div>
+        ${isFree() && (S.fullLeft || 0) > 0 ? `<button class="btn ghost small full-trial" type="button" data-full="${lv}" style="margin-top:8px">🎁 ${L(`Subukan ang buong exam (${le.items} tanong, ${fmtDur(le.minutes)}), libre nang isang beses`, `Try the full exam (${le.items} questions, ${fmtDur(le.minutes)}), free once`)}</button>` : ''}
         </div></div>`;
     const freeMockDone = isFree() && (S.mockToday || 0) >= S.config.free.mock_daily;
     shell('home', `
@@ -2205,16 +2222,17 @@
     `);
     $$('.level-switch [data-level]').forEach((b) => (b.onclick = () => { if (b.dataset.level !== myLevel()) { setLevel(b.dataset.level); paintHome(l0, s0); } }));
     $$('[data-set1]').forEach((b) => (b.onclick = () => startSet1(b.dataset.set1)));
+    $$('[data-full]').forEach((b) => (b.onclick = () => startSet1(b.dataset.full, { full: true })));
     Tour.maybe();
   }
   // "Set 1" of a mock exam, straight from Home.
-  async function startSet1(mode) {
+  async function startSet1(mode, opts = {}) {
     let set = (pack()?.sets || []).find((x) => x.mode === mode && x.number === 1);
     if (!set) {
       try { set = (await cachedGet('/api/sets?mode=' + mode)).find((x) => x.number === 1); } catch (e) { return toast(e.message); }
     }
     if (!set) return go('#/sets/' + mode);
-    startExam(mode, { set_id: set.id });
+    startExam(mode, { set_id: set.id, ...opts });
   }
 
   function subjectBars(subj) {
@@ -2291,7 +2309,7 @@
     }
     if (!(await privacyNotice())) return;
     if (mode !== 'practice') {
-      const full = S.meta.exams[mode], e = isFree() ? { ...full, ...freeExam(full) } : full;
+      const full = S.meta.exams[mode], e = isFree() && !opts.full ? { ...full, ...freeExam(full) } : full;
       const ok = await confirmBox(L(`Simulan ang ${e.title}?`, `Start the ${e.title}?`), L(`Mayroon itong <b>${e.items} tanong</b> at <b>${fmtDur(e.minutes)}</b> na oras, tulad ng totoong CSE (mga ${Math.round((e.minutes * 60) / e.items)} segundo kada tanong).${isFree() ? ` <b>Libreng plan: ${freeMock()} tanong kada subject.</b> Nasa Premium ang buong exam na ${full.items} tanong.` : ''} Tuloy-tuloy ang timer kahit isara mo ang app, pero naka-save ang mga sagot mo. May paalala sa 30, 10, 5 at 1 minutong natitira. Kailangan ng ${e.passing}% para pumasa.<br><br>Para parang totoong exam: walang calculator at phone, at sagutan lahat (walang bawas ang mali).`,
         `It has <b>${e.items} questions</b> and <b>${fmtDur(e.minutes)}</b> of time, like the real CSE (about ${Math.round((e.minutes * 60) / e.items)} seconds per question).${isFree() ? ` <b>Free plan: ${freeMock()} questions per subject.</b> The full ${full.items}-question exam is with Premium.` : ''} The timer keeps running even if you close the app, but your answers are saved. You get a reminder at 30, 10, 5 and 1 minute left. You need ${e.passing}% to pass.<br><br>To make it like the real exam: no calculator or phone, and answer everything (wrong answers have no penalty).`), L('Simulan na', 'Start now'));
       if (!ok) return;
@@ -2303,6 +2321,8 @@
       const a = await api('POST', '/api/attempts', { mode, ...opts });
       if (mode === 'practice') S.practiceToday = (S.practiceToday || 0) + 1;
       else S.mockToday = (S.mockToday || 0) + 1;
+      if (opts.full) S.fullLeft = 0;
+      if (isFree()) S.solLeft = Math.max(0, (S.solLeft || 0) - (a.total || 0));
       go('#/exam/' + a.id);
     } catch (e) {
       if (e.code === 'mock_daily') { S.mockToday = Math.max(S.mockToday || 0, S.config.free.mock_daily); toast(e.message); return go('#/premium'); }
@@ -2422,8 +2442,8 @@
     shell('practice', `
       <div class="row between" style="flex-wrap:nowrap"><h1>${L('Practice kada subject', 'Practice by subject')}</h1>${showLevel() ? `<span id="pLvl">${levelChip(st.level, 'big')}</span>` : ''}</div>
       <p class="muted" style="margin-top:0">${L('Makikita agad kung tama o mali ang sagot mo, kasama ang paliwanag.', 'You see right away if your answer is right or wrong, with an explanation.')}</p>
-      ${isFree() ? `<a class="notice" href="#/premium" style="display:block;margin-bottom:12px">${L(`🆓 Libreng plan: <b>${Math.max(0, S.config.free.practice_daily - (S.practiceToday || 0))} sa ${S.config.free.practice_daily}</b> practice na lang ang natitira ngayong araw, hanggang ${S.config.free.practice_items} tanong bawat isa. Walang limit sa Premium →`,
-        `🆓 Free plan: <b>${Math.max(0, S.config.free.practice_daily - (S.practiceToday || 0))} of ${S.config.free.practice_daily}</b> practice left today, up to ${S.config.free.practice_items} questions each. No limit with Premium →`)}</a>` : ''}
+      ${isFree() && (S.practiceToday || 0) >= S.config.free.practice_daily && S.countDay === phDay() ? practiceDoneCard() : isFree() ? `<a class="notice" href="#/premium" style="display:block;margin-bottom:12px">${L(`🆓 Libreng plan: <b>${Math.max(0, S.config.free.practice_daily - (S.practiceToday || 0))} sa ${S.config.free.practice_daily}</b> practice na lang ang natitira ngayong araw, hanggang ${S.config.free.practice_items} tanong bawat isa. May <b>${S.solLeft || 0}</b> libreng buong solusyon pa ngayong araw. Walang limit sa Premium →`,
+        `🆓 Free plan: <b>${Math.max(0, S.config.free.practice_daily - (S.practiceToday || 0))} of ${S.config.free.practice_daily}</b> practice left today, up to ${S.config.free.practice_items} questions each. <b>${S.solLeft || 0}</b> free full solutions left today. No limit with Premium →`)}</a>` : ''}
       <div class="card">
         ${showLevel() ? `<h3>Level</h3><div class="seg lvl-seg" id="plv" style="margin-bottom:14px">${Object.entries(LEVELS).map(([k, [c, n]]) => `<button type="button" class="lvl-opt ${k}" data-pl="${k}"><b>${c}</b> <span class="small">${n}</span></button>`).join('')}</div>` : ''}
         ${fold('practice-1', `<h3>${L('1. Pumili ng subject', '1. Choose a subject')}</h3><span class="pill" id="subPick"></span>`, `<div class="subject-grid" id="subs">${Object.entries(subs).map(([k, v]) => `<button class="subject-btn" data-s="${k}"><b>${esc(v.name)}</b><span>${esc(subjDesc(k))}</span></button>`).join('')}</div>`, { card: false })}
@@ -2680,7 +2700,7 @@
         if (reveal) { if (i === it.answer) cls = 'correct'; else if (i === chosen) cls = 'wrong'; } else if (i === chosen) cls = 'selected';
         return `<button class="choice ${cls}" data-c="${i}" ${reveal ? 'disabled' : ''} aria-pressed="${i === chosen}"><span class="letter">${LETTERS[i]}</span><span>${esc(c)}</span></button>`;
       }).join('')}</div>
-      ${reveal ? `<div class="explain"><b>${chosen === it.answer ? L('✅ Tama!', '✅ Correct!') : L(`❌ Mali. Ang tamang sagot ay ${LETTERS[it.answer]}.`, `❌ Wrong. The correct answer is ${LETTERS[it.answer]}.`)}</b>${exHtml(it.explanation, L('Solusyon / Paliwanag', 'Solution / Explanation'))}</div>` : ''}
+      ${reveal ? `<div class="explain"><b>${chosen === it.answer ? L('✅ Tama!', '✅ Correct!') : L(`❌ Mali. Ang tamang sagot ay ${LETTERS[it.answer]}.`, `❌ Wrong. The correct answer is ${LETTERS[it.answer]}.`)}</b>${exBox(it, L('Solusyon / Paliwanag', 'Solution / Explanation'))}</div>` : ''}
       ${last ? `<div class="paper-end"><p>${L('— Katapusan ng exam —', '— End of the exam —')}</p><button class="btn" type="button" data-end>${L('Isumite ang exam', 'Submit the exam')} ✓</button></div>` : ''}
       <div class="page-no">— ${idx + 1} —</div>
       ${idx > 0 ? `<button class="corner prev" type="button" data-turn="-1" aria-label="${L('Nakaraang pahina', 'Previous page')}"></button>` : ''}
@@ -2791,6 +2811,17 @@
   }
 
   /* ---------------- results ---------------- */
+  // Free plan, after a short (mini) mock exam: the real exam is much longer, so offer the full one.
+  function miniMockOffer(a, p, pass) {
+    const e = S.meta.exams[a.mode] || { items: 170, minutes: 190 };
+    const head = pass ? L(`🎉 ${p}% sa mini mock! Kaya mo rin ba ang buong ${e.items} tanong?`, `🎉 ${p}% on the mini mock! Can you do all ${e.items} questions too?`)
+      : L(`${p}% ka ngayon. Kailangan ang ${a.passing}% para pumasa.`, `You got ${p}%. You need ${a.passing}% to pass.`);
+    const body = L(`Mini mock lang ito (${a.total} tanong). Ang totoong exam ay <b>${e.items} tanong sa ${fmtDur(e.minutes)}</b>, kaya mahalagang masanay sa buong haba at oras.`,
+      `This was a mini mock (${a.total} questions). The real exam is <b>${e.items} questions in ${fmtDur(e.minutes)}</b>, so practice the full length and time.`);
+    const btn = (S.fullLeft || 0) > 0 ? `<button class="btn" type="button" data-full="${a.mode}">🎁 ${L('Subukan ang buong exam, libre nang isang beses', 'Try the full exam, free once')}</button>`
+      : `<a class="btn" href="#/premium">⭐ ${L('Buong exam at lahat ng set sa Premium', 'Full exams and every set with Premium')}${dayOffer()}</a>`;
+    return `<div class="card upsell-card" style="margin-top:12px"><h3 style="margin:0 0 6px">${head}</h3><p class="small" style="margin:0 0 10px">${body}</p>${btn}</div>`;
+  }
   async function viewResult(id) {
     let a;
     if (isLocal(id)) {
@@ -2838,6 +2869,7 @@
           <button class="btn secondary" id="rPrint" type="button">${tools ? '🖨️' : '🔒'} Print</button></div>
           <p class="muted small" style="margin:6px 0 0">${!tools ? L('Para sa <a href="#/premium">Premium</a> ang PDF, email at print ng resulta na may lahat ng tanong, sagot at paliwanag.', 'Saving as PDF, email and print of the result with every question, answer and explanation are for <a href="#/premium">Premium</a>.') : L(`Kasama ang lahat ng tanong, sagot at paliwanag. Gumagana offline ang PDF at Print; ang email ay ipapadala sa ${esc(S.user.email)} (kapag offline, ipapadala ito pagbalik ng internet).`, `Includes every question, answer and explanation. PDF and Print work offline; the email goes to ${esc(S.user.email)} (when offline, it is sent once the internet is back).`)}</p>` : ''}
       </div>
+      ${liteMock && !a.full_trial ? miniMockOffer(a, p, pass) : ''}
       <div class="card" style="margin-top:12px"><h3>${L('Score kada subject', 'Score by subject')}</h3>${subjectBars(a.breakdown || {})}</div>
       ${timeCard(a)}
       ${!liteMock && wrongCount + (practice ? 0 : blankCount) > 0 ? `<a class="card review-link" href="#/review" style="margin-top:12px"><span class="ic" aria-hidden="true">🎯</span><span class="grow"><b>${L('Sagutan ulit ang mga mali', 'Answer your mistakes again')}</b><span class="muted small">${L('Nasa Balikan ang mali ang mga namali mo rito, kasama ang pinakamahinang topic mo.', 'Your mistakes here are in Go over your mistakes, with your weakest topics.')}</span></span><span aria-hidden="true">›</span></a>` : ''}
@@ -2847,6 +2879,7 @@
       <div class="tabs" id="rf"><button data-f="wrong" class="active">${L('Mali at walang sagot', 'Wrong and unanswered')}</button><button data-f="all">${L('Lahat', 'All')}</button></div>
       <div class="list" id="rlist"></div>`);
     if (!tools && $('#rPdf')) ['#rPdf', '#rMail', '#rPrint'].forEach((k) => ($(k).onclick = () => go('#/premium')));
+    document.querySelectorAll('[data-full]').forEach((b) => (b.onclick = () => startSet1(b.dataset.full, { full: true })));
     if ($('#cheerAgain')) $('#cheerAgain').onclick = () => { if (!Cheer.on()) toast(L('Naka-off ang boses sa Account → Tunog.', 'The voice is off in Account → Sounds.')); Cheer.celebrate(); };
     if (cheer) setTimeout(() => Cheer.celebrate(), 250);
     const paint = (f) => {
@@ -2860,7 +2893,7 @@
           <div style="font-weight:600;margin:6px 0;white-space:pre-wrap">${esc(it.question)}</div>
           ${ch !== undefined && ch !== it.answer ? `<div class="ans-line" style="color:var(--bad)">${L('Sagot mo', 'Your answer')}: ${LETTERS[ch]}. ${esc(it.choices[ch])}</div>` : ''}
           <div class="ans-line" style="color:var(--ok)">${L('Tamang sagot', 'Correct answer')}: ${LETTERS[it.answer]}. ${esc(it.choices[it.answer])}</div>
-          ${it.explanation ? `<div class="explain">${exHtml(it.explanation, L('Solusyon / Paliwanag', 'Solution / Explanation'))}</div>` : ''}
+          ${it.explanation || it.ex_locked ? `<div class="explain">${exBox(it, L('Solusyon / Paliwanag', 'Solution / Explanation'))}</div>` : ''}
         </div>`).join('') + (rows.length > 200 ? `<p class="muted small">${L('Ipinapakita ang unang 200.', 'Showing the first 200.')}</p>` : '') : `<div class="card empty">${lite ? L('Walang mali sa mga tanong na may review. 🎉', 'No mistakes in the questions with a review. 🎉') : L('Perpekto! Walang mali. 🎉', 'Perfect! No mistakes. 🎉')}</div>`;
     };
     $$('#rf button').forEach((b) => (b.onclick = () => paint(b.dataset.f))); paint('wrong');
@@ -2969,10 +3002,10 @@
     const { list, stats } = withLocal(l0, s0);
     const trend = stats.mocks.slice(-10), mocks = stats.mocks;
     const best = mocks.length ? Math.max(...mocks.map((m) => m.pct)) : null;
-    // "All exams" is at the top. Premium only: the streak and "Go over your mistakes" cards are at the bottom
-    // (Home stays clean for every user).
-    const prem = S.premium ? `${streakCard()}
-      <a class="card review-link" href="#/review"><span class="ic" aria-hidden="true">🎯</span><span class="grow"><b>${L('Balikan ang mga mali', 'Go over your mistakes')}</b><span class="muted small">${L('Sagutan ulit ang mga namali mo at alamin ang pinakamahinang topic mo.', 'Answer your mistakes again and see your weakest topics.')}</span></span><span aria-hidden="true">›</span></a>` : '';
+    // "All exams" is at the top. The streak and "Go over your mistakes" cards are at the bottom, for every user
+    // since 1.39.0 (the streak builds a study habit; Home stays clean for every user).
+    const prem = `${streakCard()}
+      <a class="card review-link" href="#/review"><span class="ic" aria-hidden="true">🎯</span><span class="grow"><b>${L('Balikan ang mga mali', 'Go over your mistakes')}</b><span class="muted small">${L('Sagutan ulit ang mga namali mo at alamin ang pinakamahinang topic mo.', 'Answer your mistakes again and see your weakest topics.')}</span></span><span aria-hidden="true">›</span></a>`;
     shell('history', `
       <h1>${L('Mga resulta', 'Results')}</h1>
       ${fold('history-all', `<h2>${L('Lahat ng exam', 'All exams')}</h2>${list.length ? `<span class="pill">${list.length}</span>` : ''}`, list.length ? `<div class="list">${list.map(attemptRow).join('')}</div>` : `<div class="card empty">${L('Wala pang resulta.', 'No results yet.')}</div>`, { card: false, cls: 'top' })}
@@ -3753,7 +3786,7 @@
       keys: ['bulk_on', 'bulk_min', 'bulk_max', 'bulk_seat_days', 'bulk_tiers'] },
     { k: 'free', ic: '🆓', t: L('Libreng plan at ads', 'Free plan and ads'), kw: 'free libre limit ads adsense admob patalastas',
       d: L('Ang limit ng libreng plan (kapag naka-on ang Premium) at ang ads.', 'The free plan limits (when Premium is on) and ads.'),
-      keys: ['free_practice_daily', 'free_practice_items', 'free_mock_daily', 'free_sets', 'ads_on', 'adsense_client', 'adsense_slot', 'admob_banner'] },
+      keys: ['free_practice_daily', 'free_practice_items', 'free_mock_daily', 'free_sets', 'free_solutions_daily', 'free_full_trials', 'ads_on', 'adsense_client', 'adsense_slot', 'admob_banner'] },
     { k: 'exam', ic: '🔒', t: L('Exam at privacy', 'Exam and privacy'), kw: 'exam privacy ra 10173 babala warning screenshot',
       d: L('Ang makikita sa screen habang nag-e-exam.', 'What shows on the screen during an exam.'), keys: ['exam_privacy_strip'] },
     { k: 'server', ic: '🖥️', t: 'Server', kw: 'server capacity kapasidad render monitoring load',
@@ -3765,7 +3798,7 @@
     price_week: ['priceWeek'], plan_week_days: ['daysWeek'], price: ['price'], plan_days: ['days'], year_on: ['yearon', 'check'], price_year: ['priceYear'],
     plan_year_days: ['daysYear'], pay_online_on: ['payon', 'check'], pay_manual_on: ['payman', 'check'], pay_note: ['pnote'], biz_name: ['bizName', 'trim'],
     biz_contact: ['bizContact', 'trim'], bulk_on: ['bulkon', 'check'], bulk_min: ['bmin'], bulk_max: ['bmax'], bulk_seat_days: ['bdays'], bulk_tiers: ['btiers', 'trim'],
-    free_practice_daily: ['fdaily'], free_practice_items: ['fitems'], free_mock_daily: ['fmock'], free_sets: ['fsets'], ads_on: ['adson', 'check'],
+    free_practice_daily: ['fdaily'], free_practice_items: ['fitems'], free_mock_daily: ['fmock'], free_sets: ['fsets'], free_solutions_daily: ['fsol'], free_full_trials: ['ffull'], ads_on: ['adson', 'check'],
     adsense_client: ['asc', 'trim'], adsense_slot: ['ass', 'trim'], admob_banner: ['amb', 'trim'], exam_privacy_strip: ['stripon', 'check'], capacity_users: ['capUsers'],
   };
   // A check box is "on" unless the setting is '0' (ads are the other way: on only when '1').
@@ -3832,7 +3865,8 @@
       free: `<div class="sf-group"><h4>${L('Libreng plan (kapag naka-on ang Premium)', 'Free plan (when Premium is on)')}</h4>
         <div class="row">${num('free_practice_daily', L('Practice kada araw', 'Practice per day'), 'min="0"')}${num('free_practice_items', L('Tanong bawat practice', 'Questions per practice'), 'min="5"')}
         ${num('free_mock_daily', L('Mock exam kada araw', 'Mock exams per day'), 'min="0"')}${num('free_sets', L('Libreng exam set (Set 1 hanggang…)', 'Free exam sets (Set 1 to…)'), 'min="1"')}</div>
-        ${note(L('Laging libre ang Set 1 para sa lahat.', 'Set 1 is always free for everyone.'))}</div>
+        <div class="row">${num('free_solutions_daily', L('Buong solusyon kada araw', 'Full solutions per day'), 'min="0"')}${num('free_full_trials', L('Libreng buong mock exam (isang beses)', 'Free full-length mock exams (ever)'), 'min="0"')}</div>
+        ${note(L('Laging libre ang Set 1 para sa lahat. Pagkaubos ng buong solusyon sa araw na iyon, sagot at Quick Note na lang ang makikita, at naka-🔒 ang mga hakbang (Premium). Ang libreng buong mock exam ay ang buong Set 1 (170 o 165 tanong, buong oras), bilang na rin sa mock exam kada araw.', 'Set 1 is always free for everyone. After the day\'s full solutions, free users see the answer and the Quick Note, with the steps 🔒 (Premium). The free full-length mock exam is all of Set 1 (170 or 165 questions, full time) and counts toward the mock exams per day.'))}</div>
         <div class="sf-group"><h4>Ads</h4>
         ${check('ads_on', L('Magpakita ng ads sa libreng plan', 'Show ads on the free plan'), 'ads')}
         ${note(L('Hindi kailanman lalabas sa Premium, habang nag-e-exam o nagpa-practice, sa Account, Premium o Admin. Kapag wala pang ID, isang "Premium" card ang lalabas sa puwesto ng ad.', 'Never for Premium, never during an exam or practice, never on Account, Premium or Admin. Without IDs, a "Premium" card shows in the ad spot.'))}
@@ -4458,7 +4492,7 @@
   document.addEventListener('visibilitychange', () => { if (document.hidden) saveAnswers(); });
   window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); window._installPrompt = e; });
 
-  function applyMe(me) { S.user = me.user; S.config = me.config; S.premium = me.premium; S.practiceToday = me.practice_today || 0; S.mockToday = me.mock_today || 0; S.countDay = phDay(); Live.sync(); document.documentElement.classList.toggle('premium', !!S.premium);
+  function applyMe(me) { S.user = me.user; S.config = me.config; S.premium = me.premium; S.practiceToday = me.practice_today || 0; S.mockToday = me.mock_today || 0; S.solLeft = me.solutions_left || 0; S.fullLeft = me.full_trials_left || 0; S.countDay = phDay(); Live.sync(); document.documentElement.classList.toggle('premium', !!S.premium);
     if (window.cseDesktop && window.cseDesktop.updates) window.cseDesktop.updates.speed(!!S.premium); } // Windows app: Premium checks for updates more often
   async function refreshMe() {
     const me = await api('GET', '/api/me');

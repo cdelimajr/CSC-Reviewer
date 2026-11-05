@@ -189,6 +189,13 @@ th { color: var(--muted); font-weight: 600; font-size: 0.8125rem; }
 .ex-note { margin-top: 10px; padding: 8px 12px; border-left: 4px solid var(--accent); border-radius: 8px; background: var(--warn-soft); font-size: 0.9em; line-height: 1.5; }
 .ex-note-h { display: block; margin-bottom: 2px; color: var(--bad); }
 #printArea .ex-note { background: none; border-left: 2px solid #999; }
+/* Free plan: a locked solution (blurred steps + Premium offer) and the Premium offer cards */
+.ex-lock { display: grid; margin: 4px 0 2px; border-radius: 10px; overflow: hidden; }
+.ex-lock > * { grid-area: 1 / 1; }
+.ex-blur { padding: 8px 4px; filter: blur(6px); opacity: .3; user-select: none; line-height: 1.7; color: var(--muted); }
+.ex-lock-msg { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; padding: 8px; text-align: center; background: color-mix(in srgb, var(--card) 80%, transparent); }
+.upsell-card { border: 2px solid var(--accent); background: var(--warn-soft); }
+.full-trial { white-space: normal; text-align: left; }
 .flag-btn.on { background: var(--warn-soft); color: #9a6b00; }
 .navgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(42px, 1fr)); gap: 6px; }
 .navgrid button { height: 40px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); cursor: pointer; font-size: 0.8125rem; font-weight: 600; position: relative; }

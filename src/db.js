@@ -213,6 +213,11 @@ const db = {
       'ALTER TABLE users ADD COLUMN tour_done INTEGER NOT NULL DEFAULT 0',
       // Seconds spent on each subject during an exam (shown on the result).
       'ALTER TABLE attempts ADD COLUMN times TEXT',
+      // Free plan: how many questions of this exam (the first N) show the full step-by-step solution.
+      // Empty = all of them (Premium, admin, and exams from before 1.39.0).
+      'ALTER TABLE attempts ADD COLUMN sol_free INTEGER',
+      // Free plan: this was the one free full-length mock exam.
+      'ALTER TABLE attempts ADD COLUMN full_trial INTEGER NOT NULL DEFAULT 0',
       // Receipt: the Premium period a payment paid for.
       'ALTER TABLE payments ADD COLUMN period_from INTEGER',
       'ALTER TABLE payments ADD COLUMN period_to INTEGER',

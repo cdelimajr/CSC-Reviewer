@@ -152,9 +152,18 @@ const lastCode = (to) => {
   assert.equal(r.data.review_per_subject, 5);
   assert.ok(r.data.items.every((it) => !it.locked && it.question && it.explanation !== undefined), 'free mock: all 5 per subject have a review');
   assert.ok(r.data.items.every((it) => it.explanation.includes('Quick Note: ')), 'every reviewed question has a Quick Note');
+  // 10 full solutions a day on the free plan: the first 10 questions of this mock, then the answer and Quick Note only
+  assert.ok(r.data.items.slice(0, 10).every((it) => !it.ex_locked), 'first 10: full solution');
+  assert.ok(r.data.items.slice(10).every((it) => it.ex_locked && it.explanation.startsWith('Quick Note: ') && it.answer !== undefined), 'the rest: answer + Quick Note, steps locked');
+  let me = (await F('GET', '/api/me')).data;
+  assert.equal(me.solutions_left, 0, 'no free solutions left today');
+  assert.equal(me.full_trials_left, 1, 'one free full-length mock exam');
+  assert.equal(me.config.free.solutions_daily, 10);
+  assert.ok(me.config.prices && me.config.prices.month === 99, 'prices for the Premium offers');
   // Free practice: the first 5 questions have a review, the rest only the subject and letter
   r = await F('POST', '/api/attempts', { mode: 'practice', subject: 'verbal', count: 10 });
   assert.equal(r.data.items.length, 10);
+  assert.ok(r.data.items.every((it) => it.ex_locked && !/Step 1:/.test(it.explanation)), 'practice after the daily solutions: steps locked');
   r = await F('POST', `/api/attempts/${r.data.id}/submit`, { answers: {} });
   assert.equal(r.data.lite, true, 'free practice review is short');
   assert.equal(r.data.items.filter((it) => !it.locked && it.question).length, 5, 'review of 5 questions per subject');
@@ -163,6 +172,21 @@ const lastCode = (to) => {
   assert.equal((await F('GET', `/api/attempts/${fid}`)).data.lite, true);
   assert.equal((await F('POST', `/api/attempts/${fid}/email`, {})).status, 402, 'email of the full review is Premium');
   assert.equal((await A('GET', `/api/attempts/${fid}`)).data.lite, undefined, 'admin sees the full review');
+  assert.ok((await A('GET', `/api/attempts/${fid}`)).data.items.every((it) => !it.ex_locked), 'admin sees every solution');
+  // One free full-length mock exam per account (all of Set 1, full time)
+  const G = client();
+  await G('POST', '/api/auth/register', { name: 'Trial', email: 'trial@test.ph', password: 'password123' });
+  await G('POST', '/api/auth/verify', { code: lastCode('trial@test.ph') });
+  r = await G('POST', '/api/attempts', { mode: 'pro', set_id: s1.id, full: true });
+  assert.equal(r.status, 200, 'free full-length mock exam');
+  assert.equal(r.data.items.length, 170, 'all 170 questions');
+  assert.equal(r.data.time_limit_sec, 190 * 60, 'full time');
+  assert.equal(r.data.full_trial, true);
+  assert.equal((await G('GET', '/api/me')).data.full_trials_left, 0, 'the free full exam is used');
+  await A('PUT', '/api/admin/settings', { free_mock_daily: '5' });
+  assert.equal((await G('POST', '/api/attempts', { mode: 'pro', set_id: s1.id, full: true })).status, 402, 'only once');
+  assert.equal((await G('POST', '/api/attempts', { mode: 'pro', set_id: s1.id })).data.items.length, 20, 'the mini mock still works');
+  await A('PUT', '/api/admin/settings', { free_mock_daily: '1' });
   assert.equal((await U('GET', '/api/offline/pack')).status, 402, 'offline is Premium only');
   // App installers (latest GitHub Release, faked here): only .apk and .exe, only for paid users
   const releases = require('../src/releases');
@@ -707,7 +731,7 @@ const lastCode = (to) => {
 
   // Admin
   assert.equal((await U('GET', '/api/admin/users')).status, 403, 'user blocked from admin');
-  r = await A('GET', '/api/admin/overview'); assert.ok(r.data.sales30d > 0 && r.data.sales7d === r.data.sales30d && r.data.paid30d > 0, 'sales on the overview'); assert.equal(typeof r.data.expiring7d, 'number'); assert.equal(r.data.users, 8); assert.equal(r.data.premiumUsers, 6); // Ana got Premium with a promo code; Boss, Gina, Gabo and Gelo with Group Premium
+  r = await A('GET', '/api/admin/overview'); assert.ok(r.data.sales30d > 0 && r.data.sales7d === r.data.sales30d && r.data.paid30d > 0, 'sales on the overview'); assert.equal(typeof r.data.expiring7d, 'number'); assert.equal(r.data.users, 9); assert.equal(r.data.premiumUsers, 6); // 9 users (with "Trial", the free full-exam test). Ana got Premium with a promo code; Boss, Gina, Gabo and Gelo with Group Premium
   r = await A('POST', '/api/admin/sets', { mode: 'subpro' }); assert.equal(r.data.number, 4);
   r = await A('POST', '/api/admin/questions', { subject: 'general', topic: 'Test', question: 'Q?', choices: ['a', 'b', 'c', 'd'], answer: 2 });
   assert.ok(r.data.id);
