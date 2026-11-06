@@ -100,6 +100,17 @@ const lastCode = (to) => {
   // Exam sets (newest first) and mock exams
   r = await U('GET', '/api/sets?mode=pro');
   assert.equal(r.data.length, 3); assert.equal(r.data[0].number, 3, 'newest first');
+  // 🆕 Each set has its own questions: Set 2 uses none of Set 1's written (bank) questions
+  {
+    const { textKey } = require('../src/exam');
+    for (const mode of ['pro', 'subpro']) {
+      const rows = await require('../src/db').all('SELECT number, items FROM exam_sets WHERE mode = ? AND number <= 2 ORDER BY number', mode);
+      const bankKeys = (row) => JSON.parse(row.items).filter((it) => it.qid).map(textKey);
+      const one = new Set(bankKeys(rows[0]));
+      assert.ok(bankKeys(rows[1]).length > 20, mode + ': sets have written questions');
+      assert.equal(bankKeys(rows[1]).filter((k) => one.has(k)).length, 0, mode + ': Set 2 has other questions than Set 1');
+    }
+  }
   // Set 1 always exists: it cannot be deleted, and if it is missing it is made again
   const set1 = r.data.find((x) => x.number === 1);
   assert.equal((await A('DELETE', '/api/admin/sets/' + set1.id)).status, 400, 'Set 1 cannot be deleted');
@@ -110,6 +121,26 @@ const lastCode = (to) => {
   r = await U('POST', '/api/attempts', { mode: 'pro', set_id: r.data[0].id });
   assert.equal(r.data.items.length, 170); assert.ok(r.data.title.includes('Set 3'));
   assert.ok(r.data.items.every((i) => i.choices.length === 4 && i.answer === undefined), 'answers hidden');
+  // 🔀 Each time a set is taken: the same questions in a new order. Subjects keep their place (like the
+  // sections of the real exam) and the questions of one reading passage stay together.
+  {
+    const sid = (await U('GET', '/api/sets?mode=pro')).data[0].id;
+    const t1 = r.data.items, t2 = (await U('POST', '/api/attempts', { mode: 'pro', set_id: sid })).data.items;
+    const k = (it) => `${it.subject}|${it.question}|${it.passage}|${[...it.choices].sort().join('|')}`;
+    assert.deepEqual(t1.map(k).sort(), t2.map(k).sort(), 'a set has the same questions each time');
+    assert.notDeepEqual(t1.map(k), t2.map(k), 'in a new order each time');
+    assert.notDeepEqual(t1.map((it) => it.choices.join('|')), t2.map((it) => it.choices.join('|')), 'and the choices too');
+    const runs = (t) => t.filter((it, i) => i === 0 || it.subject !== t[i - 1].subject).map((it) => it.subject);
+    assert.deepEqual(runs(t1), ['verbal', 'analytical', 'numerical', 'general'], 'subjects keep their place');
+    assert.deepEqual(runs(t2), runs(t1));
+    for (const t of [t1, t2]) {
+      const started = new Set();
+      t.forEach((it, i) => {
+        if (!it.passage || (i > 0 && t[i - 1].passage === it.passage)) return;
+        assert.ok(!started.has(it.passage), 'passage questions stay together'); started.add(it.passage);
+      });
+    }
+  }
   for (const [mode, n] of [['pro', 170], ['subpro', 165]]) {
     r = await U('POST', '/api/attempts', { mode });
     assert.equal(r.data.items.length, n, mode + ' item count');
@@ -123,6 +154,14 @@ const lastCode = (to) => {
   assert.ok(mail.outbox.some((m) => m.to === 'juan@test.ph' && m.subject.startsWith('Resulta')), 'result email sent');
   r = await U('POST', '/api/attempts', { mode: 'practice', subject: 'general', count: 20 });
   assert.equal(r.data.items.length, 20);
+  // Practice and "Bagong halo": the questions seen lately come last
+  {
+    const { buildExam, textKey } = require('../src/exam');
+    const p1 = (await buildExam('practice', { subject: 'general', count: 20 })).items;
+    const avoid = new Map(p1.map((it) => [textKey(it), 1]));
+    const p2 = (await buildExam('practice', { subject: 'general', count: 20, avoid })).items;
+    assert.equal(p2.filter((it) => avoid.has(textKey(it))).length, 0, 'practice: questions seen lately come last');
+  }
 
   // Premium: turn on, user blocked from mock exams, pays, admin approves
   await A('PUT', '/api/admin/settings', { premium_required: '1', price: '99', plan_days: '30', pay_number: '09171234567' });
@@ -583,6 +622,14 @@ const lastCode = (to) => {
   // A set deleted after it was saved on the device: the result is kept with the questions the user saw.
   r = await U('POST', '/api/offline/sync', { attempts: [{ client_id: 'Ltest4', mode: 'pro', set_id: 999999, title: 'Professional Mock Exam · Set 9', items: set.items, answers: {}, started_at: Date.now() - 6e5, finished_at: Date.now() }] });
   assert.ok(r.data.saved.Ltest4, 'result of a deleted set is still saved');
+  // A set shown on the device in its own order (1.44.0): graded with the questions as the user saw them.
+  {
+    const moved = [...set.items].reverse().map((it) => ({ ...it, choices: [...it.choices].reverse(), answer: 3 - it.answer }));
+    r = await U('POST', '/api/offline/sync', { attempts: [{ client_id: 'Ltest4b', mode: 'pro', set_id: set.id, title: set.title, items: moved,
+      answers: Object.fromEntries(moved.map((it, i) => [i, it.answer])), started_at: Date.now() - 6e5, finished_at: Date.now() }] });
+    const a = (await U('GET', `/api/attempts/${r.data.saved.Ltest4b}`)).data;
+    assert.equal(a.score, set.items.length, 'offline set in a new order: all right'); assert.ok(a.title.includes('Set'));
+  }
   // Premium ended before the device came back online: results made while it was Premium are still saved.
   const juanRow = await require('../src/db').get('SELECT id, premium_until FROM users WHERE email = ?', 'juan@test.ph');
   await require('../src/db').run('UPDATE users SET premium_until = ? WHERE id = ?', Date.now() - 60e3, juanRow.id);
@@ -773,6 +820,26 @@ const lastCode = (to) => {
   assert.equal((await U('GET', '/api/admin/users')).status, 403, 'user blocked from admin');
   r = await A('GET', '/api/admin/overview'); assert.ok(r.data.sales30d > 0 && r.data.sales7d === r.data.sales30d && r.data.paid30d > 0, 'sales on the overview'); assert.equal(typeof r.data.expiring7d, 'number'); assert.equal(r.data.users, 14); assert.equal(r.data.premiumUsers, 6); // 14 users (with "Trial", the free full-exam test, and 5 free accounts of the per-device test). Ana got Premium with a promo code; Boss, Gina, Gabo and Gelo with Group Premium
   r = await A('POST', '/api/admin/sets', { mode: 'subpro' }); assert.equal(r.data.number, 4);
+  // 🔄 New questions for a set: Set 1 is never changed; the newest set gets new questions when the bank changes
+  {
+    const db = require('../src/db'), sets = require('../src/sets');
+    const all = (await A('GET', '/api/admin/sets')).data.filter((x) => x.mode === 'pro');
+    const one = all.find((x) => x.number === 1), newest = all.reduce((a, b) => (b.number > a.number ? b : a));
+    assert.equal((await U('POST', `/api/admin/sets/${newest.id}/refresh`)).status, 403, 'admin only');
+    assert.equal((await A('POST', `/api/admin/sets/${one.id}/refresh`)).status, 400, 'Set 1 is never changed');
+    const items = async (id) => (await db.get('SELECT items FROM exam_sets WHERE id = ?', id)).items;
+    const oneBefore = await items(one.id), before = await items(newest.id);
+    r = await A('POST', `/api/admin/sets/${newest.id}/refresh`);
+    assert.equal(r.status, 200); assert.ok(r.data.updated_at);
+    assert.notEqual(await items(newest.id), before, 'the set has new questions');
+    assert.ok((await U('GET', '/api/sets?mode=pro')).data.find((x) => x.id === newest.id).updated_at, 'users see when it got new questions');
+    assert.equal((await sets.refreshLatest()).length, 0, 'nothing to do: the bank did not change since');
+    await sets.bankChanged(Date.now() + 1000);
+    const done = await sets.refreshLatest();
+    assert.deepEqual(done.map((x) => x.mode).sort(), ['pro', 'subpro'], 'bank changed: the newest set of each level gets new questions');
+    assert.equal(await items(one.id), oneBefore, 'Set 1 stays the same');
+    assert.equal((await sets.refreshLatest()).length, 0, 'only once per change');
+  }
   r = await A('POST', '/api/admin/questions', { subject: 'general', topic: 'Test', question: 'Q?', choices: ['a', 'b', 'c', 'd'], answer: 2 });
   assert.ok(r.data.id);
   r = await A('POST', '/api/admin/questions/import', [{ subject: 'numerical', question: 'Q2?', choices: ['1', '2', '3', '4'], answer: 0 }, { subject: 'bad' }]);
