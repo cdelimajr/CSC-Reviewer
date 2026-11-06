@@ -7,7 +7,7 @@ const db = require('./db');
 const { seed } = require('./seed');
 const explain = require('./explain');
 const { SUBJECTS, EXAMS } = require('./blueprint');
-const { buildExam, grade } = require('./exam');
+const { buildExam, grade, takeOrder, textKey } = require('./exam');
 const mail = require('./mail');
 const sets = require('./sets');
 const paymongo = require('./paymongo');
@@ -700,11 +700,13 @@ app.post('/api/attempts', auth, verified, wrap(async (req, res) => {
   } else if (mode !== 'practice' && req.body.set_id) {
     const set = await db.get('SELECT * FROM exam_sets WHERE id = ? AND mode = ?', Number(req.body.set_id), mode);
     if (!set) return res.status(404).json({ error: 'Hindi makita ang exam set.' });
-    ex = { title: set.title, items: JSON.parse(set.items), timeLimitSec: EXAMS[mode].minutes * 60 };
+    // Same questions as the set, in a new order each time (topics, questions and choices).
+    ex = { title: set.title, items: takeOrder(JSON.parse(set.items)), timeLimitSec: EXAMS[mode].minutes * 60 };
     setId = set.id;
     if (!premium && !fullTrial) ex = freeMock(ex, mode, free.mock_per_subject);
   } else {
-    ex = await buildExam(mode, opts);
+    // Practice and "Bagong halo": questions the user saw in the last few exams come last, so each one is different.
+    ex = await buildExam(mode, { ...opts, avoid: await recentKeys(req.user.id) });
   }
   if (!ex.items.length) return res.status(400).json({ error: 'Wala pang tanong para dito.' });
   // Free plan: this exam's share of today's full solutions (the first N questions).
@@ -713,6 +715,15 @@ app.post('/api/attempts', auth, verified, wrap(async (req, res) => {
     req.user.id, mode, ex.title, JSON.stringify(ex.items), ex.timeLimitSec, Date.now(), ex.items.length, setId, solFree, fullTrial ? 1 : 0, dev);
   res.json(attemptView(await db.get('SELECT * FROM attempts WHERE id = ?', r.lastInsertRowid), true, false, !premium));
 }));
+
+// The questions in the user's last few exams and practice (newest RECENT_ATTEMPTS).
+const RECENT_ATTEMPTS = 8;
+async function recentKeys(userId) {
+  const rows = await db.all('SELECT items FROM attempts WHERE user_id = ? ORDER BY started_at DESC LIMIT ?', userId, RECENT_ATTEMPTS);
+  const keys = new Map(); // question -> how many of these exams had it
+  for (const r of rows) { try { JSON.parse(r.items).forEach((it) => { const k = textKey(it); keys.set(k, (keys.get(k) || 0) + 1); }); } catch { /* skip */ } }
+  return keys;
+}
 
 // Free plan mock exam: the first few questions of each subject of the set, with the time cut to match
 // (same pace per question as the full exam).
@@ -757,7 +768,7 @@ app.get('/api/review', auth, verified, wrap(async (req, res) => {
 
 app.get('/api/sets', auth, verified, wrap(async (req, res) => {
   const mode = EXAMS[req.query.mode] ? req.query.mode : 'pro';
-  const rows = await db.all(`SELECT s.id, s.number, s.title, s.created_at,
+  const rows = await db.all(`SELECT s.id, s.number, s.title, s.created_at, s.updated_at,
       (SELECT COUNT(*) FROM attempts a WHERE a.set_id = s.id AND a.user_id = ? AND a.finished_at IS NOT NULL) AS taken,
       (SELECT MAX(score * 100.0 / total) FROM attempts a WHERE a.set_id = s.id AND a.user_id = ? AND a.finished_at IS NOT NULL) AS best
     FROM exam_sets s WHERE s.mode = ? ORDER BY s.number DESC`, req.user.id, req.user.id, mode);
@@ -934,7 +945,10 @@ app.post('/api/offline/sync', auth, verified, wrap(async (req, res) => {
       limit = EXAMS[mode].minutes * 60;
       const set = x.set_id ? await db.get('SELECT * FROM exam_sets WHERE id = ? AND mode = ?', Number(x.set_id), mode) : null;
       if (set) {
-        items = JSON.parse(set.items); title = set.title; setId = set.id;
+        // The device shows a set in its own new order (1.44.0), and the newest set may have new questions since it
+        // was saved on the device: keep the questions as the user saw them. Older apps that send no questions
+        // are graded with the set as saved on the server.
+        items = offlineItems(x.items, EXAMS[mode].items) || JSON.parse(set.items); title = set.title; setId = set.id;
       } else if (x.set_id) {
         // The set was deleted by the admin after it was saved on the device: keep the result with the questions the user saw.
         items = offlineItems(x.items, EXAMS[mode].items);
@@ -1592,7 +1606,7 @@ app.put('/api/admin/pay-qr/:id', admin, wrap(async (req, res) => {
 }));
 
 app.get('/api/admin/sets', admin, wrap(async (req, res) => {
-  res.json(await db.all(`SELECT s.id, s.mode, s.number, s.title, s.created_at,
+  res.json(await db.all(`SELECT s.id, s.mode, s.number, s.title, s.created_at, s.updated_at,
     (SELECT COUNT(*) FROM attempts a WHERE a.set_id = s.id AND a.finished_at IS NOT NULL) AS taken
     FROM exam_sets s ORDER BY s.mode, s.number DESC`));
 }));
@@ -1600,6 +1614,15 @@ app.post('/api/admin/sets', admin, wrap(async (req, res) => {
   if (!EXAMS[req.body.mode]) return res.status(400).json({ error: 'Piliin ang Professional o Subprofessional.' });
   const made = await sets.createSet(req.body.mode);
   await audit.log(req, 'admin_set_new', { detail: `${req.body.mode} Set ${made.number}` });
+  res.json(made);
+}));
+// New questions for one set (same number). Set 1 stays as it is (it is the free set on everyone's Home).
+app.post('/api/admin/sets/:id/refresh', admin, wrap(async (req, res) => {
+  const set = await db.get('SELECT * FROM exam_sets WHERE id = ?', Number(req.params.id));
+  if (!set) return res.status(404).json({ error: 'Hindi makita ang exam set.' });
+  if (set.number === 1) return res.status(400).json({ error: 'Hindi binabago ang Set 1. Ito ang libreng set na nasa Home ng lahat.' });
+  const made = await sets.refreshSet(set);
+  await audit.log(req, 'admin_set_refresh', { detail: `${set.mode} Set ${set.number}` });
   res.json(made);
 }));
 app.delete('/api/admin/sets/:id', admin, wrap(async (req, res) => {
@@ -1639,11 +1662,22 @@ app.get('/api/admin/questions', admin, wrap(async (req, res) => {
   res.json({ total, page, rows: rows.map((r) => ({ ...r, choices: JSON.parse(r.choices) })) });
 }));
 
+// The admin changed the questions: the newest set of each level gets the new questions a minute after the
+// last change (so a run of edits makes the set only once), or at the hourly check.
+let refreshT = null;
+async function bankEdited() {
+  await sets.bankChanged();
+  clearTimeout(refreshT);
+  refreshT = setTimeout(() => sets.refreshLatest().catch((e) => console.error('Exam set error:', e)), 60e3);
+  refreshT.unref?.();
+}
+
 app.post('/api/admin/questions', admin, wrap(async (req, res) => {
   const err = validQuestion(req.body);
   if (err) return res.status(400).json({ error: err });
   const r = await db.run(`INSERT INTO questions (subject, topic, level, question, choices, answer, explanation, passage, source) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'admin')`, ...qParams(req.body));
   await audit.log(req, 'admin_question_add', { detail: `#${r.lastInsertRowid} ${req.body.subject}` });
+  await bankEdited();
   res.json({ id: r.lastInsertRowid });
 }));
 
@@ -1653,6 +1687,7 @@ app.put('/api/admin/questions/:id', admin, wrap(async (req, res) => {
   await db.run(`UPDATE questions SET subject = ?, topic = ?, level = ?, question = ?, choices = ?, answer = ?, explanation = ?, passage = ?, source = 'admin' WHERE id = ?`,
     ...qParams(req.body), Number(req.params.id));
   await audit.log(req, 'admin_question_edit', { detail: `#${Number(req.params.id)}` });
+  await bankEdited();
   res.json({ ok: true });
 }));
 
@@ -1660,6 +1695,7 @@ app.delete('/api/admin/questions/:id', admin, wrap(async (req, res) => {
   // Hide instead of hard delete, so a bank update does not bring it back.
   await db.run(`UPDATE questions SET active = 0, source = 'admin' WHERE id = ?`, Number(req.params.id));
   await audit.log(req, 'admin_question_hide', { detail: `#${Number(req.params.id)}` });
+  await bankEdited();
   res.json({ ok: true });
 }));
 
@@ -1674,7 +1710,7 @@ app.post('/api/admin/questions/import', admin, wrap(async (req, res) => {
     if (err) errors.push(`#${i + 1}: ${err}`); else { stmts.push([INS, qParams(b)]); added++; }
   });
   for (let i = 0; i < stmts.length; i += 200) await db.batch(stmts.slice(i, i + 200));
-  if (added) await audit.log(req, 'admin_question_import', { detail: `${added} tanong` });
+  if (added) { await audit.log(req, 'admin_question_import', { detail: `${added} tanong` }); await bankEdited(); }
   res.json({ added, errors: errors.slice(0, 20) });
 }));
 
@@ -1827,7 +1863,12 @@ app.use((err, req, res, next) => {
 app.ready = (async () => {
   await db.init();
   const seeded = await seed();
-  if (seeded) console.log(`Loaded ${seeded} built-in questions.`);
+  if (seeded) { console.log(`Loaded ${seeded} built-in questions.`); await sets.bankChanged(); }
+  // 1.44.0: once, give the newest set of each level fresh questions that are not in the other sets.
+  if (!(await db.get(`SELECT value FROM meta WHERE key = 'mig:sets_distinct'`))) {
+    await sets.bankChanged();
+    await db.run(`INSERT INTO meta (key, value) VALUES ('mig:sets_distinct', '1') ON CONFLICT(key) DO NOTHING`);
+  }
   await createAdminFromEnv();
   await sets.ensureSets();
   // 1.26.0: the free plan's practice went from up to 20 questions to up to 10. Once, move a saved 20 (the old default) to 10.

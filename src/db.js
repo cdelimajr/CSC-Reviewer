@@ -237,6 +237,8 @@ const db = {
       // Free plan limits per device (1.40.0): a hash of the device's random app ID (never the ID itself),
       // so a second free account on the same phone or computer does not get a new free allowance.
       'ALTER TABLE attempts ADD COLUMN device TEXT',
+      // Exam sets (1.44.0): when the questions of the set were last made again (the newest set gets new questions).
+      'ALTER TABLE exam_sets ADD COLUMN updated_at INTEGER',
     ]) {
       try { await client.execute(sql); } catch (e) { if (!/duplicate column/i.test(e.message)) throw e; }
     }

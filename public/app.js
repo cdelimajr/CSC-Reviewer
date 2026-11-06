@@ -3,7 +3,7 @@
   'use strict';
   const $app = document.getElementById('app');
   const LETTERS = ['A', 'B', 'C', 'D'];
-  const APP_VERSION = '1.43.0'; // keep in step with package.json and docs/DOKUMENTASYON.md
+  const APP_VERSION = '1.44.0'; // keep in step with package.json and docs/DOKUMENTASYON.md
   const S = { user: null, meta: null, exam: null, timer: null, saveT: null };
 
   /* ---------------- helpers ---------------- */
@@ -929,6 +929,24 @@
   const go = (hash) => { if (location.hash === hash) route(); else location.hash = hash; };
   function stopTimer() { clearInterval(S.timer); S.timer = null; }
   const shuffle = (arr) => { const a = arr.slice(); for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; };
+  // An exam set in a new order each time it is taken (same as takeOrder in src/exam.js): each subject keeps its
+  // place, the topics, the questions in each topic and the choices are shuffled, and a passage's questions stay together.
+  function takeOrder(items) {
+    const out = [];
+    for (const subject of [...new Set(items.map((it) => it.subject))]) {
+      const units = [];
+      for (const it of items.filter((x) => x.subject === subject)) {
+        const last = units[units.length - 1];
+        if (it.passage && last && last[0].passage === it.passage) last.push(it); else units.push([it]);
+      }
+      const topics = shuffle([...new Set(units.map((u) => u[0].topic))]);
+      topics.flatMap((t) => shuffle(units.filter((u) => u[0].topic === t))).forEach((u) => u.forEach((it) => {
+        const correct = it.choices[it.answer], choices = shuffle(it.choices);
+        out.push({ ...it, choices, answer: choices.indexOf(correct) });
+      }));
+    }
+    return out;
+  }
   function gradeLocal(items, answers) {
     const breakdown = {}; let score = 0;
     items.forEach((it, i) => {
@@ -1774,13 +1792,13 @@
       const row = (x) => `
         <div class="list-item${x.number === 1 ? ' set-one' : ''}">
           <div class="grow"><div class="row" style="gap:6px"><b>Set ${x.number}</b>${x.number === newest ? `<span class="pill ok">${L('Pinakabago', 'Newest')}</span>` : ''}${x.number === 1 ? `<span class="pill">${L('Simulan dito', 'Start here')}</span>` : ''}${free && !x.locked ? `<span class="pill">${L('Libre', 'Free')}</span>` : ''}</div>
-          <div class="muted small">${L('Inilabas', 'Released')} ${new Date(x.created_at).toLocaleDateString('en-PH', { year: 'numeric', month: 'short', day: 'numeric' })}${x.taken ? L(` · Nasubukan ${x.taken}x · Best ${x.best}%`, ` · Taken ${x.taken}x · Best ${x.best}%`) : ''}${local && saved.some((y) => y.id === x.id) ? L(' · ⚡ Naka-save sa device', ' · ⚡ Saved on device') : ''}</div></div>
+          <div class="muted small">${L('Inilabas', 'Released')} ${new Date(x.created_at).toLocaleDateString('en-PH', { year: 'numeric', month: 'short', day: 'numeric' })}${x.updated_at ? L(' · Bagong tanong ', ' · New questions ') + new Date(x.updated_at).toLocaleDateString('en-PH', { month: 'short', day: 'numeric' }) : ''}${x.taken ? L(` · Nasubukan ${x.taken}x · Best ${x.best}%`, ` · Taken ${x.taken}x · Best ${x.best}%`) : ''}${local && saved.some((y) => y.id === x.id) ? L(' · ⚡ Naka-save sa device', ' · ⚡ Saved on device') : ''}</div></div>
           <button class="btn small ${x.locked ? 'secondary' : ''}" data-set="${x.id}" data-locked="${x.locked ? 1 : ''}" ${usedUp && !x.locked ? 'disabled' : ''}>${x.locked ? '🔒 Premium' : x.taken ? L('Ulitin', 'Retake') : L('Simulan', 'Start')}</button>
         </div>`;
       shell('home', `
       <p class="small" style="margin:0"><a href="#/">‹ Home</a></p>
       <div class="row" style="gap:10px;flex-wrap:nowrap"><h1 style="margin:8px 0 4px">${esc(e.title.replace(' Mock Exam', ''))}</h1>${showLevel() ? levelChip(mode, 'big') : ''}</div>
-      <p class="muted" style="margin-top:0">${L(`${e.items} tanong · ${fmtDur(e.minutes)} · Passing ${e.passing}%. Pumili ng exam set, mula pinakabago hanggang pinakaluma.`, `${e.items} questions · ${fmtDur(e.minutes)} · Passing ${e.passing}%. Choose an exam set, newest first.`)}</p>
+      <p class="muted" style="margin-top:0">${L(`${e.items} tanong · ${fmtDur(e.minutes)} · Passing ${e.passing}%. Pumili ng exam set, mula pinakabago hanggang pinakaluma. Iba-iba ang tanong ng bawat set, at iba ang ayos ng tanong at pagpipilian tuwing sasagutan.`, `${e.items} questions · ${fmtDur(e.minutes)} · Passing ${e.passing}%. Choose an exam set, newest first. Each set has its own questions, and the order of questions and choices changes every time you take it.`)}</p>
       ${free ? `<div class="notice" style="margin:12px 0">${L(`🔓 Libre ang <b>Set ${S.config.free.sets > 1 ? '1 hanggang ' + S.config.free.sets : '1'}</b> para masubukan mo. Para sa lahat ng set, Bagong halo, at offline na paggamit, <a href="#/premium">kumuha ng Premium →</a>`,
         `🔓 <b>Set ${S.config.free.sets > 1 ? '1 to ' + S.config.free.sets : '1'}</b> is free so you can try it. For all sets, New mix, and offline use, <a href="#/premium">get Premium →</a>`)}
         ${usedUp ? `<br><b>${L('Nagamit mo na ang libreng mock exam ngayong araw.', 'You have used today\'s free mock exam.')}</b> ${L('Bumalik bukas.', 'Come back tomorrow.')}` : ''}</div>` : ''}
@@ -2448,7 +2466,7 @@
     } else if (opts.set_id) {
       const set = p.sets.find((x) => x.id === opts.set_id);
       if (!set) return false;
-      items = set.items; title = set.title; setId = set.id; limit = S.meta.exams[mode].minutes * 60;
+      items = takeOrder(set.items); title = set.title; setId = set.id; limit = S.meta.exams[mode].minutes * 60;
     } else {
       // "Bagong halo": a new random mock exam from the saved questions, section by section like the real exam.
       const e = S.meta.exams[mode];
@@ -3838,12 +3856,19 @@
     const rows = (await api('GET', '/api/admin/sets')).filter((r) => !Undo.waiting('set:' + r.id)); // deleted ones on the Undo bar are left out
     const by = (m) => rows.filter((r) => r.mode === m);
     // Professional and Subprofessional each open and close (drop down / up). They stay open while the admin works.
-    el.innerHTML = `<p class="muted small">${L('Awtomatikong may bagong set bawat linggo. Pwede ka ring gumawa ng bagong set ngayon. Laging naka-on ang Set 1 (libre at nasa Home ng lahat).', 'A new set is made every week by itself. You can also make a new set now. Set 1 is always on (free and on everyone\'s Home).')}</p>
+    el.innerHTML = `<p class="muted small">${L('Awtomatikong may bagong set bawat linggo, at iba-iba ang tanong ng bawat set. Kapag nagdagdag, nag-edit, nagtago o nag-import ka ng tanong, kusang nagkakaroon ng bagong tanong ang pinakabagong set (mga 1 minuto pagkatapos). Pwede ka ring gumawa ng bagong set, o bigyan ng bagong tanong ang isang set (↻). Laging naka-on at hindi binabago ang Set 1 (libre at nasa Home ng lahat).', 'A new set is made every week by itself, and each set has its own questions. When you add, edit, hide or import questions, the newest set gets new questions by itself (about 1 minute later). You can also make a new set, or give one set new questions (↻). Set 1 is always on and never changed (free and on everyone\'s Home).')}</p>
       <div class="stack">${['pro', 'subpro'].map((m) => fold('adm-sets-' + m, `<h3>${m === 'pro' ? 'Professional' : 'Subprofessional'}</h3><span class="pill">${by(m).length} set</span>`, `
         <button class="btn small" data-new="${m}">+ ${L('Bagong set', 'New set')}</button>
-        <div class="list" style="margin-top:8px">${by(m).map((r) => `<div class="list-item"><div class="grow"><b>Set ${r.number}</b><div class="muted small">${fmtDate(r.created_at)} · ${L(`${r.taken} beses nasubukan`, `taken ${r.taken} time(s)`)}</div></div>${r.number === 1 ? `<span class="pill" title="${L('Libreng set na nasa Home ng lahat. Hindi ito nabubura.', 'The free set on everyone\'s Home. It cannot be deleted.')}">${L('Laging naka-on', 'Always on')}</span>` : `<button class="btn ghost small" data-del="${r.id}">${L('Burahin', 'Delete')}</button>`}</div>`).join('') || `<p class="muted small">${L('Wala pang set.', 'No sets yet.')}</p>`}</div>`, { stay: true })).join('')}</div>`;
+        <div class="list" style="margin-top:8px">${by(m).map((r) => `<div class="list-item"><div class="grow"><b>Set ${r.number}</b><div class="muted small">${fmtDate(r.created_at)}${r.updated_at ? L(' · bagong tanong ', ' · new questions ') + fmtDate(r.updated_at) : ''} · ${L(`${r.taken} beses nasubukan`, `taken ${r.taken} time(s)`)}</div></div>${r.number === 1 ? `<span class="pill" title="${L('Libreng set na nasa Home ng lahat. Hindi ito nabubura.', 'The free set on everyone\'s Home. It cannot be deleted.')}">${L('Laging naka-on', 'Always on')}</span>` : `<button class="btn ghost small" data-refresh="${r.id}" title="${L('Bagong tanong para sa set na ito', 'New questions for this set')}" aria-label="${L('Bagong tanong para sa set na ito', 'New questions for this set')}">↻</button><button class="btn ghost small" data-del="${r.id}">${L('Burahin', 'Delete')}</button>`}</div>`).join('') || `<p class="muted small">${L('Wala pang set.', 'No sets yet.')}</p>`}</div>`, { stay: true })).join('')}</div>`;
     foldSync();
     $$('[data-new]', el).forEach((b) => (b.onclick = async () => { b.disabled = true; try { const r = await api('POST', '/api/admin/sets', { mode: b.dataset.new }); toast(L(`Nagawa ang Set ${r.number}.`, `Set ${r.number} made.`)); await admSets(el); } catch (e) { toast(e.message); b.disabled = false; } }));
+    // New questions for one set (same number). Results already taken keep the questions they had.
+    $$('[data-refresh]', el).forEach((b) => (b.onclick = async () => {
+      const r = rows.find((x) => String(x.id) === b.dataset.refresh);
+      if (!(await confirmBox(L(`Bagong tanong para sa Set ${r.number}?`, `New questions for Set ${r.number}?`), L('Papalitan ang mga tanong ng set na ito ng mga tanong na wala sa ibang set. Hindi magbabago ang mga resulta ng mga nakasubok na.', 'The questions of this set are replaced with questions that are not in the other sets. Results of those who took it do not change.'), L('Palitan', 'Replace')))) return;
+      b.disabled = true;
+      try { await api('POST', `/api/admin/sets/${r.id}/refresh`); toast(L(`May bagong tanong na ang Set ${r.number}.`, `Set ${r.number} has new questions.`)); await admSets(el); } catch (e) { toast(e.message); b.disabled = false; }
+    }));
     // Delete: gone from the list at once, sent to the server after Undo's 10 seconds.
     $$('[data-del]', el).forEach((b) => (b.onclick = () => {
       const r = rows.find((x) => String(x.id) === b.dataset.del);
@@ -4352,8 +4377,8 @@
       <div class="stack">
       ${Q('mock', L('Paano mag-mock exam?', 'How do I take a mock exam?'), L(`<ol><li>Sa <a href="#/">Home</a>, piliin ang <b>PRO</b> (Professional) o <b>SUBPRO</b> (Subprofessional).</li><li>Pindutin ang <b>▶ Simulan ang Set 1</b>, o <b>Lahat ng exam set</b> para pumili ng ibang set o <b>Bagong halo</b>.</li><li>Parang papel ang exam: <b>i-swipe</b> pakaliwa o pakanan (o pindutin ang nakatiklop na kanto) para ilipat ang pahina. <b>☰ Lahat</b> para makita ang lahat ng tanong, <b>⚑</b> (kanang itaas ng papel) para markahan at balikan, at <b>Isumite ✓</b> kapag tapos na.</li></ol>Tuloy-tuloy ang timer kahit isara ang app, pero naka-save ang mga sagot mo. Ituloy ito mula sa Home.`,
         `<ol><li>On <a href="#/">Home</a>, choose <b>PRO</b> (Professional) or <b>SUBPRO</b> (Subprofessional).</li><li>Tap <b>▶ Start Set 1</b>, or <b>All exam sets</b> to pick another set or <b>New mix</b>.</li><li>The exam is like a paper test: <b>swipe</b> left or right (or tap the folded corner) to turn the page. <b>☰ All</b> shows every question, <b>⚑ Mark</b> (top right of the paper) marks one to come back to, and <b>Submit ✓</b> when you are done.</li></ol>The timer keeps running even if you close the app, but your answers are saved. Continue it from Home.`))}
-      ${Q('set1', L('Ano ang Set 1 at ang mga exam set?', 'What are Set 1 and the exam sets?'), L('Ang <b>Set 1</b> ay laging nasa Home at bukas sa lahat. May bagong set bawat linggo (Set 2, 3…), makikita sa <b>Lahat ng exam set</b>, pinakabago muna. Ang <b>Bagong halo</b> ay bagong random na exam tuwing pipindutin.',
-        '<b>Set 1</b> is always on Home and open to everyone. A new set comes every week (Set 2, 3…), listed in <b>All exam sets</b>, newest first. <b>New mix</b> is a new random exam every time.'))}
+      ${Q('set1', L('Ano ang Set 1 at ang mga exam set?', 'What are Set 1 and the exam sets?'), L('Ang <b>Set 1</b> ay laging nasa Home at bukas sa lahat. May bagong set bawat linggo (Set 2, 3…), makikita sa <b>Lahat ng exam set</b>, pinakabago muna. Iba-iba ang tanong ng bawat set (Set 1 ang pinakaluma, ang pinakamataas na numero ang pinakabago), at ang pinakabagong set ang unang nagkakaroon ng bagong tanong. Tuwing sasagutan ang isang set, iba ang ayos ng tanong at ng A, B, C, D. Ang <b>Bagong halo</b> ay bagong random na exam tuwing pipindutin, at inuuna nito ang mga tanong na hindi mo pa nakikita kamakailan (pareho sa Practice).',
+        '<b>Set 1</b> is always on Home and open to everyone. A new set comes every week (Set 2, 3…), listed in <b>All exam sets</b>, newest first. Each set has its own questions (Set 1 is the oldest, the highest number is the newest), and the newest set gets new questions first. Each time you take a set, the order of the questions and of A, B, C, D changes. <b>New mix</b> is a new random exam every time, and it puts questions you have not seen lately first (same in Practice).'))}
       ${Q('practice', L('Paano mag-practice kada subject?', 'How do I practice by subject?'), L('Pumunta sa <a href="#/practice">Practice</a>, pumili ng level, subject, ilang tanong at timer, tapos <b>Simulan ang practice</b>. Agad makikita kung tama o mali, kasama ang paliwanag.', 'Go to <a href="#/practice">Practice</a>, pick the level, subject, number of questions and timer, then <b>Start practice</b>. You see right away if you are right or wrong, with an explanation.'))}
       ${Q('results', L('Saan ang resulta, PDF, email at print?', 'Where are results, PDF, email and print?'), L('Sa <a href="#/history">Resulta</a> ang lahat ng exam mo at ang score kada subject. Buksan ang isang exam para sa review. Sa Premium, may <b>I-save bilang PDF</b>, <b>Ipadala sa email</b> at <b>Print</b> sa itaas ng resulta (gumagana offline ang PDF at Print).', '<a href="#/history">Results</a> has all your exams and your score by subject. Open an exam for the review. With Premium, <b>Save as PDF</b>, <b>Send to email</b> and <b>Print</b> are at the top of the result (PDF and Print work offline).'))}
       ${Q('look', L('Paano palitan ang level, wika, itsura at tunog?', 'How do I change the level, language, look and sounds?'), L('<b>Level:</b> pindutin ang PRO / SUBPRO sa Home, Practice o Account.<br><b>Wika:</b> pindutin ang flag sa kanang itaas.<br><b>Itsura at Tunog:</b> sa <a href="#/account">Account</a>. Para mag-zoom, i-pinch ang screen gamit ang dalawang daliri.', '<b>Level:</b> tap PRO / SUBPRO on Home, Practice or Account.<br><b>Language:</b> tap the flag at the top right.<br><b>Look and Sounds:</b> in <a href="#/account">Account</a>. To zoom, pinch the screen with two fingers.'))}
