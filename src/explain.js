@@ -77,6 +77,11 @@ const TIPS = {
   'Philippine History': 'Connect each event to its **date and hero**. Making a short timeline helps.',
   'Philippine Geography': 'The Philippines has **three main island groups**: Luzon, Visayas, Mindanao.',
   'Peace and Security': 'Peace work means **talking and agreeing** (dialogue), not fighting.',
+  'Civil Service Rules': 'Leave: **15 days vacation + 15 days sick** leave a year (1.25 days each per month).\n**PRAISE** = awards, **SPMS** = performance rating, **GSIS** = retirement and insurance of government workers.',
+  // Added in 1.45.0
+  'Sawikain (Filipino)': 'Ang **sawikain** ay hindi literal. Isipin ang larawan: "nagsusunog ng kilay" = nag-aaral hanggang hatinggabi.',
+  'Probability': 'Chance = **what you want ÷ all possible outcomes**. Simplify the fraction at the end.',
+  'Office Procedures': '**Agenda** = topics BEFORE a meeting. **Minutes** = record AFTER. **cc** = copy to, **Encl.** = something attached, **Re:** = about.',
 };
 
 // A built-in question is found by its subject, question, passage AND correct answer. Many questions share the
