@@ -924,6 +924,65 @@ const lastCode = (to) => {
     assert.ok(green.length && green.every((g) => norm(x.a).includes(g) || g.includes(norm(x.a))), `explanation points to the answer: ${x.q} → ${x.a}`);
     assert.ok(!x.d.some((d) => green.includes(norm(d))), `explanation does not mark a wrong choice: ${x.q}`);
   }
+  // 1.45.0: about 5,000 written questions. Every one has the right shape, one right answer, no repeats.
+  {
+    const { SUBJECTS } = require('../src/blueprint');
+    assert.ok(QUESTIONS.length >= 5000, `at least 5,000 written questions (${QUESTIONS.length})`);
+    const keys = new Set(), per = {};
+    const same = (t) => String(t).trim().toLowerCase();
+    for (const x of QUESTIONS) {
+      const where = `${x.s}/${x.t}: ${x.q.slice(0, 60)} → ${x.a}`;
+      assert.ok(SUBJECTS[x.s], `known subject: ${where}`);
+      assert.ok(['both', 'pro', 'subpro'].includes(x.l), `level: ${where}`);
+      assert.ok(x.t && explain.TIPS[x.t], `topic with a Quick Note: ${where}`);
+      assert.ok(typeof x.q === 'string' && x.q.trim() && typeof x.a === 'string' && x.a.trim() && x.e.trim(), `question, answer and explanation: ${where}`);
+      assert.ok(Array.isArray(x.d) && x.d.length === 3 && x.d.every((d) => typeof d === 'string' && d.trim()), `three wrong choices: ${where}`);
+      assert.equal(new Set([x.a, ...x.d].map(same)).size, 4, `4 choices that differ (also in upper/lower case): ${where}`);
+      assert.ok(!/undefined|NaN|Infinity|\[object|\$\{/.test(x.q + x.a + x.d.join() + x.e), `no broken text: ${where}`);
+      const k = `${x.s}|${x.q}|${x.p}|${x.a}`;
+      assert.ok(!keys.has(k), `no repeated question: ${where}`);
+      keys.add(k);
+      per[x.s] = (per[x.s] || 0) + 1;
+    }
+    // Enough written questions for the bank share of every section of both mock exams, many times over.
+    for (const s of Object.keys(SUBJECTS)) assert.ok(per[s] >= 400, `${s}: ${per[s]} written questions`);
+    // Spot checks that work the answer out again, a different way from the bank files.
+    const filing = QUESTIONS.filter((x) => x.t === 'Alphabetical Filing' && /comes (FIRST|LAST)\?$/.test(x.q) && x.e.includes('Ignore spaces'));
+    assert.ok(filing.length >= 200);
+    const fk = (n) => n.toUpperCase().replace(/[\s.]/g, '').replace(',', '|');
+    for (const x of filing) {
+      const all = [x.a, ...x.d].sort((p, q) => (fk(p) < fk(q) ? -1 : 1));
+      assert.equal(x.a, /FIRST/.test(x.q) ? all[0] : all[3], `filing order: ${x.q} ${x.a}`);
+    }
+    for (const x of QUESTIONS.filter((q) => q.t === 'Checking Numbers' && q.q.startsWith('Which copy is EXACTLY'))) {
+      assert.equal(x.a, x.q.match(/number ([\d-]+)\?$/)[1], `the exact copy is the reference: ${x.q}`);
+    }
+    for (const x of QUESTIONS.filter((q) => /How much is the 12% VAT\?$/.test(q.q))) {
+      const price = Number(x.q.match(/₱([\d,]+)/)[1].replace(/,/g, ''));
+      assert.equal(x.a, '₱' + (price * 0.12).toLocaleString('en-US', { maximumFractionDigits: 2 }), `VAT: ${x.q}`);
+    }
+    for (const x of QUESTIONS.filter((q) => q.t === 'Geometry' && /third angle\?$/.test(q.q))) {
+      const [a, b] = x.q.match(/\d+/g).map(Number);
+      assert.equal(x.a, `${180 - a - b}°`, `angles: ${x.q}`);
+    }
+    for (const x of QUESTIONS.filter((q) => /share ₱[\d,]+ in the ratio/.test(q.q))) {
+      const total = Number(x.q.match(/₱([\d,]+)/)[1].replace(/,/g, '')), [a, b, c] = x.q.match(/ratio (\d+) : (\d+) : (\d+)/).slice(1).map(Number);
+      assert.equal(x.a, '₱' + (total / (a + b + c) * c).toLocaleString('en-US'), `ratio: ${x.q}`);
+    }
+    // Synonym and antonym questions: no wrong choice is a word of a close meaning group.
+    const vocab = require('../src/bank-vocab');
+    for (const x of vocab) {
+      const w = x.q.match(/(?:to|ng) ([A-ZÑ' -]+)\?$/)[1].toLowerCase();
+      const row = vocab.ROWS.find((r) => r.w === w);
+      assert.ok(row, `vocab row for ${w}`);
+      const bad = vocab.near(row.group);
+      for (const d of x.d) {
+        if (d === row.syn) continue; // the planned trap in antonym questions
+        const src = vocab.ROWS.filter((r) => r.syn === d || r.ant === d);
+        assert.ok(src.length && src.every((r) => !bad.has(r.group)), `${w}: "${d}" is not close in meaning`);
+      }
+    }
+  }
   // Math: one small step per line. No generated math explanation multiplies or divides two big numbers in one jump.
   for (const name of ['numerical']) for (const g of GENERATORS[name]) for (let i = 0; i < 60; i++) {
     const it = g(); if (!it) continue;
