@@ -492,7 +492,7 @@ body.has-undo .set-bar { margin-bottom: 64px; }
 /* Login screen: why this device was logged out (one login at a time) */
 .auth-kicked { margin-bottom: 10px; background: var(--warn-soft); text-align: left; }
 
-/* ---------- log out: red and easy to see (top right of every screen, and Account) ---------- */
+/* ---------- log out: red and easy to see, at the very bottom of Account (1.46.0) ---------- */
 .logout-btn {
   display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px 6px 10px; min-height: 34px; border-radius: 99px;
   border: 2px solid #ffb4ba; background: #fff; color: #c62f3b; font-weight: 700; font-size: 0.875rem; cursor: pointer; line-height: 1;
@@ -501,7 +501,11 @@ body.has-undo .set-bar { margin-bottom: 64px; }
 .logout-btn:hover { background: #fff1f2; box-shadow: 0 0 0 3px rgba(255,255,255,.35); }
 html[data-theme] .logout-btn { background: var(--card); border-color: var(--bad); color: var(--bad); }
 @media (prefers-color-scheme: dark) { :root:not([data-theme]) .logout-btn { background: #2a1418; border-color: #ff6b76; color: #ff9aa2; } }
-@media (max-width: 340px) { .logout-btn span { display: none; } .logout-btn { padding: 6px 8px; } }
+/* Account: the Log out spot sits apart from the settings, after a thin line, as a full-width red outline button */
+.logout-zone { margin: 22px 0 6px; padding-top: 18px; border-top: 1px dashed var(--line); text-align: center; }
+.logout-btn.wide { width: 100%; justify-content: center; min-height: 48px; border-radius: 14px; font-size: 1rem; padding: 10px 16px; }
+.logout-btn.wide:hover { background: var(--bad-soft); }
+.logout-zone p { margin: 8px 0 0; overflow-wrap: anywhere; }
 .btn.danger-outline { background: transparent; color: var(--bad); border: 2px solid var(--bad); }
 .btn.danger-outline:hover { background: var(--bad-soft); }
 

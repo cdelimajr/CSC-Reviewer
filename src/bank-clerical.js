@@ -3,7 +3,7 @@
 //   spelling, e.g. no "judgement/judgment" pairs).
 // - Filing and checking: names, numbers and codes picked with a fixed seed; the right answer is worked out
 //   by the filing rules in the code, so it is always right.
-const { rows, pickSome, rng } = require('./bank-tools');
+const { rows, pickSome, rng, sshuffle } = require('./bank-tools');
 
 const C = 'clerical';
 const out = [];
@@ -238,7 +238,8 @@ function extraWrong(w, have) {
 for (const [word, wrongs] of SPELLING) {
   const ws = wrongs.split(',').map((x) => x.trim()).filter((x) => !x.endsWith('_') && /^[A-Za-z]+$/.test(x));
   while (ws.length < 3) ws.push(extraWrong(word, ws));
-  out.push({ s: C, t: 'Spelling', q: 'Which word is spelled correctly?', a: word, d: ws.slice(0, 3),
+  // 1.46.0: the four spellings are in the question too, so every question has its own words.
+  out.push({ s: C, t: 'Spelling', q: `Which word is spelled correctly: ${sshuffle([word, ...ws.slice(0, 3)], word).join(', ').replace(/, ([^,]+)$/, ' or $1')}?`, a: word, d: ws.slice(0, 3),
     e: `Say the word slowly in parts and check each letter.\nThe correct spelling is ==${word}==.\n!!Trap!!: ${ws.slice(0, 3).map((x) => `"${x}"`).join(', ')} are common misspellings.` });
 }
 
@@ -276,7 +277,7 @@ for (let k = 0, made = 0; k < 600 && made < 300; k++) {
   made++;
   const keys = sorted.map((p) => `${asName(...p)} → ${p[0].replace(/[\s.]/g, '').toUpperCase()}, ${p[1].toUpperCase()}`);
   out.push({
-    s: C, t: 'Alphabetical Filing', q: `In alphabetical filing (surname first), which name comes ${first ? 'FIRST' : 'LAST'}?`, a: ans, d: names.filter((n) => n !== ans),
+    s: C, t: 'Alphabetical Filing', q: `In alphabetical filing (surname first), which name comes ${first ? 'FIRST' : 'LAST'}: ${names.join(' · ')}?`, a: ans, d: names.filter((n) => n !== ans),
     e: `Step 1: File by **surname**, then first name. Ignore spaces and periods (De la Paz → DELAPAZ).\nStep 2: In order:\n${keys.map((x, i) => `${i + 1}. ${x}`).join('\n')}\nThe ${first ? 'first' : 'last'} one is ==${ans}==.`,
   });
 }

@@ -4,7 +4,34 @@ const { SUBJECTS, EXAMS } = require('./blueprint');
 const { generate, shuffle } = require('./generators');
 
 // Share of each section that comes from the saved question bank (the rest is generated).
-const BANK_RATIO = { verbal: 0.5, analytical: 0.35, numerical: 0.3, clerical: 0.3, general: 0.6 };
+// General Information is 0.9 bank (1.46.0): its generators only ask about the laws, so a bigger bank share keeps
+// the section a mix of all general topics.
+const BANK_RATIO = { verbal: 0.5, analytical: 0.35, numerical: 0.3, clerical: 0.3, general: 0.9 };
+
+// General Information topic groups (1.46.0). Bank questions are taken from the groups in turn, so a section is a
+// fair mix: the laws (2 turns per round, since the real exam asks about them often), then each of the others.
+const GENERAL_GROUPS = [
+  ['1987 Constitution', 'RA 6713', 'Philippine Laws', 'Civil Service Rules'],
+  ['Human Rights', 'Peace and Security'],
+  ['Philippine History'], ['Philippine Geography'], ['Philippine Government'], ['Environment'],
+  ['Science and Technology'], ['Health and Nutrition'], ['Culture and the Arts'], ['World Geography', 'World Affairs'],
+];
+const LAW_TURNS = 2;
+const groupOf = (topic) => { const i = GENERAL_GROUPS.findIndex((g) => g.includes(topic)); return i < 0 ? GENERAL_GROUPS.length : i; };
+
+// Reorders a list (already in the order to pick from) so the topic groups take turns. Items used less (uses) still
+// come first: the turns happen inside each use-count tier.
+function mixGroups(list, uses = () => 0) {
+  const turn = new Map();
+  const order = shuffle([...GENERAL_GROUPS.keys(), GENERAL_GROUPS.length]);
+  const rank = list.map((it) => {
+    const g = groupOf(it.topic), k = `${uses(it)}|${g}`;
+    const n = turn.get(k) || 0; turn.set(k, n + 1);
+    return { it, u: uses(it), r: g === 0 ? Math.floor(n / LAW_TURNS) : n, g: order.indexOf(g) };
+  });
+  rank.sort((a, b) => a.u - b.u || a.r - b.r || a.g - b.g);
+  return rank.map((x) => x.it);
+}
 
 function rowToItem(r) {
   return {
@@ -36,7 +63,8 @@ async function buildSection(subject, count, level, ratio = BANK_RATIO[subject] ?
   if (avoid && avoid.size) {
     const uses = new Map(bank.map((b) => [b, avoid.get(textKey({ ...b, subject })) || 0]));
     bank.sort((a, b) => uses.get(a) - uses.get(b)); // stable: the random order stays inside each group
-  }
+    if (subject === 'general') bank = mixGroups(bank, (b) => uses.get(b));
+  } else if (subject === 'general') bank = mixGroups(bank);
   // Keep reading passages together: pick passage groups as whole units.
   const picked = [];
   const used = new Set();
@@ -126,4 +154,4 @@ function grade(items, answers) {
   return { score, breakdown };
 }
 
-module.exports = { buildExam, grade, takeOrder, textKey };
+module.exports = { buildExam, grade, takeOrder, textKey, mixGroups, groupOf, GENERAL_GROUPS };

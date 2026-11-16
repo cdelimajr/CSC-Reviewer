@@ -922,12 +922,13 @@ const lastCode = (to) => {
     assert.equal(new Set([x.a, ...x.d]).size, 4, `4 different choices: ${x.q}`);
     const green = [...x.e.matchAll(/==(.+?)==/g)].map((m) => norm(m[1]));
     assert.ok(green.length && green.every((g) => norm(x.a).includes(g) || g.includes(norm(x.a))), `explanation points to the answer: ${x.q} → ${x.a}`);
-    assert.ok(!x.d.some((d) => green.includes(norm(d))), `explanation does not mark a wrong choice: ${x.q}`);
+    // (A wrong choice that differs from the answer only by a sign, like 3 and -3, cannot be told apart here.)
+    assert.ok(!x.d.some((d) => norm(d) !== norm(x.a) && green.includes(norm(d))), `explanation does not mark a wrong choice: ${x.q}`);
   }
-  // 1.45.0: about 5,000 written questions. Every one has the right shape, one right answer, no repeats.
+  // 1.45.0: about 5,000 written questions; 1.46.0: 10,000. Every one has the right shape, one right answer, no repeats.
   {
     const { SUBJECTS } = require('../src/blueprint');
-    assert.ok(QUESTIONS.length >= 5000, `at least 5,000 written questions (${QUESTIONS.length})`);
+    assert.ok(QUESTIONS.length >= 10000, `at least 10,000 written questions (${QUESTIONS.length})`);
     const keys = new Set(), per = {};
     const same = (t) => String(t).trim().toLowerCase();
     for (const x of QUESTIONS) {
@@ -938,16 +939,31 @@ const lastCode = (to) => {
       assert.ok(typeof x.q === 'string' && x.q.trim() && typeof x.a === 'string' && x.a.trim() && x.e.trim(), `question, answer and explanation: ${where}`);
       assert.ok(Array.isArray(x.d) && x.d.length === 3 && x.d.every((d) => typeof d === 'string' && d.trim()), `three wrong choices: ${where}`);
       assert.equal(new Set([x.a, ...x.d].map(same)).size, 4, `4 choices that differ (also in upper/lower case): ${where}`);
-      assert.ok(!/undefined|NaN|Infinity|\[object|\$\{/.test(x.q + x.a + x.d.join() + x.e), `no broken text: ${where}`);
+      assert.ok(!/undefined|NaN|Infinity|\[object|\$\{/.test([x.q, x.a, ...x.d, x.e].join(' | ')), `no broken text: ${where}`);
       const k = `${x.s}|${x.q}|${x.p}|${x.a}`;
       assert.ok(!keys.has(k), `no repeated question: ${where}`);
       keys.add(k);
       per[x.s] = (per[x.s] || 0) + 1;
     }
+    // 1.46.0: no two questions alike, also when only capitals, accents, spaces, quotes or end marks differ.
+    const bankKey = require('../src/bank').key, nk = new Set();
+    for (const x of QUESTIONS) { assert.ok(!nk.has(bankKey(x)), `no near-repeat: ${x.s}/${x.q.slice(0, 60)}`); nk.add(bankKey(x)); }
+    // 1.46.0: General Information is not mostly laws. The written questions cover many topics, and a section mixes them.
+    const { mixGroups, groupOf } = require('../src/exam');
+    const gen = QUESTIONS.filter((x) => x.s === 'general');
+    const lawShare = gen.filter((x) => groupOf(x.t) === 0).length / gen.length;
+    assert.ok(lawShare < 0.25, `laws are not most of General Information (${Math.round(lawShare * 100)}%)`);
+    assert.ok(new Set(gen.map((x) => x.t)).size >= 12, 'General Information has many topics');
+    {
+      const mixed = mixGroups(gen.map((x) => ({ topic: x.t }))).slice(0, 50);
+      const laws = mixed.filter((x) => groupOf(x.topic) === 0).length;
+      assert.ok(laws >= 6 && laws <= 12, `50 bank picks: ${laws} on the laws`);
+      assert.ok(new Set(mixed.map((x) => groupOf(x.topic))).size >= 10, '50 bank picks cover every topic group');
+    }
     // Enough written questions for the bank share of every section of both mock exams, many times over.
     for (const s of Object.keys(SUBJECTS)) assert.ok(per[s] >= 400, `${s}: ${per[s]} written questions`);
     // Spot checks that work the answer out again, a different way from the bank files.
-    const filing = QUESTIONS.filter((x) => x.t === 'Alphabetical Filing' && /comes (FIRST|LAST)\?$/.test(x.q) && x.e.includes('Ignore spaces'));
+    const filing = QUESTIONS.filter((x) => x.t === 'Alphabetical Filing' && /comes (FIRST|LAST)\b/.test(x.q) && x.e.includes('Ignore spaces'));
     assert.ok(filing.length >= 200);
     const fk = (n) => n.toUpperCase().replace(/[\s.]/g, '').replace(',', '|');
     for (const x of filing) {
