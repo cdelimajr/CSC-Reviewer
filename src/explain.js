@@ -82,6 +82,12 @@ const TIPS = {
   'Sawikain (Filipino)': 'Ang **sawikain** ay hindi literal. Isipin ang larawan: "nagsusunog ng kilay" = nag-aaral hanggang hatinggabi.',
   'Probability': 'Chance = **what you want ÷ all possible outcomes**. Simplify the fraction at the end.',
   'Office Procedures': '**Agenda** = topics BEFORE a meeting. **Minutes** = record AFTER. **cc** = copy to, **Encl.** = something attached, **Re:** = about.',
+  // Added in 1.46.0 (General Information beyond the laws)
+  'Science and Technology': 'Group facts you can picture: **planets** in order from the Sun (My Very Educated Mother Just Served Us Noodles), **states of matter**, and each **instrument** with what it measures.',
+  'Health and Nutrition': '**Go** (energy: rice, bread) · **Grow** (body-building: fish, meat, eggs) · **Glow** (protection: fruits, vegetables).\nLink each vitamin to its sickness: **A** night blindness, **C** scurvy, **D** rickets.',
+  'Culture and the Arts': 'Link each **festival** to its city and each **work** to its writer. Picture the event (Panagbenga = flowers, Pahiyas = kiping on houses).',
+  'World Geography': 'Learn capitals in **groups by region** (ASEAN first). Watch the trap: the **biggest city is not always the capital** (Sydney vs. Canberra).',
+  'World Affairs': '**UN** 1945 (New York) · **ASEAN** 1967 (Bangkok Declaration; Secretariat in Jakarta) · **WHO** Geneva · **UNESCO** Paris.',
 };
 
 // A built-in question is found by its subject, question, passage AND correct answer. Many questions share the

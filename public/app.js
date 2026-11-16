@@ -3,7 +3,7 @@
   'use strict';
   const $app = document.getElementById('app');
   const LETTERS = ['A', 'B', 'C', 'D'];
-  const APP_VERSION = '1.45.0'; // keep in step with package.json and docs/DOKUMENTASYON.md
+  const APP_VERSION = '1.46.0'; // keep in step with package.json and docs/DOKUMENTASYON.md
   const S = { user: null, meta: null, exam: null, timer: null, saveT: null };
 
   /* ---------------- helpers ---------------- */
@@ -1560,19 +1560,18 @@
     const isAdmin = S.user && S.user.role === 'admin';
     const links = [['home', '#/', 'Home', '🏠'], ['practice', '#/practice', 'Practice', '📝'], ['history', '#/history', L('Resulta', 'Results'), '📊'], ...(isAdmin ? [['admin', '#/admin', 'Admin', '🛠️']] : []), ['account', '#/account', 'Account', '👤']];
     // "CSE Reviewer" at the top left, the menu in the center (computer; on phones it is the bottom menu, also centered),
-    // and on the right the language flag and a red "Log out" button that is easy to find.
+    // and on the right the language flag. Log out is at the bottom of Account (1.46.0), so a stray tap up here does not end the login.
     // (Level is chosen on Home, Practice and Account; Help is in Account.)
     $app.innerHTML = `
       <a class="skip-link" href="#main" data-skip>${L('Lumaktaw sa nilalaman', 'Skip to content')}</a>
       <header class="topbar">
         <a class="brand" href="#/"><img src="icons/icon.svg" alt="">CSE Reviewer</a>
         <nav class="nav-desktop" aria-label="Menu">${links.map(([k, h, l]) => `<a class="link ${active === k ? 'active' : ''}" href="${h}">${l}</a>`).join('')}</nav>
-        <div class="top-right">${flagBtn()}${S.user ? `<button type="button" class="logout-btn" id="topLogout" title="${L('Mag-logout', 'Log out')}" aria-label="${L('Mag-logout', 'Log out')}">${LOGOUT_ICON}<span>${L('Logout', 'Log out')}</span></button>` : ''}</div>
+        <div class="top-right">${flagBtn()}</div>
       </header>
       <main class="wrap${S.keepScroll ? '' : ' page-in'}" id="main" tabindex="-1">${body}${Ads.slot(active)}</main>
       <nav class="bottomnav" aria-label="Menu">${links.map(([k, h, l, ic]) => `<a class="${active === k ? 'active' : ''}" href="${h}"${active === k ? ' aria-current="page"' : ''}><span class="ic" aria-hidden="true">${ic}</span>${l}</a>`).join('')}</nav>`;
     $('[data-skip]').onclick = (e) => { e.preventDefault(); $('#main').focus(); };
-    if ($('#topLogout')) $('#topLogout').onclick = () => logout();
     Ads.mount();
     foldSync();
     if (!S.keepScroll) window.scrollTo(0, 0);
@@ -3136,7 +3135,11 @@
   }
 
   /* ---------------- account ----------------
-     Log out (red) is on the right of the "Account" title, and also at the top right of every screen. The language choice is always visible (not in a drop down). */
+     Log out (red) is the last thing on the page, below "Settings and more" (1.46.0). The language choice is always visible (not in a drop down). */
+  // Account → Log out: its own spot at the very bottom, apart from the settings, with who is logged in. It asks first.
+  const logoutZone = () => `<div class="logout-zone">
+        <button type="button" class="logout-btn wide" id="accLogout">${LOGOUT_ICON}<span>${L('Mag-logout', 'Log out')}</span></button>
+        <p class="muted small">${L('Naka-login bilang', 'Logged in as')} <b>${esc(S.user.email)}</b>. ${L('Magtatanong muna bago mag-logout.', 'It asks first before logging out.')}</p></div>`;
   /* Account folds that every user has, Free or Premium: Help and guide, Quick login, About the exam. */
   const helpFold = () => fold('acc-help', `<h3>${L('Tulong at gabay', 'Help and guide')}</h3>`, `
         <p class="muted small" style="margin:0 0 10px">${L('Paano gamitin ang app, mga madalas itanong, at ulitin ang gabay.', 'How to use the app, common questions, and replay the guide.')}</p>
@@ -3209,7 +3212,9 @@
       ${aboutFold()}
       </div>`, { cls: 'acc-menu', stay: true, open: !!F.key && F.key.startsWith('acc-') && F.key !== 'acc-menu' })
         // Free: Help and guide, Quick login and About the exam are open to everyone; the rest of "Settings and more" is Premium.
-        : freeAccount() + `<div class="stack" style="margin-top:12px">${helpFold()}${bioFold()}${pwFold()}${aboutFold()}${legalFolds()}</div>`}`);
+        : freeAccount() + `<div class="stack" style="margin-top:12px">${helpFold()}${bioFold()}${pwFold()}${aboutFold()}${legalFolds()}</div>`}
+      ${logoutZone()}`);
+    $('#accLogout').onclick = () => logout();
     if ($('#accTour')) $('#accTour').onclick = () => Tour.replay();
     if ($('#bioCard')) paintBioCard();
     // Change password: for every user (Free too), since it keeps the account safe.
@@ -3389,7 +3394,7 @@
     };
   }
 
-  /* Log out: the red "Log out" button at the top right of every screen.
+  /* Log out: the red "Log out" button at the bottom of Account.
      It always asks first, so a stray tap does not log you out. */
   async function logout(ask = true) {
     const unsaved = local.all().some((a) => a.finished_at);
@@ -4270,7 +4275,7 @@
 
   /* ---------------- guide for new Premium users, and Help ----------------
      The first time a Premium user opens Home, a short guide points at each part of the screen
-     (level, Set 1, all exam sets, Practice, Results, Account, Log out, language) one at a time.
+     (level, Set 1, all exam sets, Practice, Results, Account and Log out, language) one at a time.
      It shows once per account (saved on the server and on the device). It can be skipped, and
      replayed any time from Account → Help and guide. */
   const Tour = (() => {
@@ -4283,9 +4288,8 @@
       { sel: '.level-card a[href^="#/sets/"]', t: L('3. Lahat ng exam set', '3. All exam sets'), x: L('Dito ang Set 1, 2, 3… (may bago bawat linggo) at ang <b>Bagong halo</b> na bagong random na exam.', 'Set 1, 2, 3… are here (a new one every week), plus <b>New mix</b>, a new random exam.') },
       { sel: '.bottomnav a[href="#/practice"], .nav-desktop a[href="#/practice"]', t: L('4. Practice kada subject', '4. Practice by subject'), x: L('Pumili ng subject at ilang tanong. Agad makikita kung tama o mali, kasama ang paliwanag.', 'Pick a subject and how many questions. You see right away if you are right or wrong, with an explanation.') },
       { sel: '.bottomnav a[href="#/history"], .nav-desktop a[href="#/history"]', t: L('5. Mga resulta', '5. Results'), x: L('Lahat ng exam mo, score kada subject, at buong review. Sa resulta ng exam: <b>PDF, email at print</b>.', 'All your exams, score by subject, and the full review. On an exam result: <b>PDF, email and print</b>.') },
-      { sel: '.bottomnav a[href="#/account"], .nav-desktop a[href="#/account"]', t: L('6. Account', '6. Account'), x: L('Itsura ng screen (Malambot, Sepia, Madilim), <b>mabilis na login</b> gamit ang face o fingerprint, tunog, password, at Premium.', 'Screen look (Soft, Sepia, Dark), <b>quick login</b> with face or fingerprint, sounds, password, and Premium.') },
-      { sel: '#topLogout', t: L('7. Mag-logout', '7. Log out'), x: L('Ang pulang <b>Logout</b> sa kanang itaas. Magtatanong muna ito bago ka i-logout. Isang device lang ang pwedeng naka-login: kapag nag-login ka sa iba, kusang malo-logout ang device na ito.', 'The red <b>Log out</b> at the top right. It asks first before logging you out. Only one device can be logged in: when you log in on another one, this device logs out by itself.') },
-      { sel: '.topbar .lang-flag', t: L('8. Wika', '8. Language'), x: L('Pindutin ang flag para magpalit sa English o Tagalog. Ang <b>Tulong</b> at ang gabay na ito ay nasa <b>Account</b>.', 'Tap the flag to switch between English and Tagalog. <b>Help</b> and this guide are in <b>Account</b>.') },
+      { sel: '.bottomnav a[href="#/account"], .nav-desktop a[href="#/account"]', t: L('6. Account at Logout', '6. Account and Log out'), x: L('Itsura ng screen (Malambot, Sepia, Madilim), <b>mabilis na login</b> gamit ang face o fingerprint, tunog, password, at Premium. Nasa <b>pinakaibaba ng Account</b> ang pulang <b>Mag-logout</b>; magtatanong muna ito bago ka i-logout.', 'Screen look (Soft, Sepia, Dark), <b>quick login</b> with face or fingerprint, sounds, password, and Premium. The red <b>Log out</b> is at the <b>very bottom of Account</b>; it asks first before logging you out.') },
+      { sel: '.topbar .lang-flag', t: L('7. Wika', '7. Language'), x: L('Pindutin ang flag para magpalit sa English o Tagalog. Ang <b>Tulong</b> at ang gabay na ito ay nasa <b>Account</b>.', 'Tap the flag to switch between English and Tagalog. <b>Help</b> and this guide are in <b>Account</b>.') },
       { sel: null, t: L('Handa ka na! 🎉', 'You are ready! 🎉'), x: L('Gumagana ang app kahit offline. Good luck sa exam mo!', 'The app works even offline. Good luck on your exam!') },
     ];
     function place() {
@@ -4384,7 +4388,7 @@
       ${Q('look', L('Paano palitan ang level, wika, itsura at tunog?', 'How do I change the level, language, look and sounds?'), L('<b>Level:</b> pindutin ang PRO / SUBPRO sa Home, Practice o Account.<br><b>Wika:</b> pindutin ang flag sa kanang itaas.<br><b>Itsura at Tunog:</b> sa <a href="#/account">Account</a>. Para mag-zoom, i-pinch ang screen gamit ang dalawang daliri.', '<b>Level:</b> tap PRO / SUBPRO on Home, Practice or Account.<br><b>Language:</b> tap the flag at the top right.<br><b>Look and Sounds:</b> in <a href="#/account">Account</a>. To zoom, pinch the screen with two fingers.'))}
       ${Q('bio', L('Paano mag-login gamit ang face o fingerprint?', 'How do I log in with face or fingerprint?'), L('Sa <a href="#/account">Account</a> → <b>Mabilis na login</b>, piliin ang Face o Fingerprint (libre at Premium). Sa susunod, pindutin lang ito sa login screen. Pwede ka ring mag-login gamit ang <b>code sa email</b>, walang password.', 'In <a href="#/account">Account</a> → <b>Quick login</b>, choose Face or Fingerprint (Free and Premium). Next time, just tap it on the login screen. You can also log in with an <b>email code</b>, no password.'))}
       ${Q('offline', L('Gumagana ba kahit walang internet?', 'Does it work without internet?'), L('Oo, sa Premium: lahat ng practice, mock exam at naka-save na exam set. Pwede ka ring <b>mag-login offline</b> gamit ang password o face/fingerprint, sa device na nag-login ka na online dati. Ise-save online ang mga resulta kapag may internet na. Kailangang mag-online kahit isang beses bawat 30 araw. Kailangan ng internet sa libreng plan.', 'Yes, with Premium: all practice, mock exams and saved exam sets. You can also <b>log in offline</b> with your password or face/fingerprint, on a device where you logged in online before. Results are saved online when the internet is back. Go online at least once every 30 days. The free plan needs internet.'))}
-      ${Q('logout', L('Bakit ako na-logout?', 'Why was I logged out?'), L('<b>Isang device lang ang pwedeng naka-login</b> sa isang account. Kapag nag-login ka sa ibang phone o computer, malo-logout agad ang nauna (sa loob ng ilang segundo). Kung hindi ikaw ang nag-login, mag-login ulit at palitan agad ang password sa <a href="#/account">Account</a>.', '<b>Only one device can be logged in</b> to an account. When you log in on another phone or computer, the first one is logged out within seconds. If it was not you, log in again and change your password right away in <a href="#/account">Account</a>.'))}
+      ${Q('logout', L('Bakit ako na-logout?', 'Why was I logged out?'), L('<b>Isang device lang ang pwedeng naka-login</b> sa isang account. Kapag nag-login ka sa ibang phone o computer, malo-logout agad ang nauna (sa loob ng ilang segundo). Kung hindi ikaw ang nag-login, mag-login ulit at palitan agad ang password sa <a href="#/account">Account</a>.<br><b>Para mag-logout:</b> nasa pinakaibaba ng <a href="#/account">Account</a> ang pulang <b>Mag-logout</b>.', '<b>Only one device can be logged in</b> to an account. When you log in on another phone or computer, the first one is logged out within seconds. If it was not you, log in again and change your password right away in <a href="#/account">Account</a>.<br><b>To log out:</b> the red <b>Log out</b> is at the very bottom of <a href="#/account">Account</a>.'))}
       ${Q('pay', L('Paano magbayad o i-extend ang Premium?', 'How do I pay or extend Premium?'), L('Sa <a href="#/premium">Account → Premium</a>. Magbayad online (bukas agad ang Premium), o manual: magpadala sa account na nakalista, tapos ilagay ang reference number at screenshot ng resibo. May email kapag na-approve na.', 'In <a href="#/premium">Account → Premium</a>. Pay online (Premium opens right away), or manually: send to a listed account, then enter the reference number and a screenshot of the receipt. You get an email once it is approved.'))}
       </div>`);
     $('#tourAgain').onclick = () => Tour.replay();
